@@ -53,6 +53,8 @@ function renderSettings() {
   document.getElementById("providerName").value = c.provider.name || "DeepSeek";
   document.getElementById("baseUrl").value = c.provider.base_url || "";
   document.getElementById("modelName").value = c.provider.model || "";
+  document.getElementById("researchEnabled").checked = c.research?.enabled !== false;
+  document.getElementById("mediaParserRoot").value = c.research?.media_parser_root || "";
   document.getElementById("rootsInput").value = (c.discovery.roots || []).join("\n");
   document.getElementById("providerResult").textContent = c.provider.has_api_key ? "已检测到API Key（不会在界面回显）" : "尚未检测到API Key";
   document.getElementById("storageRoot").value = c.storage.root || "D:\\时宜AIGC内容工厂";
@@ -178,7 +180,7 @@ async function openJob(id) {
       const result = await fetch(`/api/jobs/${id}/artifacts/approved_script.json`).then(r => r.json()); script = result.script || "";
     }
     document.getElementById("approvedScriptInput").value = script;
-    const labels = {"insight.json":"洞察","script_variants.json":"4个脚本","approved_script.json":"采用脚本","review.json":"合规审核","voice.wav":"配音","captions.srt":"字幕","motion_plan.json":"动态导演计划","final.mp4":"成片","run_report.json":"运行报告"};
+    const labels = {"research.json":"Flash联网调研","insight.json":"洞察","script_variants.json":"4个脚本","approved_script.json":"采用脚本","review.json":"合规审核","voice.wav":"配音","captions.srt":"字幕","motion_plan.json":"动态导演计划","final.mp4":"成片","run_report.json":"运行报告"};
     document.getElementById("artifactLinks").innerHTML = (job.artifacts || []).map(name => `<a href="/api/jobs/${id}/artifacts/${name}" target="_blank">${escapeHtml(labels[name] || name)}</a>`).join("");
     const video = document.getElementById("artifactVideo");
     if ((job.artifacts || []).includes("final.mp4")) { video.src = `/api/jobs/${id}/artifacts/final.mp4`; video.hidden = false; } else { video.hidden = true; video.removeAttribute("src"); }
@@ -209,7 +211,7 @@ document.getElementById("saveJobBtn").addEventListener("click", async () => {
 document.getElementById("createDemoBtn").addEventListener("click", async () => {
   const button = document.getElementById("createDemoBtn"); setBusy(button, true, "创建中…");
   try {
-    const production_input = { topic: document.getElementById("demoTopic").value.trim(), audience: document.getElementById("demoAudience").value.trim(), target_duration_seconds: 52, pattern_card_ids:["03","06"], voice_engine:"voxcpm2" };
+    const production_input = { topic: document.getElementById("demoTopic").value.trim(), audience: document.getElementById("demoAudience").value.trim(), target_duration_seconds: 52, pattern_card_ids:["03","06"], voice_engine:"voxcpm2", enable_web_research:true };
     const job = await api("/api/demo-job", { method:"POST", body:JSON.stringify({production_input}) });
     toast("样片任务已创建，请到运行记录人工批准"); await refresh();
     document.querySelector('[data-view="jobs"]').click(); await openJob(job.id);
@@ -242,6 +244,7 @@ document.getElementById("saveSettings").addEventListener("click", async () => {
   try {
     const body = {
       provider: { ...state.config.provider, name: document.getElementById("providerName").value.trim(), base_url: document.getElementById("baseUrl").value.trim(), model: document.getElementById("modelName").value.trim(), api_key: document.getElementById("apiKey").value.trim(), persist_api_key: document.getElementById("persistKey").checked },
+      research: { ...state.config.research, enabled: document.getElementById("researchEnabled").checked, media_parser_root: document.getElementById("mediaParserRoot").value.trim() },
       storage: { root: document.getElementById("storageRoot").value.trim() }
     };
     await api("/api/config", { method: "POST", body: JSON.stringify(body) }); document.getElementById("apiKey").value = ""; toast("设置已保存"); await refresh();

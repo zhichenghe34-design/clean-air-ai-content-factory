@@ -98,6 +98,9 @@
             <label>模型<input id="modelName" class="mono"></label>
             <label>API Key<input id="apiKey" type="password" placeholder="默认读取 DEEPSEEK_API_KEY"></label>
             <label class="check"><input id="persistKey" type="checkbox"><span>保存到本机（默认不勾选）</span></label>
+            <label class="check"><input id="researchEnabled" type="checkbox"><span>生产任务启用Flash联网工具调度</span></label>
+            <label>一站式音视频解析目录<input id="mediaParserRoot" class="mono" placeholder="D:\wen zi you xi\一站式音视频解析"></label>
+            <p class="hint">Flash只做决策；免费搜索、网页提取、音视频解析和剪辑均由受信工具执行。单任务设有7次模型请求硬上限。</p>
             <div class="action-row"><button id="saveSettings" class="primary">保存设置</button><button id="testProvider" class="secondary">测试连接</button></div>
             <div id="providerResult" class="hint"></div>
           </article>
@@ -105,7 +108,7 @@
             <p class="eyebrow">SAFETY</p><h2>执行边界</h2>
             <div class="safety-list">
               <div><strong>目录扫描</strong><span>只读，可直接执行</span></div>
-              <div><strong>Agent规划</strong><span>主动点击后才调用API</span></div>
+              <div><strong>Flash大脑</strong><span>只调度登记工具，不执行任意命令</span></div>
               <div><strong>素材上传</strong><span>默认关闭</span></div>
               <div><strong>未知外部命令</strong><span>默认关闭</span></div>
               <div><strong>合规结论</strong><span>必须人工确认</span></div>

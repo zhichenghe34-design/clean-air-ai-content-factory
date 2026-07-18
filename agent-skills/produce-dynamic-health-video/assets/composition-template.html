@@ -107,6 +107,7 @@
       tl.from(`${root} .kicker`, { x: -65, opacity: 0, duration: .48 }, entrance + .05);
       tl.from(`${root} h1`, { y: 70, opacity: 0, duration: .62 }, entrance + .1);
       tl.from(`${root} .caption`, { y: 35, opacity: 0, duration: .45 }, start + .16);
+      tl.to(`${root} .visual`, { y: -14, duration: Math.max(.5, Number(scene.end) - start), ease: "none" }, start);
       const type = scene.visual_type;
       if (type === "stat-ring") { tl.from(`${root} .ring`, { scale: .35, rotation: -18, opacity: 0, duration: .82, ease: "back.out(1.45)" }, start + .28); tl.to(`${root} .ring`, { scale: 1.06, duration: 1.1, repeat: 3, yoyo: true, ease: "sine.inOut" }, start + 1.2); }
       if (type === "magnifier") { tl.from(`${root} .evidence`, { y: 140, rotation: 4, opacity: 0, duration: .75 }, start + .3); tl.from(`${root} .line`, { scaleX: 0, stagger: .11, duration: .38 }, start + .65); tl.from(`${root} .lens`, { scale: .2, opacity: 0, duration: .55, ease: "back.out(1.5)" }, start + .85); tl.to(`${root} .lens`, { x: -420, y: -210, duration: 2.3, repeat: 1, yoyo: true, ease: "sine.inOut" }, start + 1.35); }

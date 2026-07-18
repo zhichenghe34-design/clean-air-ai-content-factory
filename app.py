@@ -134,7 +134,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 job_id = path.split("/")[3]
                 job = job_store.get(job_id)
                 if isinstance(job.get("production_input"), dict):
-                    runner = ProductionRunner(provider=self._provider())
+                    app_config = config_store.load()
+                    runner = ProductionRunner(provider=self._provider(), research_config=app_config.get("research", {}))
                     self.json_response(job_store.run_production(job_id, runner))
                 else:
                     allow = bool(config_store.load()["security"].get("allow_external_commands", False))
@@ -279,7 +280,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if not job_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in job_id):
             self.send_error(HTTPStatus.BAD_REQUEST)
             return
-        allowed = {"insight.json", "script_variants.json", "approved_script.json", "review.json", "voice.wav", "captions.srt", "motion_plan.json", "final.mp4", "run_report.json"}
+        allowed = {"research.json", "insight.json", "script_variants.json", "approved_script.json", "review.json", "voice.wav", "captions.srt", "motion_plan.json", "final.mp4", "run_report.json"}
         if name not in allowed:
             self.send_error(HTTPStatus.FORBIDDEN)
             return

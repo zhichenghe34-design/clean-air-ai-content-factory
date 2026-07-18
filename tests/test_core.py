@@ -10,7 +10,9 @@ from core.discovery import ProjectDiscovery
 from core.motion_director import MotionPlanError, build_motion_plan, build_motion_project, derive_motion_segments, validate_motion_plan
 from core.orchestrator import JobStore, local_fallback_plan
 from core.provider import OpenAICompatibleProvider, ProviderError
-from core.production import DEFAULT_SCRIPT, review_script
+from core.production import DEFAULT_SCRIPT, ProductionRunner, review_script
+from core.web_agent import WebResearchAgent
+from core.web_tools import TrustedWebToolRegistry
 
 
 class ConfigTests(unittest.TestCase):
@@ -92,6 +94,119 @@ class ProviderTests(unittest.TestCase):
         with self.assertRaises(ProviderError):
             OpenAICompatibleProvider.parse_json_content("not json")
 
+    def test_tool_call_turn_uses_official_message_shape(self):
+        provider = OpenAICompatibleProvider(
+            {"base_url": "https://api.deepseek.com", "model": "deepseek-v4-flash"},
+            "test-only-key",
+        )
+        captured = {}
+
+        def fake_send(request):
+            captured.update(json.loads(request.data.decode("utf-8")))
+            return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": []}}]}
+
+        provider._send = fake_send
+        result = provider.chat_with_tools([{"role": "user", "content": "test"}], [])
+        self.assertEqual(result["role"], "assistant")
+        self.assertEqual(captured["tool_choice"], "auto")
+        self.assertNotIn("response_format", captured)
+
+
+class FakeSearchProvider:
+    def search(self, query, max_results):
+        return [{"title": "权威资料", "url": "https://example.com/report", "snippet": "检测条件说明"}]
+
+
+class MockFlashProvider:
+    api_key = "mock-only"
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat_with_tools(self, messages, tools, tool_choice="auto"):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call-search", "type": "function", "function": {"name": "web_search", "arguments": '{"query":"甲醛 检测条件"}'}}],
+            }
+        if self.calls == 2:
+            return {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call-read", "type": "function", "function": {"name": "extract_url", "arguments": '{"url":"https://example.com/report"}'}}],
+            }
+        return {
+            "role": "assistant",
+            "content": json.dumps({
+                "status": "complete",
+                "summary": "检测结果必须结合条件理解",
+                "findings": [{"claim": "需看检测条件", "source_urls": ["https://example.com/report"], "confidence": "high"}],
+                "content_patterns": ["主张→条件→建议"],
+                "evidence_gaps": [],
+                "sources": [{"url": "https://example.com/report", "title": "权威资料"}],
+            }, ensure_ascii=False),
+        }
+
+    @staticmethod
+    def parse_json_content(content):
+        return json.loads(content)
+
+
+class WebAgentTests(unittest.TestCase):
+    @staticmethod
+    def fake_extract(url, output_dir):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "status": "complete",
+            "source": {"final_url": url, "title": "权威资料"},
+            "content": {"text": "检测结果应结合剂量、空间、时间与方法。", "text_chars": 22},
+            "attempts": [{"route": "fake", "status": "complete"}],
+            "warnings": [],
+        }
+
+    def test_flash_plans_but_registered_tools_do_the_work(self):
+        with tempfile.TemporaryDirectory() as folder:
+            registry = TrustedWebToolRegistry(
+                Path(folder),
+                search_provider=FakeSearchProvider(),
+                extractor=self.fake_extract,
+            )
+            provider = MockFlashProvider()
+            result = WebResearchAgent(provider, registry).run("检测条件", "新房家庭")
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(provider.calls, 3)
+            self.assertEqual([item["tool"] for item in result["tool_trace"]], ["web_search", "extract_url"])
+            self.assertTrue(result["tool_trace"][1]["result"]["ok"])
+
+    def test_model_invented_url_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            registry = TrustedWebToolRegistry(Path(folder), search_provider=FakeSearchProvider(), extractor=self.fake_extract)
+            result = registry.execute("extract_url", {"url": "https://invented.example/claim"})
+            self.assertFalse(result["ok"])
+            self.assertIn("拒绝访问", result["error"])
+
+    def test_off_topic_search_is_reanchored_to_the_selected_topic(self):
+        with tempfile.TemporaryDirectory() as folder:
+            registry = TrustedWebToolRegistry(Path(folder), search_provider=FakeSearchProvider(), extractor=self.fake_extract)
+            registry.set_topic("99%除醛率为什么必须看检测条件？")
+            result = registry.execute("web_search", {"query": "99%的人不知道 爆款选题"})
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["query_reanchored"])
+            self.assertIn("除醛", result["query"])
+
+    def test_research_is_included_in_insight(self):
+        research = {"status": "complete", "findings": [{"claim": "示例"}]}
+        insight = ProductionRunner._build_insight({"topic": "测试", "audience": "家庭", "pattern_card_ids": []}, research)
+        self.assertEqual(insight["web_research"], research)
+
+    def test_global_research_switch_overrides_job_default(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runner = ProductionRunner(provider=MockFlashProvider(), research_config={"enabled": False})
+            result = runner._run_research(Path(folder), {"topic": "测试", "audience": "家庭", "enable_web_research": True})
+            self.assertEqual(result["status"], "disabled")
+
 
 class OrchestratorTests(unittest.TestCase):
     def test_job_lifecycle_stops_at_adapter_boundary(self):
@@ -130,6 +245,17 @@ class ProductionTests(unittest.TestCase):
         result = review_script(DEFAULT_SCRIPT + "本产品绝对安全并且彻底去除甲醛。")
         self.assertTrue(result["blocked"])
         self.assertTrue(any(item["type"] == "banned_phrase" for item in result["warnings"]))
+
+    def test_unsupported_measurement_is_blocked_even_with_six_conditions(self):
+        script = DEFAULT_SCRIPT + "实验舱体积是1.5立方米。"
+        result = review_script(script)
+        self.assertTrue(result["blocked"])
+        self.assertTrue(any(item["type"] == "unsupported_measurement" for item in result["warnings"]))
+
+    def test_unsupported_industry_generalization_is_blocked(self):
+        result = review_script(DEFAULT_SCRIPT + "商家常拿极限实验数据宣传。")
+        self.assertTrue(result["blocked"])
+        self.assertTrue(any(item["type"] == "unsupported_generalization" for item in result["warnings"]))
 
     def test_motion_director_builds_non_static_plan_and_project(self):
         segments = [

@@ -20,7 +20,7 @@
 - 成片：**46.1秒 / 1080×1920 / H.264 + AAC**
 - 画面：**7段连续MG动画 / 30fps / 环形数字、放大镜、液位、时钟波形、报告扫描、空间对照、条件汇聚**
 - 脚本：一次生成4稿，内部代理测试2/4进入可用候选
-- 测试：12项单元测试和浏览器烟雾测试通过
+- 测试：29项单元测试、真实DeepSeek Tool Calls和控制台烟雾测试通过
 - 付费API：本次验证0次，完整离线降级仍可运行
 
 > 2/4是内部原型指标，不冒充企业运营采用率；具体产品功效必须由品牌检测材料支持。
@@ -31,6 +31,7 @@
 - [可复现动画工程（HyperFrames + GSAP）](video-compositions/formaldehyde-conditions/)
 - [Agent动态视频导演Skill](agent-skills/produce-dynamic-health-video/)
 - [Agent联网与平台内容提取Skill](agent-skills/extract-web-platform-content/)
+- [真实DeepSeek端到端验证记录](docs/REAL_E2E_VALIDATION.md)
 - [第二选题复现工程：气味小就代表甲醛少吗？](video-compositions/forward-test-smell-vs-formaldehyde/)
 - [控制台演示](media/console-demo.mp4)
 - [8页初赛方案PDF](docs/competition-proposal.pdf)
@@ -40,11 +41,26 @@
 
 ![样片关键帧](docs/assets/sample-frame.png)
 
-## 六阶段架构
+## Flash大脑 + 受信工具
+
+DeepSeek V4 Flash只负责理解目标、选择工具、整理证据和生成脚本，本身不假装具备搜索、下载、ASR、OCR或剪辑能力。联网调研由LangGraph维护状态，Flash通过[官方Tool Calls协议](https://api-docs.deepseek.com/guides/tool_calls/)选择两个受控工具：
+
+- `web_search`：DDGS免费搜索适配器，可替换成其他实现；
+- `extract_url`：调用项目内置网页/平台提取Skill，复杂页面会继续尝试Playwright或一站式音视频解析。
+
+只有用户输入或搜索工具返回的URL才能交给提取器，模型临时编造的地址会被拒绝。网页正文始终按不可信数据处理，不能借网页文字改变系统规则、执行命令或读取密钥。每个任务最多7次模型请求，其中联网调研最多5轮；无论模型是否完成，本地合规硬规则都会兜底，运行报告记录实际用量。真实DeepSeek Tool Calls和无Key降级路线均纳入测试。
+
+## 端到端架构
 
 ```mermaid
 flowchart LR
-    A["样片与范式卡"] --> B["内容洞察"]
+    A["用户选题"] --> F0["Flash调度"]
+    F0 --> T1["免费搜索工具"]
+    F0 --> T2["网页/平台提取Skill"]
+    T1 --> F0
+    T2 --> F0
+    F0 --> B["内容洞察"]
+    P["样片与范式卡"] --> B
     B --> C["四稿脚本"]
     C --> D["证据与合规预审"]
     D --> E["本地/云端配音"]
@@ -52,9 +68,10 @@ flowchart LR
     F --> G["人工精修与局部重跑"]
 ```
 
-每个任务都会留下九类可审计产物：
+每个任务都会留下十类可审计产物：
 
 ```text
+research.json
 insight.json
 script_variants.json
 approved_script.json
@@ -95,7 +112,8 @@ python -m venv .venv
 ### DeepSeek与本地工具
 
 - 不配置Key：使用确定性四稿和本地规则审核，仍能演示完整流程。
-- 配置DeepSeek：将Key放在环境变量 `DEEPSEEK_API_KEY`，不要写进代码。
+- 配置DeepSeek：将Key放在环境变量 `DEEPSEEK_API_KEY`，不要写进代码。Flash只做大脑，真实操作由登记工具完成。
+- 免费联网搜索：默认使用DDGS，无需搜索API Key；可通过实现`SearchProvider`迁移到其他免费或企业搜索后端。
 - FFmpeg不在PATH：设置 `FFMPEG_PATH` 和 `FFPROBE_PATH`。
 - 本地语音工作台：设置 `VOICE_WORKBENCH` 与 `VOICE_REFERENCE`；不可用时Windows会降级到SAPI。
 

@@ -16,6 +16,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
 from core.provider import ProviderError
+from core.web_agent import WebResearchAgent
+from core.web_tools import TrustedWebToolRegistry
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +32,12 @@ def _tool_path(env_name: str, command_name: str) -> Path:
     if configured:
         return Path(configured).expanduser()
     discovered = shutil.which(command_name)
-    return Path(discovered) if discovered else Path(command_name)
+    if discovered:
+        return Path(discovered)
+    bundled_media_tools = Path(r"F:\AI\GPT-SoVITS-0310-liuyue\ffmpeg\bin") / f"{command_name}.exe"
+    if bundled_media_tools.is_file():
+        return bundled_media_tools
+    return Path(command_name)
 
 
 def _tool_available(path: Path) -> bool:
@@ -54,6 +61,8 @@ DEFAULT_INPUT: dict[str, Any] = {
     "aspect_ratio": "9:16",
     "render_mode": "animated",
     "require_animation": False,
+    "enable_web_research": True,
+    "source_urls": [],
 }
 
 DEFAULT_SCRIPT = (
@@ -116,6 +125,10 @@ BANNED_PHRASES = [
     "百分百安全", "永久有效", "国家级", "最高级", "最佳",
 ]
 
+UNSUPPORTED_GENERALIZATIONS = [
+    "很多产品宣称", "好几罐", "远远超过国标", "商家常拿", "极限实验数据",
+]
+
 
 def atomic_json(path: Path, data: Any) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
@@ -133,7 +146,13 @@ def load_pattern_cards() -> list[dict[str, Any]]:
 
 def review_script(script: str) -> dict[str, Any]:
     hits = [phrase for phrase in BANNED_PHRASES if phrase in script]
+    generalizations = [phrase for phrase in UNSUPPORTED_GENERALIZATIONS if phrase in script]
     percentages = re.findall(r"\d+(?:\.\d+)?\s*%|百分之[零一二三四五六七八九十百]+", script)
+    measurements = re.findall(
+        r"\d+(?:\.\d+)?\s*(?:m[³3]|立方米|平方米|mg(?:/m[³3])?|毫克(?:每立方米)?|罐|倍|小时|分钟|年)",
+        script,
+        flags=re.IGNORECASE,
+    )
     conditions = [name for name in ("剂量", "空间", "作用时间", "初始浓度", "检测方法", "报告来源") if name in script]
     warnings: list[dict[str, Any]] = []
     if percentages:
@@ -142,6 +161,13 @@ def review_script(script: str) -> dict[str, Any]:
             "level": "review",
             "message": "出现百分比，但脚本将其作为待核查的广告主张而非产品承诺。",
             "matches": percentages,
+        })
+    if measurements:
+        warnings.append({
+            "type": "unsupported_measurement",
+            "level": "block",
+            "message": "通用科普稿包含无品牌证据支撑的具体测量数字。",
+            "matches": measurements,
         })
     if len(conditions) < 6:
         warnings.append({
@@ -152,6 +178,8 @@ def review_script(script: str) -> dict[str, Any]:
         })
     for phrase in hits:
         warnings.append({"type": "banned_phrase", "level": "block", "message": f"命中高风险表达：{phrase}"})
+    for phrase in generalizations:
+        warnings.append({"type": "unsupported_generalization", "level": "block", "message": f"命中无来源行业泛化：{phrase}"})
     blocked = any(item["level"] == "block" for item in warnings)
     return {
         "status": "blocked" if blocked else "human_review_required",
@@ -165,8 +193,9 @@ def review_script(script: str) -> dict[str, Any]:
 
 
 class ProductionRunner:
-    def __init__(self, provider: Any | None = None):
+    def __init__(self, provider: Any | None = None, research_config: dict[str, Any] | None = None):
         self.provider = provider
+        self.research_config = research_config or {}
 
     def run(self, folder: Path, production_input: dict[str, Any] | None = None) -> dict[str, Any]:
         started = time.monotonic()
@@ -175,35 +204,74 @@ class ProductionRunner:
         config = dict(DEFAULT_INPUT)
         config.update(production_input or {})
 
-        insight = self._build_insight(config)
+        research = self._run_research(folder, config)
+        atomic_json(folder / "research.json", research)
+        insight = self._build_insight(config, research)
         atomic_json(folder / "insight.json", insight)
 
-        variants, provider_report = self._generate_variants(config, insight)
+        research_calls = int(research.get("model_calls", 0))
+        call_budget = int(self.research_config.get("max_provider_calls_per_job", 7))
+        variants, provider_report = self._generate_variants(config, insight, allow_provider=research_calls < call_budget)
+        provider_report["research_api_calls"] = research_calls
+        provider_report["api_call_budget"] = call_budget
+        provider_report["api_calls"] += provider_report["research_api_calls"]
+        provider_report["tool_calls"] = len(research.get("tool_trace", []))
         atomic_json(folder / "script_variants.json", {"variants": variants, "provider": provider_report})
 
         approved_path = folder / "approved_script.json"
         if approved_path.exists():
             approved = json.loads(approved_path.read_text(encoding="utf-8"))
         else:
-            approved = dict(variants[0])
-            approved.update({"approved_by": "demo_default", "approved_at": datetime.now().astimezone().isoformat(timespec="seconds")})
+            safe_candidates = [item for item in variants if not review_script(str(item.get("script", "")))["blocked"]]
+            approved = dict((safe_candidates or variants)[0])
+            approved.update({"approved_by": "local_compliance_prefilter", "approved_at": datetime.now().astimezone().isoformat(timespec="seconds")})
             atomic_json(approved_path, approved)
 
         review = review_script(str(approved["script"]))
-        if self.provider is not None and provider_report.get("api_calls", 0) == 1:
+        if review["blocked"] and self.provider is not None and provider_report.get("source") == "DeepSeek" and provider_report.get("api_calls", 0) < call_budget:
+            try:
+                original_script = str(approved["script"])
+                repair = self.provider.repair_content_script(original_script, review, insight)
+                provider_report["api_calls"] += 1
+                provider_report["repair_source"] = "DeepSeek"
+                repaired_script = str(repair.get("script", "")).strip()
+                if repaired_script:
+                    approved.update({"script": repaired_script, "approved_by": "DeepSeek_repair_then_local_rules", "original_blocked_script": original_script, "repair_changes": repair.get("changes", [])})
+                    atomic_json(approved_path, approved)
+                    review = review_script(repaired_script)
+                    review["repair"] = {"applied": True, "changes": repair.get("changes", [])}
+            except ProviderError as exc:
+                review["repair_error"] = str(exc)
+        elif self.provider is not None and provider_report.get("source") == "DeepSeek" and provider_report.get("api_calls", 0) < call_budget:
             try:
                 model_review = self.provider.review_content_script(approved["script"], review)
                 review["model_review"] = model_review
-                provider_report["api_calls"] = 2
+                provider_report["api_calls"] += 1
                 provider_report["review_source"] = "DeepSeek"
-                atomic_json(folder / "script_variants.json", {"variants": variants, "provider": provider_report})
             except ProviderError as exc:
                 review["model_review_error"] = str(exc)
+        if review["blocked"] and any(word in str(config.get("topic", "")) for word in ("甲醛", "除醛")):
+            unsafe_script = str(approved.get("script", ""))
+            approved.update({
+                "script": DEFAULT_SCRIPT,
+                "approved_by": "trusted_formaldehyde_safety_template",
+                "unsafe_candidate_preserved": unsafe_script,
+            })
+            atomic_json(approved_path, approved)
+            previous_warnings = review.get("warnings", [])
+            review = review_script(DEFAULT_SCRIPT)
+            review["safety_fallback"] = {
+                "applied": True,
+                "reason": "Flash修订后仍命中本地阻断规则",
+                "previous_warnings": previous_warnings,
+            }
+        atomic_json(folder / "script_variants.json", {"variants": variants, "provider": provider_report})
         atomic_json(folder / "review.json", review)
         if review["blocked"]:
             raise RuntimeError("合规审核阻止成片：请修改 approved_script.json 后重试")
 
         voice_report = self._synthesize_voice(folder, approved["script"], config)
+        voice_report.update(self._normalize_voice_duration(folder, float(config.get("target_duration_seconds", 52))))
         segments = self._segments(config, str(approved["script"]))
         duration = self._audio_duration(folder / "voice.wav")
         captions = self._write_captions(folder, segments, duration)
@@ -240,15 +308,33 @@ class ProductionRunner:
                 "definition": "未命中阻断项且结构完整；尚未经过企业运营团队验证",
             },
             "artifacts": [
-                "insight.json", "script_variants.json", "approved_script.json", "review.json",
+                "research.json", "insight.json", "script_variants.json", "approved_script.json", "review.json",
                 "voice.wav", "captions.srt", "motion_plan.json", "final.mp4", "run_report.json",
             ],
         }
         atomic_json(folder / "run_report.json", report)
         return report
 
+    def _run_research(self, folder: Path, config: dict[str, Any]) -> dict[str, Any]:
+        enabled = bool(self.research_config.get("enabled", True)) and bool(config.get("enable_web_research", True))
+        if not enabled:
+            return {"status": "disabled", "summary": "本任务未启用联网调研", "findings": [], "content_patterns": [], "evidence_gaps": [], "sources": [], "tool_trace": [], "model_calls": 0}
+        if self.provider is None or not getattr(self.provider, "api_key", ""):
+            return {"status": "offline", "summary": "未配置API Key，跳过Flash工具调度并使用本地范式", "findings": [], "content_patterns": [], "evidence_gaps": ["未运行联网调研"], "sources": [], "tool_trace": [], "model_calls": 0}
+        try:
+            source_urls = [str(value) for value in config.get("source_urls", []) if str(value).strip()]
+            registry = TrustedWebToolRegistry(folder / "research", self.research_config, seed_urls=source_urls)
+            agent = WebResearchAgent(
+                self.provider,
+                registry,
+                max_model_turns=int(self.research_config.get("max_model_turns", 5)),
+            )
+            return agent.run(str(config["topic"]), str(config["audience"]), source_urls)
+        except Exception as exc:
+            return {"status": "failed", "summary": "联网调研失败，已降级到本地范式", "findings": [], "content_patterns": [], "evidence_gaps": [str(exc)], "sources": [], "tool_trace": [], "model_calls": 0}
+
     @staticmethod
-    def _build_insight(config: dict[str, Any]) -> dict[str, Any]:
+    def _build_insight(config: dict[str, Any], research: dict[str, Any] | None = None) -> dict[str, Any]:
         ids = {str(value) for value in config.get("pattern_card_ids", [])}
         selected = [card for card in load_pattern_cards() if str(card.get("item_id")) in ids]
         return {
@@ -262,11 +348,14 @@ class ProductionRunner:
                 {"name": "GB/T 18883-2022 室内空气质量标准", "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436"},
                 {"name": "中华人民共和国广告法", "url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html"},
             ],
+            "web_research": research or {},
         }
 
-    def _generate_variants(self, config: dict[str, Any], insight: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def _generate_variants(self, config: dict[str, Any], insight: dict[str, Any], *, allow_provider: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         report: dict[str, Any] = {"source": "local_deterministic", "api_calls": 0, "fallback_used": False}
-        if self.provider is None or not getattr(self.provider, "api_key", ""):
+        if self.provider is None or not getattr(self.provider, "api_key", "") or not allow_provider:
+            if not allow_provider:
+                report.update({"fallback_used": True, "fallback_reason": "联网调研已用完本任务API调用预算"})
             return [dict(item) for item in LOCAL_VARIANTS], report
         try:
             variants = self.provider.generate_content_scripts(config, insight)
@@ -296,7 +385,7 @@ class ProductionRunner:
         try:
             if not VOICE_WORKBENCH.exists() or not VOICE_REFERENCE.exists():
                 raise FileNotFoundError("Local Voice Workbench或参考音频不存在")
-            result = subprocess.run(command, capture_output=True, text=True, timeout=1800, check=True)
+            result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800, check=True)
             log_path.write_text((result.stdout or "") + "\n" + (result.stderr or ""), encoding="utf-8")
             merged = voice_dir / "merged.wav"
             if not merged.exists():
@@ -311,7 +400,7 @@ class ProductionRunner:
                 "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(fallback),
                 "-TextFile", str(text_path), "-OutputFile", str(folder / "voice.wav"),
             ]
-            result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=True)
+            result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, check=True)
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write((result.stdout or "") + "\n" + (result.stderr or ""))
             return {"engine": "windows_sapi", "fallback": True, "fallback_reason": str(exc)}
@@ -334,6 +423,36 @@ class ProductionRunner:
     def _audio_duration(path: Path) -> float:
         command = [str(FFPROBE), "-v", "error", "-show_entries", "format=duration", "-of", "default=nk=1:nw=1", str(path)]
         return float(subprocess.check_output(command, text=True).strip())
+
+    @classmethod
+    def _normalize_voice_duration(cls, folder: Path, target_seconds: float) -> dict[str, Any]:
+        voice = folder / "voice.wav"
+        duration = cls._audio_duration(voice)
+        if duration <= 59.0:
+            return {"duration_seconds": round(duration, 3), "tempo_adjusted": False}
+        if not _tool_available(FFMPEG):
+            raise FileNotFoundError("配音超过60秒且未找到FFmpeg，无法按目标时长调整")
+        desired = min(58.0, max(45.0, target_seconds))
+        tempo = duration / desired
+        if tempo > 2.0:
+            raise RuntimeError(f"配音时长{duration:.2f}秒，无法在不严重失真的情况下压缩到{desired:.2f}秒")
+        original = folder / "voice.original.wav"
+        if not original.exists():
+            shutil.copy2(voice, original)
+        adjusted = folder / "voice.adjusted.wav"
+        command = [str(FFMPEG), "-y", "-i", str(original), "-filter:a", f"atempo={tempo:.6f}", str(adjusted)]
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        if result.returncode or not adjusted.is_file():
+            raise RuntimeError(f"配音时长调整失败: {(result.stderr or result.stdout or '')[-1000:]}")
+        adjusted.replace(voice)
+        final_duration = cls._audio_duration(voice)
+        return {
+            "duration_seconds": round(final_duration, 3),
+            "tempo_adjusted": True,
+            "original_duration_seconds": round(duration, 3),
+            "tempo_factor": round(tempo, 4),
+            "original_file": str(original),
+        }
 
     @staticmethod
     def _srt_time(seconds: float) -> str:
@@ -369,10 +488,10 @@ class ProductionRunner:
 
         concat_lines: list[str] = []
         for index, caption in enumerate(captions, start=1):
-            card = (cards_dir / f"scene_{index:02d}.png").as_posix()
+            card = (cards_dir / f"scene_{index:02d}.png").resolve().as_posix()
             concat_lines.append(f"file '{card}'")
             concat_lines.append(f"duration {max(0.04, caption['end'] - caption['start']):.3f}")
-        concat_lines.append(f"file '{(cards_dir / f'scene_{len(segments):02d}.png').as_posix()}'")
+        concat_lines.append(f"file '{(cards_dir / f'scene_{len(segments):02d}.png').resolve().as_posix()}'")
         concat_path = folder / "video_concat.txt"
         concat_path.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
 
@@ -383,8 +502,10 @@ class ProductionRunner:
             "-c:v", "libx264", "-preset", "medium", "-crf", "20",
             "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(output),
         ]
-        result = subprocess.run(command, capture_output=True, text=True, timeout=900, check=True)
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
         (folder / "render.log").write_text((result.stdout or "") + "\n" + (result.stderr or ""), encoding="utf-8")
+        if result.returncode:
+            raise RuntimeError(f"FFmpeg合成失败: {(result.stderr or result.stdout or '')[-1200:]}")
         probe_command = [str(FFPROBE), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(output)]
         probe = json.loads(subprocess.check_output(probe_command, text=True, encoding="utf-8"))
         video_stream = next(stream for stream in probe["streams"] if stream.get("codec_type") == "video")
@@ -418,16 +539,20 @@ class ProductionRunner:
 
         check = subprocess.run(
             [npm, "run", "check"], cwd=project_dir, env=env,
-            capture_output=True, text=True, timeout=300, check=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
         )
         (folder / "animation_check.log").write_text((check.stdout or "") + "\n" + (check.stderr or ""), encoding="utf-8")
+        if check.returncode:
+            raise RuntimeError(f"动画工程检查失败: {(check.stderr or check.stdout or '')[-1200:]}")
         output = project_dir / "renders" / "final.mp4"
         quality = str(config.get("animation_quality", "standard"))
         render = subprocess.run(
             [npm, "run", "render", "--", "--output", "renders/final.mp4", "--quality", quality, "--workers", "2", "--strict"],
-            cwd=project_dir, env=env, capture_output=True, text=True, timeout=1800, check=True,
+            cwd=project_dir, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800,
         )
         (folder / "animation_render.log").write_text((render.stdout or "") + "\n" + (render.stderr or ""), encoding="utf-8")
+        if render.returncode:
+            raise RuntimeError(f"动画渲染失败: {(render.stderr or render.stdout or '')[-1200:]}")
         if not output.exists():
             raise RuntimeError("HyperFrames命令完成但没有生成final.mp4")
         shutil.copy2(output, folder / "final.mp4")

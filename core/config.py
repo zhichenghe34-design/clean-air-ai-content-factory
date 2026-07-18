@@ -18,6 +18,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "reasoning_effort": "high",
         "timeout_seconds": 90,
     },
+    "research": {
+        "enabled": True,
+        "search_provider": "ddgs",
+        "max_search_calls": 3,
+        "max_results_per_search": 5,
+        "max_pages": 5,
+        "max_model_turns": 5,
+        "max_provider_calls_per_job": 7,
+        "max_chars_per_page": 6000,
+        "media_parser_root": "D:\\wen zi you xi\\一站式音视频解析",
+    },
     "discovery": {
         "roots": [
             "D:\\wen zi you xi\\一站式音视频解析",
@@ -76,7 +87,7 @@ class ConfigStore:
 
     def save(self, incoming: dict[str, Any]) -> dict[str, Any]:
         current = self.load()
-        safe = {k: v for k, v in incoming.items() if k in {"provider", "discovery", "security", "storage"}}
+        safe = {k: v for k, v in incoming.items() if k in {"provider", "research", "discovery", "security", "storage"}}
         provider = safe.get("provider", {})
         api_key = str(provider.pop("api_key", "") or "").strip()
         persist = bool(provider.pop("persist_api_key", False))
