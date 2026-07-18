@@ -176,7 +176,7 @@ class JobStore:
         self._write(folder / "approved_script.json", payload)
         job["status"] = "approved"
         job["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-        job["artifacts"] = [name for name in job.get("artifacts", []) if name not in {"voice.wav", "captions.srt", "final.mp4", "run_report.json"}]
+        job["artifacts"] = [name for name in job.get("artifacts", []) if name not in {"voice.wav", "captions.srt", "motion_plan.json", "final.mp4", "run_report.json"}]
         self._write(folder / "job.json", job)
         self._event(folder, "script_updated", {"character_count": len(value)})
         return job

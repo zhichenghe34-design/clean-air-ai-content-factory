@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1080, height=1920" />
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+    @font-face { font-family: "Microsoft YaHei UI"; src: local("Microsoft YaHei UI"); }
+    @font-face { font-family: "Microsoft YaHei"; src: local("Microsoft YaHei"); }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; background: #071713; }
+    body { color: #F1EFE7; font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; }
+    #root { position: relative; width: 1080px; height: 1920px; overflow: hidden; background: #071713; }
+    .ambient { position: absolute; inset: 0; overflow: hidden; background: #071713; }
+    .grid { position: absolute; inset: -180px; opacity: .2; background-image: linear-gradient(rgba(200,227,91,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(200,227,91,.06) 1px, transparent 1px); background-size: 72px 72px; transform: perspective(900px) rotateX(58deg) translateY(700px) scale(1.9); }
+    .orb { position: absolute; border-radius: 50%; filter: blur(2px); }
+    .orb.a { width: 650px; height: 650px; left: -270px; top: 30px; background: radial-gradient(circle, rgba(31,90,70,.9), transparent 68%); }
+    .orb.b { width: 560px; height: 560px; right: -230px; bottom: 80px; background: radial-gradient(circle, rgba(200,227,91,.17), transparent 68%); }
+    .scene { position: absolute; inset: 0; visibility: hidden; opacity: 0; }
+    .content { position: absolute; inset: 0; padding: 118px 78px 270px; display: flex; flex-direction: column; }
+    .top { display: flex; justify-content: space-between; align-items: center; font-size: 24px; letter-spacing: .12em; color: #C8E35B; }
+    .brand { position: absolute; left: 64px; top: 48px; z-index: 30; display: flex; gap: 14px; align-items: center; color: #B8CFC5; font-size: 22px; }
+    .brand i { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; background: #C8E35B; color: #071713; font-style: normal; font-weight: 900; }
+    .kicker { margin-top: 105px; color: #C8E35B; font-size: 31px; font-weight: 800; }
+    h1 { margin: 28px 0 0; max-width: 920px; font-size: 82px; line-height: 1.12; letter-spacing: -.045em; }
+    .visual { position: relative; flex: 1; min-height: 740px; margin-top: 48px; display: grid; place-items: center; }
+    .caption { position: absolute; left: 70px; right: 70px; bottom: 88px; z-index: 24; min-height: 102px; padding: 22px 34px; display: grid; place-items: center; border: 1px solid rgba(200,227,91,.42); border-radius: 26px; background: rgba(3,15,12,.93); text-align: center; font-size: 36px; line-height: 1.42; font-weight: 800; }
+    .wipe { position: absolute; inset: -60px; z-index: 50; background: #C8E35B; }
+
+    .ring { width: 470px; height: 470px; border: 14px solid #C8E35B; border-radius: 50%; display: grid; place-items: center; box-shadow: 0 0 90px rgba(200,227,91,.18); }
+    .ring span { width: 365px; text-align: center; font-size: 58px; line-height: 1.08; font-weight: 900; }
+    .evidence { width: 790px; height: 560px; padding: 76px 70px; border-radius: 28px; background: #F1EFE7; transform: rotate(-1.5deg); }
+    .evidence b { color: #164B3D; font-size: 64px; }
+    .line { height: 16px; margin-top: 32px; border-radius: 8px; background: #B7B9AE; transform-origin: left; }
+    .line.short { width: 62%; } .line.risk { width: 86%; background: #DF744F; }
+    .lens { position: absolute; width: 230px; height: 230px; right: 80px; bottom: 110px; border: 12px solid #C8E35B; border-radius: 50%; background: rgba(200,227,91,.12); box-shadow: 0 0 0 18px rgba(7,23,19,.18); }
+    .lens::after { content: ""; position: absolute; width: 125px; height: 18px; right: -93px; bottom: -48px; border-radius: 9px; background: #C8E35B; transform: rotate(48deg); }
+    .dose-layout { width: 820px; display: grid; grid-template-columns: 1fr 1.4fr; gap: 80px; align-items: end; }
+    .bottle { width: 220px; height: 430px; position: relative; overflow: hidden; border: 10px solid #F1EFE7; border-radius: 80px 80px 60px 60px; }
+    .liquid { position: absolute; left: 12px; right: 12px; bottom: 12px; height: 70%; border-radius: 0 0 44px 44px; background: #C8E35B; transform: scaleY(0); transform-origin: bottom; }
+    .chamber { height: 480px; border: 4px solid #C8E35B; position: relative; box-shadow: inset 0 0 0 34px rgba(31,90,70,.22); }
+    .chamber::after { content: "空间体积"; position: absolute; left: 34px; bottom: 32px; color: #C8E35B; font-size: 30px; font-weight: 800; }
+    .time-layout { width: 820px; display: grid; grid-template-columns: 300px 1fr; gap: 70px; align-items: center; }
+    .clock { width: 300px; height: 300px; border: 10px solid #C8E35B; border-radius: 50%; position: relative; }
+    .hand { position: absolute; width: 12px; height: 112px; left: 139px; top: 42px; border-radius: 6px; background: #DF744F; transform-origin: 50% 108px; }
+    .wave { height: 260px; display: flex; gap: 13px; align-items: center; }
+    .wave i { width: 20px; height: 90px; border-radius: 10px; background: #C8E35B; transform-origin: center; }
+    .report { width: 780px; min-height: 700px; padding: 64px; position: relative; overflow: hidden; background: #F1EFE7; color: #09261F; box-shadow: 0 30px 90px rgba(0,0,0,.35); }
+    .report h2 { margin: 0 0 40px; font-size: 58px; }
+    .row { display: flex; justify-content: space-between; padding: 30px 0; border-top: 2px solid #B8B9AF; font-size: 29px; }
+    .scan { position: absolute; left: 0; right: 0; top: -20px; height: 16px; background: #C8E35B; box-shadow: 0 0 35px #C8E35B; }
+    .compare { width: 850px; display: grid; grid-template-columns: 1fr 90px 1fr; gap: 25px; align-items: center; }
+    .panel { height: 540px; padding: 40px 30px; border: 3px solid #1F5A46; display: grid; place-items: center; text-align: center; font-size: 38px; font-weight: 900; }
+    .panel.home { border-color: #DF744F; }
+    .neq { color: #DF744F; font-size: 92px; font-weight: 900; text-align: center; }
+    .orbit { width: 790px; height: 690px; position: relative; }
+    .core { position: absolute; width: 310px; height: 310px; left: 240px; top: 190px; display: grid; place-items: center; padding: 35px; border: 8px solid #C8E35B; border-radius: 50%; background: #071713; color: #C8E35B; text-align: center; font-size: 46px; line-height: 1.15; font-weight: 900; }
+    .chip { position: absolute; min-width: 210px; padding: 24px 26px; border: 2px solid #C8E35B; background: #194D3E; text-align: center; font-size: 28px; font-weight: 800; }
+    .chip.c1 { left: 0; top: 40px; } .chip.c2 { right: 0; top: 40px; } .chip.c3 { left: -15px; top: 305px; } .chip.c4 { right: -15px; top: 305px; } .chip.c5 { left: 95px; bottom: 5px; } .chip.c6 { right: 95px; bottom: 5px; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="clean-air-motion-output" data-start="0" data-duration="__DURATION__" data-width="1080" data-height="1920" data-fps="30">
+    <div class="ambient" data-layout-ignore><div class="grid"></div><div class="orb a"></div><div class="orb b"></div></div>
+    <div class="brand" data-layout-allow-occlusion><i>时</i><span>净界AI内容工厂</span></div>
+    <div id="scenes"></div>
+    <div id="wipe" class="wipe" data-layout-allow-occlusion></div>
+    __AUDIO_ELEMENT__
+  </div>
+  <script>
+    const plan = __MOTION_PLAN_JSON__;
+    const scenesRoot = document.querySelector("#scenes");
+    const esc = (value) => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    function visualMarkup(type, title) {
+      if (type === "stat-ring") return `<div class="ring"><span>${esc(title)}</span></div>`;
+      if (type === "magnifier") return `<div class="evidence"><b>证据条件</b><div class="line"></div><div class="line short"></div><div class="line risk"></div><div class="line"></div></div><div class="lens"></div>`;
+      if (type === "liquid-chamber") return `<div class="dose-layout"><div class="bottle"><div class="liquid"></div></div><div class="chamber"></div></div>`;
+      if (type === "clock-wave") return `<div class="time-layout"><div class="clock"><div class="hand"></div></div><div class="wave">${Array.from({length:16},(_,i)=>`<i style="height:${55+(i%5)*34}px"></i>`).join("")}</div></div>`;
+      if (type === "report-scan") return `<div class="report"><h2>检测报告</h2><div class="row"><span>检测方法</span><b>METHOD</b></div><div class="row"><span>测试条件</span><b>CONDITION</b></div><div class="row"><span>报告来源</span><b>SOURCE</b></div><div class="row"><span>适用边界</span><b>SCOPE</b></div><div class="scan" data-layout-allow-overflow data-layout-allow-occlusion></div></div>`;
+      if (type === "compare") return `<div class="compare"><div class="panel">实验条件</div><div class="neq">≠</div><div class="panel home">真实家庭</div></div>`;
+      return `<div class="orbit"><div class="core">${esc(title)}</div>${["条件一","条件二","条件三","条件四","条件五","条件六"].map((x,i)=>`<div class="chip c${i+1}">${x}</div>`).join("")}</div>`;
+    }
+    plan.scenes.forEach((scene, idx) => {
+      const node = document.createElement("section");
+      node.className = `scene ${scene.visual_type}`;
+      node.id = scene.id;
+      node.setAttribute("data-layout-allow-overlap", "");
+      node.setAttribute("data-layout-allow-occlusion", "");
+      node.innerHTML = `<div class="content"><div class="top"><span>EVIDENCE IN MOTION</span><span>${String(idx+1).padStart(2,"0")} / ${String(plan.scenes.length).padStart(2,"0")}</span></div><div class="kicker">${esc(scene.kicker)}</div><h1>${esc(scene.title)}</h1><div class="visual">${visualMarkup(scene.visual_type, scene.title)}</div></div><div class="caption">${esc(scene.caption)}</div>`;
+      scenesRoot.appendChild(node);
+    });
+
+    gsap.defaults({ ease: "power3.out" });
+    const tl = gsap.timeline({ paused: true });
+    window.__timelines = window.__timelines || {};
+    window.__timelines["clean-air-motion-output"] = tl;
+    const allScenes = plan.scenes.map(s => `#${s.id}`);
+    tl.set(allScenes, { opacity: 0, visibility: "hidden" }, 0);
+    tl.set("#wipe", { xPercent: -115 }, 0);
+
+    function animateScene(scene, index) {
+      const root = `#${scene.id}`;
+      const start = Number(scene.start);
+      const entrance = Math.max(0, start - Number(scene.entrance_lead_seconds || 0));
+      tl.set(root, { opacity: 1, visibility: "visible" }, entrance);
+      tl.from(`${root} .top`, { y: -36, opacity: 0, duration: .42 }, entrance);
+      tl.from(`${root} .kicker`, { x: -65, opacity: 0, duration: .48 }, entrance + .05);
+      tl.from(`${root} h1`, { y: 70, opacity: 0, duration: .62 }, entrance + .1);
+      tl.from(`${root} .caption`, { y: 35, opacity: 0, duration: .45 }, start + .16);
+      const type = scene.visual_type;
+      if (type === "stat-ring") { tl.from(`${root} .ring`, { scale: .35, rotation: -18, opacity: 0, duration: .82, ease: "back.out(1.45)" }, start + .28); tl.to(`${root} .ring`, { scale: 1.06, duration: 1.1, repeat: 3, yoyo: true, ease: "sine.inOut" }, start + 1.2); }
+      if (type === "magnifier") { tl.from(`${root} .evidence`, { y: 140, rotation: 4, opacity: 0, duration: .75 }, start + .3); tl.from(`${root} .line`, { scaleX: 0, stagger: .11, duration: .38 }, start + .65); tl.from(`${root} .lens`, { scale: .2, opacity: 0, duration: .55, ease: "back.out(1.5)" }, start + .85); tl.to(`${root} .lens`, { x: -420, y: -210, duration: 2.3, repeat: 1, yoyo: true, ease: "sine.inOut" }, start + 1.35); }
+      if (type === "liquid-chamber") { tl.from(`${root} .bottle`, { y: 120, opacity: 0, duration: .7 }, start + .35); tl.to(`${root} .liquid`, { scaleY: 1, duration: 1.35, ease: "power2.inOut" }, start + .8); tl.from(`${root} .chamber`, { scaleX: .2, transformOrigin: "right", opacity: 0, duration: .8 }, start + .55); tl.to(`${root} .chamber`, { scale: 1.06, duration: 1.2, repeat: 2, yoyo: true, ease: "sine.inOut" }, start + 1.7); }
+      if (type === "clock-wave") { tl.from(`${root} .clock`, { scale: .3, rotation: -50, opacity: 0, duration: .78, ease: "back.out(1.5)" }, start + .35); tl.to(`${root} .hand`, { rotation: 310, duration: Math.max(2, scene.end-scene.start-1), ease: "power1.inOut" }, start + .7); tl.from(`${root} .wave i`, { scaleY: .1, opacity: 0, stagger: .05, duration: .35 }, start + .6); tl.to(`${root} .wave i:nth-child(3n+1)`, { scaleY: 2.2, repeat: 5, yoyo: true, duration: .55, ease: "sine.inOut" }, start + 1.3); }
+      if (type === "report-scan") { tl.from(`${root} .report`, { y: 150, rotationX: 15, opacity: 0, duration: .78 }, start + .35); tl.from(`${root} .row`, { x: -28, opacity: 0, stagger: .1, duration: .35 }, start + .75); tl.to(`${root} .scan`, { y: 760, duration: 1.8, repeat: 2, ease: "power1.inOut" }, start + 1.2); }
+      if (type === "compare") { tl.from(`${root} .panel:first-child`, { x: -170, opacity: 0, duration: .75 }, start + .35); tl.from(`${root} .panel.home`, { x: 170, opacity: 0, duration: .75 }, start + .48); tl.from(`${root} .neq`, { scale: 4, rotation: -20, opacity: 0, duration: .4 }, start + 1.0); tl.to(`${root} .neq`, { scale: 1.22, duration: .48, repeat: 6, yoyo: true, ease: "sine.inOut" }, start + 1.55); }
+      if (type === "orbit-summary") { tl.from(`${root} .core`, { scale: .2, rotation: -24, opacity: 0, duration: .8, ease: "back.out(1.5)" }, start + .35); tl.from(`${root} .chip`, { scale: .25, opacity: 0, stagger: .12, duration: .45 }, start + .65); tl.to(`${root} .core`, { boxShadow: "0 0 130px rgba(200,227,91,.5)", scale: 1.05, repeat: 4, yoyo: true, duration: 1.1, ease: "sine.inOut" }, start + 1.8); }
+      if (index < plan.scenes.length - 1) {
+        const transitionAt = Number(scene.end) - .34;
+        tl.set("#wipe", { xPercent: -115, backgroundColor: scene.transition === "orange-wipe" ? "#DF744F" : scene.transition === "green-wipe" ? "#1F5A46" : "#C8E35B" }, transitionAt - .01);
+        tl.to("#wipe", { xPercent: 0, duration: .28, ease: "power4.in" }, transitionAt);
+        tl.set(root, { opacity: 0, visibility: "hidden" }, transitionAt + .29);
+        tl.to("#wipe", { xPercent: 115, duration: .34, ease: "expo.out" }, transitionAt + .29);
+      }
+    }
+    plan.scenes.forEach(animateScene);
+    tl.to("#wipe", { xPercent: 115, duration: .01 }, Number(plan.duration_seconds) - .01);
+  </script>
+</body>
+</html>

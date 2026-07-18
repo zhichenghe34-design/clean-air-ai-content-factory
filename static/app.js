@@ -177,7 +177,7 @@ async function openJob(id) {
       const result = await fetch(`/api/jobs/${id}/artifacts/approved_script.json`).then(r => r.json()); script = result.script || "";
     }
     document.getElementById("approvedScriptInput").value = script;
-    const labels = {"insight.json":"洞察","script_variants.json":"4个脚本","approved_script.json":"采用脚本","review.json":"合规审核","voice.wav":"配音","captions.srt":"字幕","final.mp4":"成片","run_report.json":"运行报告"};
+    const labels = {"insight.json":"洞察","script_variants.json":"4个脚本","approved_script.json":"采用脚本","review.json":"合规审核","voice.wav":"配音","captions.srt":"字幕","motion_plan.json":"动态导演计划","final.mp4":"成片","run_report.json":"运行报告"};
     document.getElementById("artifactLinks").innerHTML = (job.artifacts || []).map(name => `<a href="/api/jobs/${id}/artifacts/${name}" target="_blank">${escapeHtml(labels[name] || name)}</a>`).join("");
     const video = document.getElementById("artifactVideo");
     if ((job.artifacts || []).includes("final.mp4")) { video.src = `/api/jobs/${id}/artifacts/final.mp4`; video.hidden = false; } else { video.hidden = true; video.removeAttribute("src"); }

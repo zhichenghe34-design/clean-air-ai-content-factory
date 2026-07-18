@@ -6,9 +6,11 @@ venv/
 .env
 runtime/
 *.log
+examples/**/voice.wav
 node_modules/
 video-compositions/**/renders/
 video-compositions/**/qc/
+video-compositions/**/snapshots/
 video-compositions/**/.hyperframes/
 video-compositions/**/AGENTS.md
 video-compositions/**/CLAUDE.md

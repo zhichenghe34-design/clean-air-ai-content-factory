@@ -7,6 +7,7 @@ from pathlib import Path
 from core.config import ConfigStore
 from core.catalog import CatalogError, PackageCatalog
 from core.discovery import ProjectDiscovery
+from core.motion_director import MotionPlanError, build_motion_plan, build_motion_project, derive_motion_segments, validate_motion_plan
 from core.orchestrator import JobStore, local_fallback_plan
 from core.provider import OpenAICompatibleProvider, ProviderError
 from core.production import DEFAULT_SCRIPT, review_script
@@ -129,6 +130,51 @@ class ProductionTests(unittest.TestCase):
         result = review_script(DEFAULT_SCRIPT + "本产品绝对安全并且彻底去除甲醛。")
         self.assertTrue(result["blocked"])
         self.assertTrue(any(item["type"] == "banned_phrase" for item in result["warnings"]))
+
+    def test_motion_director_builds_non_static_plan_and_project(self):
+        segments = [
+            {"kicker": f"要点{i}", "title": f"动态标题{i}", "caption": f"这是第{i}个可视化解释。"}
+            for i in range(1, 7)
+        ]
+        plan = build_motion_plan("怎样判断一份检测报告？", "新房家庭", segments, 48.0)
+        report = validate_motion_plan(plan)
+        self.assertTrue(report["no_static_only_scenes"])
+        self.assertGreaterEqual(report["visual_family_count"], 3)
+        self.assertEqual(plan["scenes"][-1]["visual_type"], "orbit-summary")
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "animation"
+            built = build_motion_project(output, plan)
+            self.assertFalse(built["has_audio"])
+            html = (output / "index.html").read_text(encoding="utf-8")
+            self.assertIn("怎样判断一份检测报告？", html)
+            self.assertNotIn("__MOTION_PLAN_JSON__", html)
+
+    def test_motion_director_rejects_static_or_unknown_visuals(self):
+        segments = [
+            {"kicker": f"要点{i}", "title": f"标题{i}", "caption": "简短字幕"}
+            for i in range(1, 5)
+        ]
+        plan = build_motion_plan("测试", "家庭", segments, 45.0)
+        plan["scenes"][1]["visual_type"] = "static-card"
+        with self.assertRaises(MotionPlanError):
+            validate_motion_plan(plan)
+
+    def test_motion_segments_follow_new_script_instead_of_demo_copy(self):
+        script = (
+            "新家具没有明显气味，不等于可以只靠鼻子判断。"
+            "气味可能来自多种挥发物，嗅觉只能提供线索。"
+            "温度、湿度和通风状态会影响体感。"
+            "短暂通风后的变化不能代表长期水平。"
+            "单件家具和整屋环境不能直接等同。"
+            "判断时要看检测方法和报告来源。"
+            "涉及入住决策时，应结合真实房屋情况。"
+        )
+        segments = derive_motion_segments("气味小就代表甲醛少吗？", script)
+        self.assertGreaterEqual(len(segments), 4)
+        joined = "".join(item["caption"] for item in segments)
+        self.assertIn("新家具", joined)
+        self.assertNotIn("除醛率 99", joined)
+        self.assertTrue(all(len(item["caption"]) <= 62 for item in segments))
 
 
 if __name__ == "__main__":

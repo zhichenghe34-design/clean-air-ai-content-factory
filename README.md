@@ -29,6 +29,8 @@
 
 - [首条动态测试成片](media/sample.mp4)
 - [可复现动画工程（HyperFrames + GSAP）](video-compositions/formaldehyde-conditions/)
+- [Agent动态视频导演Skill](agent-skills/produce-dynamic-health-video/)
+- [第二选题复现工程：气味小就代表甲醛少吗？](video-compositions/forward-test-smell-vs-formaldehyde/)
 - [控制台演示](media/console-demo.mp4)
 - [8页初赛方案PDF](docs/competition-proposal.pdf)
 - [结构化运行报告](examples/demo-output/run_report.json)
@@ -49,7 +51,7 @@ flowchart LR
     F --> G["人工精修与局部重跑"]
 ```
 
-每个任务都会留下八类可审计产物：
+每个任务都会留下九类可审计产物：
 
 ```text
 insight.json
@@ -58,9 +60,14 @@ approved_script.json
 review.json
 voice.wav
 captions.srt
+motion_plan.json
 final.mp4
 run_report.json
 ```
+
+### 动画如何量产
+
+`ProductionRunner` 默认先生成 `motion_plan.json`，再调用项目内受信模板生成HyperFrames工程。动态导演Skill把本次人工精修经验固化为约束：每场双层运动、至少三种视觉语法、转场遮罩离开前主体入场、字幕两行上限、结尾条件汇聚，并要求逐转场抽帧检查。HyperFrames不可用时才退回静态FFmpeg卡片，同时在运行报告中明确标记 `static_fallback`，不会把降级结果冒充动态成片。
 
 ## 快速开始
 
@@ -118,12 +125,13 @@ python -m unittest discover -s tests -v
 node --check static/app.js
 ```
 
-当前基线：12项单元测试全部通过；浏览器烟雾测试无控制台错误；首条成片包含正常视频流、音频流和字幕边车文件。
+当前基线：15项单元测试全部通过；浏览器烟雾测试无控制台错误；第二选题的自动生成动画工程通过HyperFrames运行时、布局、运动与44/44文字对比度检查。
 
 ## 项目结构
 
 ```text
 core/                 任务、Provider、生产适配器与安全目录
+agent-skills/         Agent可调用的动态视频导演Skill与受信模板
 static/               无框架可视化控制台
 catalog/              受信能力包目录
 examples/             范式卡与一次真实运行的结构化产物

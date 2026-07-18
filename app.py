@@ -272,7 +272,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if not job_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in job_id):
             self.send_error(HTTPStatus.BAD_REQUEST)
             return
-        allowed = {"insight.json", "script_variants.json", "approved_script.json", "review.json", "voice.wav", "captions.srt", "final.mp4", "run_report.json"}
+        allowed = {"insight.json", "script_variants.json", "approved_script.json", "review.json", "voice.wav", "captions.srt", "motion_plan.json", "final.mp4", "run_report.json"}
         if name not in allowed:
             self.send_error(HTTPStatus.FORBIDDEN)
             return

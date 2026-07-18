@@ -14,6 +14,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
 from core.provider import ProviderError
 
 
@@ -51,6 +52,8 @@ DEFAULT_INPUT: dict[str, Any] = {
     "pattern_card_ids": ["03", "06"],
     "voice_engine": "voxcpm2",
     "aspect_ratio": "9:16",
+    "render_mode": "animated",
+    "require_animation": False,
 }
 
 DEFAULT_SCRIPT = (
@@ -201,10 +204,24 @@ class ProductionRunner:
             raise RuntimeError("合规审核阻止成片：请修改 approved_script.json 后重试")
 
         voice_report = self._synthesize_voice(folder, approved["script"], config)
-        segments = self._segments()
+        segments = self._segments(config, str(approved["script"]))
         duration = self._audio_duration(folder / "voice.wav")
         captions = self._write_captions(folder, segments, duration)
-        render_report = self._render_video(folder, segments, captions, duration)
+        motion_plan = build_motion_plan(config["topic"], config["audience"], segments, duration)
+        atomic_json(folder / "motion_plan.json", motion_plan)
+        render_mode = str(config.get("render_mode", "animated"))
+        if render_mode == "animated":
+            try:
+                render_report = self._render_animated_video(folder, motion_plan, config)
+            except Exception as exc:
+                (folder / "animation_fallback.log").write_text(str(exc), encoding="utf-8")
+                if config.get("require_animation"):
+                    raise
+                render_report = self._render_video(folder, segments, captions, duration)
+                render_report.update({"mode": "static_fallback", "fallback_reason": str(exc)})
+        else:
+            render_report = self._render_video(folder, segments, captions, duration)
+            render_report["mode"] = "static_requested"
 
         elapsed = round(time.monotonic() - started, 2)
         report = {
@@ -224,7 +241,7 @@ class ProductionRunner:
             },
             "artifacts": [
                 "insight.json", "script_variants.json", "approved_script.json", "review.json",
-                "voice.wav", "captions.srt", "final.mp4", "run_report.json",
+                "voice.wav", "captions.srt", "motion_plan.json", "final.mp4", "run_report.json",
             ],
         }
         atomic_json(folder / "run_report.json", report)
@@ -300,15 +317,18 @@ class ProductionRunner:
             return {"engine": "windows_sapi", "fallback": True, "fallback_reason": str(exc)}
 
     @staticmethod
-    def _segments() -> list[dict[str, str]]:
-        return [
-            {"kicker": "别只看大字", "title": "除醛率 99%？", "caption": "真正决定这个数字能不能参考的，往往是旁边那行小字。"},
-            {"kicker": "条件 01-02", "title": "剂量 × 空间", "caption": "用了多少产品？测试舱有多大？"},
-            {"kicker": "条件 03-04", "title": "时间 × 浓度", "caption": "作用了多久？初始浓度是多少？"},
-            {"kicker": "条件 05-06", "title": "方法 × 来源", "caption": "怎样检测？报告来自哪里？"},
-            {"kicker": "现实场景", "title": "小舱 ≠ 整屋", "caption": "小空间、大剂量、长时间的结果，不能直接等同家庭整屋效果。"},
-            {"kicker": "判断原则", "title": "条件比数字更重要", "caption": "具体产品应回到自己的检测报告，并结合真实房屋情况判断。"},
-        ]
+    def _segments(config: dict[str, Any], script: str) -> list[dict[str, str]]:
+        provided = config.get("motion_scenes")
+        if isinstance(provided, list) and 4 <= len(provided) <= 8 and all(isinstance(item, dict) for item in provided):
+            return [
+                {
+                    "kicker": str(item.get("kicker") or f"要点 {index:02d}"),
+                    "title": str(item.get("title") or config["topic"]),
+                    "caption": str(item.get("caption") or ""),
+                }
+                for index, item in enumerate(provided, start=1)
+            ]
+        return derive_motion_segments(str(config["topic"]), script, target_count=7)
 
     @staticmethod
     def _audio_duration(path: Path) -> float:
@@ -384,6 +404,56 @@ class ProductionRunner:
             "height": video_stream.get("height"),
             "fps": video_stream.get("r_frame_rate"),
             "subtitle_mode": "burned_into_scene_cards_and_sidecar_srt",
+        }
+
+    def _render_animated_video(self, folder: Path, motion_plan: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+        if not npm:
+            raise FileNotFoundError("未找到npm，无法运行受信HyperFrames动画渲染器")
+        project_dir = folder / "animation_project"
+        build_report = build_motion_project(project_dir, motion_plan, folder / "voice.wav")
+        env = os.environ.copy()
+        if FFMPEG.exists():
+            env["PATH"] = str(FFMPEG.parent) + os.pathsep + env.get("PATH", "")
+
+        check = subprocess.run(
+            [npm, "run", "check"], cwd=project_dir, env=env,
+            capture_output=True, text=True, timeout=300, check=True,
+        )
+        (folder / "animation_check.log").write_text((check.stdout or "") + "\n" + (check.stderr or ""), encoding="utf-8")
+        output = project_dir / "renders" / "final.mp4"
+        quality = str(config.get("animation_quality", "standard"))
+        render = subprocess.run(
+            [npm, "run", "render", "--", "--output", "renders/final.mp4", "--quality", quality, "--workers", "2", "--strict"],
+            cwd=project_dir, env=env, capture_output=True, text=True, timeout=1800, check=True,
+        )
+        (folder / "animation_render.log").write_text((render.stdout or "") + "\n" + (render.stderr or ""), encoding="utf-8")
+        if not output.exists():
+            raise RuntimeError("HyperFrames命令完成但没有生成final.mp4")
+        shutil.copy2(output, folder / "final.mp4")
+
+        probe_command = [str(FFPROBE), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(folder / "final.mp4")]
+        probe = json.loads(subprocess.check_output(probe_command, text=True, encoding="utf-8"))
+        video_stream = next(stream for stream in probe["streams"] if stream.get("codec_type") == "video")
+        audio_stream = next(stream for stream in probe["streams"] if stream.get("codec_type") == "audio")
+        final_duration = float(probe["format"]["duration"])
+        if video_stream.get("width") != 1080 or video_stream.get("height") != 1920:
+            raise RuntimeError("动画成片分辨率不符合1080x1920")
+        if not (45 <= final_duration <= 60):
+            raise RuntimeError(f"动画成片时长{final_duration:.2f}秒，不在45-60秒范围内")
+        return {
+            "ok": True,
+            "mode": "animated_hyperframes",
+            "file": str(folder / "final.mp4"),
+            "project_dir": str(project_dir),
+            "duration_seconds": round(final_duration, 3),
+            "video_codec": video_stream.get("codec_name"),
+            "audio_codec": audio_stream.get("codec_name"),
+            "width": video_stream.get("width"),
+            "height": video_stream.get("height"),
+            "fps": video_stream.get("r_frame_rate"),
+            "motion_validation": build_report["validation"],
+            "subtitle_mode": "animated_caption_overlay_and_sidecar_srt",
         }
 
     @staticmethod

@@ -384,7 +384,7 @@
       "id": "hyperframes-bundled-capability",
       "name": "HyperFrames Bundled Capability",
       "category": "bundled_animation_capability",
-      "capabilities": ["mg_animation", "data_cards", "caption_overlays", "html_video"],
+      "capabilities": ["mg_animation", "data_cards", "caption_overlays", "html_video", "script_to_motion_plan", "trusted_animation_template", "motion_qa"],
       "license": "bundled_runtime_terms",
       "trust_status": "approved_when_provided_by_current_codex_runtime",
       "install_status": "not_a_public_auto_install_package",

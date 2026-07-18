@@ -1,0 +1,4 @@
+interface:
+  display_name: "¶¯Ì¬½¡¿µ¿ÆÆÕµ¼ÑÝ"
+  short_description: "Build reproducible animated health explainers"
+  default_prompt: "Use $produce-dynamic-health-video to turn an approved health script into a reproducible animated vertical video."

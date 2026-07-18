@@ -1,0 +1,128 @@
+{
+  "schema_version": "1.0",
+  "topic": "新家具味道小，就代表甲醛少吗？",
+  "audience": "新房装修与母婴家庭",
+  "duration_seconds": 51.543,
+  "format": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "aspect_ratio": "9:16"
+  },
+  "design_system": {
+    "background": "#071713",
+    "foreground": "#F1EFE7",
+    "accent": "#C8E35B",
+    "secondary": "#1F5A46",
+    "risk": "#DF744F",
+    "style": "evidence-led motion graphics, not slide cards"
+  },
+  "director_rules": [
+    "每个场景必须有主体运动和辅助运动",
+    "下一场主体在遮罩离场前开始入场，禁止转场后空场",
+    "同一条视频至少使用三种不同视觉语法",
+    "字幕最多两行，强调词作为不可拆分短语",
+    "结尾必须将分散条件汇聚为一个可执行判断原则",
+    "不把实验条件动画表现成具体产品功效证明"
+  ],
+  "scenes": [
+    {
+      "id": "scene-01",
+      "index": 1,
+      "start": 0.0,
+      "end": 7.748,
+      "kicker": "别让鼻子替代检测",
+      "title": "没味道 = 甲醛少？",
+      "caption": "家具气味来自多种挥发物，不能只靠嗅觉判断甲醛。",
+      "visual_type": "stat-ring",
+      "primary_motion": "数字计数与圆环描边",
+      "secondary_motion": "呼吸光晕",
+      "transition": "lime-wipe",
+      "entrance_lead_seconds": 0.22
+    },
+    {
+      "id": "scene-02",
+      "index": 2,
+      "start": 7.748,
+      "end": 14.486,
+      "kicker": "嗅觉有边界",
+      "title": "闻到的是什么？",
+      "caption": "甲醛在一些浓度下，未必能靠鼻子准确分辨。",
+      "visual_type": "magnifier",
+      "primary_motion": "放大镜沿证据字段扫描",
+      "secondary_motion": "小字逐行显现",
+      "transition": "green-wipe",
+      "entrance_lead_seconds": 0.22
+    },
+    {
+      "id": "scene-03",
+      "index": 3,
+      "start": 14.486,
+      "end": 20.887,
+      "kicker": "释放受环境影响",
+      "title": "温度 × 湿度 × 通风",
+      "caption": "短暂通风后的气味变化，不代表长期水平。",
+      "visual_type": "liquid-chamber",
+      "primary_motion": "液位上升与空间框展开",
+      "secondary_motion": "剂量/体积标签弹入",
+      "transition": "lime-wipe",
+      "entrance_lead_seconds": 0.22
+    },
+    {
+      "id": "scene-04",
+      "index": 4,
+      "start": 20.887,
+      "end": 27.624,
+      "kicker": "还要看时间过程",
+      "title": "瞬时感受 ≠ 持续状态",
+      "caption": "判断需要把采样时点和持续时间放回条件中。",
+      "visual_type": "clock-wave",
+      "primary_motion": "指针旋转与波形脉冲",
+      "secondary_motion": "时间标签滑入",
+      "transition": "green-wipe",
+      "entrance_lead_seconds": 0.22
+    },
+    {
+      "id": "scene-05",
+      "index": 5,
+      "start": 27.624,
+      "end": 35.036,
+      "kicker": "结论必须可追溯",
+      "title": "检测方法与报告来源",
+      "caption": "查看检测对象、采样条件、检测方法和报告来源。",
+      "visual_type": "report-scan",
+      "primary_motion": "报告面板升起与扫描线下移",
+      "secondary_motion": "字段逐行显现",
+      "transition": "green-wipe",
+      "entrance_lead_seconds": 0.22
+    },
+    {
+      "id": "scene-06",
+      "index": 6,
+      "start": 35.036,
+      "end": 42.11,
+      "kicker": "尺度不能混用",
+      "title": "单件家具 ≠ 整屋环境",
+      "caption": "空间体积、家具数量和真实房屋状态都要考虑。",
+      "visual_type": "compare",
+      "primary_motion": "左右场景对向入场",
+      "secondary_motion": "不等号脉冲",
+      "transition": "orange-wipe",
+      "entrance_lead_seconds": 0.22
+    },
+    {
+      "id": "scene-07",
+      "index": 7,
+      "start": 42.11,
+      "end": 51.543,
+      "kicker": "最终判断原则",
+      "title": "气味是线索，不是保证",
+      "caption": "保持通风；涉及入住决策时，再选择具备相应能力的机构检测。",
+      "visual_type": "orbit-summary",
+      "primary_motion": "要点围绕核心结论汇聚",
+      "secondary_motion": "核心光环呼吸",
+      "transition": "lime-wipe",
+      "entrance_lead_seconds": 0.22
+    }
+  ]
+}

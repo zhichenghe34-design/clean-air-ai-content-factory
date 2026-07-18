@@ -1,0 +1,9 @@
+{
+  "name": "clean-air-motion-output",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "npx --yes hyperframes@0.7.62 check",
+    "render": "npx --yes hyperframes@0.7.62 render"
+  }
+}

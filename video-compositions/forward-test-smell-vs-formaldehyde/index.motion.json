@@ -1,0 +1,43 @@
+{
+  "duration": 51.543,
+  "assertions": [
+    {
+      "kind": "appearsBy",
+      "selector": "#scene-01 h1",
+      "bySec": 0.8
+    },
+    {
+      "kind": "keepsMoving",
+      "withinSelector": "#scenes",
+      "maxStaticSec": 2.5
+    },
+    {
+      "kind": "staysInFrame",
+      "selector": "#scene-01 .caption"
+    },
+    {
+      "kind": "staysInFrame",
+      "selector": "#scene-02 .caption"
+    },
+    {
+      "kind": "staysInFrame",
+      "selector": "#scene-03 .caption"
+    },
+    {
+      "kind": "staysInFrame",
+      "selector": "#scene-04 .caption"
+    },
+    {
+      "kind": "staysInFrame",
+      "selector": "#scene-05 .caption"
+    },
+    {
+      "kind": "staysInFrame",
+      "selector": "#scene-06 .caption"
+    },
+    {
+      "kind": "staysInFrame",
+      "selector": "#scene-07 .caption"
+    }
+  ]
+}

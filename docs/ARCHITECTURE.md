@@ -19,12 +19,13 @@
   ├─ OpenAICompatibleProvider：/models 与 /chat/completions
   └─ Orchestrator：计划、审批、任务状态
 
-能力层（后续 Adapter）
+能力层（已接入受信生产Adapter，外部下载类Adapter仍待审批）
   ├─ 一站式音视频解析
   ├─ 品牌事实库与文本审核
   ├─ Wan/其他视频生成项目或视频API
   ├─ Local Voice Workbench
-  ├─ HyperFrames
+  ├─ 动态视频导演Skill：脚本→motion_plan.json
+  ├─ HyperFrames受信模板：motion_plan→可编辑动画工程
   ├─ FFmpeg/video-autopilot式自动成片
   └─ OpenReel/ChatCut人工精修
 ```
@@ -36,6 +37,19 @@
 - 外部工具：只识别、展示和写入计划，默认不执行。
 - API Key：默认仅内存保存；用户明确勾选才持久化。
 - 任务：每个任务拥有固定目录和事件日志，支持后续恢复。
+- 动画：默认走动态导演Skill与HyperFrames；不可用时可降级静态卡片，但运行报告必须标记降级原因。
+
+## 动画生产契约
+
+```text
+approved_script.json + review.json + voice.wav
+  → motion_plan.json（场景语义、双层运动、连续时间轴）
+  → animation_project/（受信HTML模板，不接受模型生成命令或下载地址）
+  → HyperFrames check（运行时/布局/运动/对比度）
+  → final.mp4
+```
+
+项目内Skill位于 `agent-skills/produce-dynamic-health-video/`。模板只接受已登记视觉类型，不让Agent任意注入脚本或从搜索结果安装代码。
 
 ## Adapter 契约（下一阶段）
 
@@ -57,4 +71,3 @@
 ```
 
 发现器不能自行生成并执行命令；只有人工审核过的 Adapter 才能进入执行层。
-
