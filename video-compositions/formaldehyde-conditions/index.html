@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      @font-face { font-family: "Microsoft YaHei UI"; src: local("Microsoft YaHei UI"); }
+      @font-face { font-family: "PingFang SC"; src: local("PingFang SC"); }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; background: #071713; }
+      body { color: #F1EFE7; font-family: "Microsoft YaHei UI", "PingFang SC", sans-serif; }
+      #root { position: relative; width: 1080px; height: 1920px; overflow: hidden; background-color: #071713; }
+
+      .ambient { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
+      .grid { position: absolute; inset: -120px; opacity: .22; background-image: linear-gradient(rgba(200,227,91,.08) 1px, rgba(7,23,19,0) 1px), linear-gradient(90deg, rgba(200,227,91,.06) 1px, rgba(7,23,19,0) 1px); background-size: 68px 68px; transform: perspective(900px) rotateX(58deg) translateY(650px) scale(1.8); transform-origin: center; }
+      .orb { position: absolute; border-radius: 50%; filter: blur(2px); }
+      .orb-a { width: 620px; height: 620px; left: -250px; top: 90px; background: radial-gradient(circle, rgba(31,90,70,.9), rgba(31,90,70,0)); }
+      .orb-b { width: 540px; height: 540px; right: -240px; bottom: 110px; background: radial-gradient(circle, rgba(200,227,91,.16), rgba(200,227,91,0)); }
+      .grain { position: absolute; inset: 0; opacity: .1; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.45'/%3E%3C/svg%3E"); mix-blend-mode: soft-light; }
+
+      .scene { position: absolute; inset: 0; opacity: 0; z-index: 2; }
+      .scene-content { width: 100%; height: 100%; padding: 118px 82px 260px; display: flex; flex-direction: column; gap: 34px; box-sizing: border-box; }
+      .scene-top { display: flex; justify-content: space-between; align-items: center; min-height: 48px; }
+      .eyebrow { color: #C8E35B; font-family: "JetBrains Mono", monospace; font-size: 26px; letter-spacing: .14em; font-variant-numeric: tabular-nums; }
+      .counter { color: #B8CFC5; font-family: "JetBrains Mono", monospace; font-size: 23px; font-variant-numeric: tabular-nums; }
+      .kicker { color: #C8E35B; font-size: 28px; font-weight: 700; letter-spacing: .1em; }
+      .headline { margin: 0; font-size: 88px; line-height: 1.12; letter-spacing: -.045em; font-weight: 900; max-width: 900px; }
+      .subhead { margin: 0; color: rgba(241,239,231,.76); font-size: 34px; line-height: 1.58; font-weight: 350; max-width: 880px; }
+      .mono { font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; }
+      .lime { color: #C8E35B; }
+      .orange { color: #DF744F; }
+      .rule { height: 4px; width: 100%; background: #C8E35B; transform-origin: left center; }
+
+      /* Scene 1 */
+      .hero-zone { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 48px; }
+      .hero-stat { position: relative; width: 650px; height: 650px; align-self: center; display: grid; place-items: center; }
+      .hero-stat svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+      .ring-track { fill: none; stroke: rgba(241,239,231,.09); stroke-width: 22; }
+      .ring-progress { fill: none; stroke: #C8E35B; stroke-width: 26; stroke-linecap: round; stroke-dasharray: 1690; stroke-dashoffset: 1690; }
+      .hero-number { position: relative; font-family: "JetBrains Mono", monospace; font-size: 210px; line-height: .9; font-weight: 800; letter-spacing: -.08em; font-variant-numeric: tabular-nums; }
+      .hero-number span { font-size: 74px; color: #C8E35B; margin-left: 8px; }
+      .hero-label { position: absolute; bottom: 125px; color: rgba(241,239,231,.58); font-size: 30px; letter-spacing: .18em; }
+      .caution-pill { align-self: flex-start; display: flex; align-items: center; gap: 18px; padding: 18px 28px; border: 1px solid rgba(223,116,79,.7); border-radius: 999px; color: #FFE3D9; font-size: 31px; background: rgba(223,116,79,.12); }
+      .caution-dot { width: 14px; height: 14px; border-radius: 50%; background: #DF744F; box-shadow: 0 0 30px rgba(223,116,79,.9); }
+
+      /* Scene 2 */
+      .fineprint-layout { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 42px; }
+      .claim-sheet { position: relative; width: 100%; min-height: 680px; padding: 70px 62px; border-radius: 42px; background: #F1EFE7; color: #071713; overflow: hidden; box-shadow: 0 32px 90px rgba(0,0,0,.28); }
+      .claim-big { font-family: "JetBrains Mono", monospace; font-size: 210px; font-weight: 800; letter-spacing: -.09em; color: #1F5A46; }
+      .claim-big small { font-size: 68px; }
+      .fine-lines { display: flex; flex-direction: column; gap: 18px; margin-top: 70px; }
+      .fine-line { height: 16px; border-radius: 9px; background: rgba(7,23,19,.18); transform-origin: left; }
+      .fine-line:nth-child(2) { width: 88%; }
+      .fine-line:nth-child(3) { width: 72%; }
+      .fine-line:nth-child(4) { width: 94%; background: #DF744F; }
+      .magnifier { position: absolute; width: 330px; height: 330px; right: 68px; bottom: 44px; border: 18px solid #C8E35B; border-radius: 50%; background: rgba(200,227,91,.08); box-shadow: 0 0 0 12px rgba(7,23,19,.12), 0 30px 70px rgba(0,0,0,.28); }
+      .magnifier::after { content: ""; position: absolute; width: 180px; height: 28px; right: -136px; bottom: -70px; border-radius: 20px; background: #C8E35B; transform: rotate(46deg); transform-origin: left center; }
+      .magnifier-text { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; font-size: 34px; line-height: 1.45; font-weight: 900; }
+
+      /* Scene 3 */
+      .lab-layout { flex: 1; display: grid; grid-template-columns: .8fr 1.2fr; gap: 38px; align-items: center; }
+      .dose-column { display: flex; flex-direction: column; align-items: center; gap: 36px; }
+      .bottle { position: relative; width: 220px; height: 420px; border: 8px solid #F1EFE7; border-radius: 45px 45px 70px 70px; }
+      .bottle::before { content: ""; position: absolute; width: 108px; height: 90px; left: 48px; top: -92px; border: 8px solid #F1EFE7; border-bottom: 0; border-radius: 18px 18px 0 0; }
+      .liquid { position: absolute; left: 13px; right: 13px; bottom: 13px; height: 0; border-radius: 20px 20px 50px 50px; background: #C8E35B; }
+      .dose-value { font-family: "JetBrains Mono", monospace; font-size: 78px; font-weight: 800; color: #C8E35B; }
+      .chamber { position: relative; height: 620px; border: 3px solid rgba(241,239,231,.45); background: rgba(31,90,70,.18); overflow: hidden; transform-style: preserve-3d; }
+      .chamber::before, .chamber::after { content: ""; position: absolute; background: rgba(200,227,91,.35); }
+      .chamber::before { width: 3px; height: 140%; left: 50%; top: -20%; transform: rotate(32deg); }
+      .chamber::after { height: 3px; width: 140%; top: 50%; left: -20%; transform: rotate(-18deg); }
+      .chamber-label { position: absolute; left: 32px; top: 30px; font-family: "JetBrains Mono", monospace; font-size: 27px; color: #C8E35B; }
+      .volume-cube { position: absolute; inset: 130px 78px 110px; border: 5px solid #C8E35B; box-shadow: inset 0 0 60px rgba(200,227,91,.08), 0 0 60px rgba(200,227,91,.09); }
+      .volume-cube::before { content: "TEST CHAMBER"; position: absolute; bottom: 24px; left: 24px; font-family: "JetBrains Mono", monospace; font-size: 23px; color: #B8CFC5; }
+      .formula { grid-column: 1 / -1; display: flex; justify-content: center; align-items: center; gap: 30px; font-family: "JetBrains Mono", monospace; font-size: 54px; font-weight: 700; }
+      .formula .op { color: #DF744F; font-size: 86px; }
+
+      /* Scene 4 */
+      .time-layout { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 70px; }
+      .time-row { display: grid; grid-template-columns: 390px 1fr; gap: 54px; align-items: center; }
+      .clock { position: relative; width: 390px; height: 390px; border: 10px solid rgba(241,239,231,.25); border-radius: 50%; }
+      .clock::after { content: ""; position: absolute; width: 88px; height: 12px; left: 194px; top: 184px; border-radius: 8px; background: #F1EFE7; transform-origin: 0 50%; }
+      .clock-hand { position: absolute; width: 12px; height: 120px; left: 184px; top: 72px; border-radius: 8px; background: #C8E35B; transform-origin: 50% 100%; }
+      .clock-center { position: absolute; width: 34px; height: 34px; border-radius: 50%; left: 173px; top: 173px; background: #DF744F; box-shadow: 0 0 35px rgba(223,116,79,.75); }
+      .time-copy strong { display: block; font-family: "JetBrains Mono", monospace; font-size: 116px; line-height: 1; color: #C8E35B; }
+      .time-copy span { display: block; margin-top: 22px; font-size: 36px; color: rgba(241,239,231,.72); }
+      .wave-panel { height: 370px; padding: 46px; border: 2px solid rgba(200,227,91,.28); background: rgba(31,90,70,.16); display: flex; flex-direction: column; gap: 34px; }
+      .wave-label { display: flex; justify-content: space-between; font-family: "JetBrains Mono", monospace; font-size: 27px; color: rgba(241,239,231,.66); }
+      .wave { flex: 1; display: flex; align-items: center; gap: 10px; }
+      .wave i { flex: 1; height: 30%; background: #C8E35B; border-radius: 10px; transform-origin: center; box-shadow: 0 0 20px rgba(200,227,91,.18); }
+
+      /* Scene 5 */
+      .report-layout { flex: 1; display: flex; align-items: center; justify-content: center; }
+      .report { position: relative; width: 820px; min-height: 1040px; padding: 82px 64px; background: #F1EFE7; color: #071713; box-shadow: 0 40px 100px rgba(0,0,0,.35); overflow: hidden; }
+      .report-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 6px solid #1F5A46; padding-bottom: 32px; }
+      .report-title { font-size: 62px; font-weight: 900; }
+      .report-code { font-family: "JetBrains Mono", monospace; font-size: 22px; color: #52605A; text-align: right; }
+      .report-table { margin-top: 55px; display: grid; grid-template-columns: 1fr 1.5fr; border-top: 2px solid rgba(7,23,19,.18); border-left: 2px solid rgba(7,23,19,.18); }
+      .report-cell { min-height: 96px; padding: 28px 24px; border-right: 2px solid rgba(7,23,19,.18); border-bottom: 2px solid rgba(7,23,19,.18); font-size: 28px; }
+      .report-cell:nth-child(odd) { color: rgba(7,23,19,.55); }
+      .scanline { position: absolute; left: 0; right: 0; top: 0; height: 18px; background: #C8E35B; box-shadow: 0 0 44px 18px rgba(200,227,91,.34); }
+      .verified { position: absolute; right: 58px; bottom: 75px; width: 250px; height: 250px; display: grid; place-items: center; border: 12px double #1F5A46; border-radius: 50%; color: #1F5A46; font-family: "JetBrains Mono", monospace; font-size: 34px; font-weight: 900; transform: rotate(-13deg); text-align: center; }
+
+      /* Scene 6 */
+      .compare-layout { flex: 1; display: grid; grid-template-columns: 1fr 120px 1fr; align-items: center; gap: 18px; }
+      .compare-side { height: 850px; padding: 46px 36px; display: flex; flex-direction: column; justify-content: space-between; border: 3px solid rgba(241,239,231,.22); }
+      .compare-side.lab { background: rgba(31,90,70,.32); }
+      .compare-side.home { background: rgba(223,116,79,.1); }
+      .compare-title { font-size: 35px; font-weight: 800; }
+      .compare-metric { font-family: "JetBrains Mono", monospace; font-size: 30px; line-height: 1.7; color: rgba(241,239,231,.66); }
+      .lab-box { height: 360px; border: 8px solid #C8E35B; transform: perspective(600px) rotateY(-12deg); box-shadow: inset 0 0 65px rgba(200,227,91,.11); }
+      .home-svg { width: 100%; height: 400px; }
+      .not-equal { font-family: "JetBrains Mono", monospace; font-size: 122px; font-weight: 900; color: #DF744F; text-align: center; text-shadow: 0 0 45px rgba(223,116,79,.38); }
+      .warning-line { grid-column: 1 / -1; padding: 28px 34px; border: 2px solid #DF744F; color: #FFE3D9; font-size: 37px; line-height: 1.45; background: rgba(223,116,79,.12); }
+
+      /* Scene 7 */
+      .final-layout { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 62px; }
+      .condition-stage { position: relative; height: 720px; }
+      .condition-core { position: absolute; width: 310px; height: 310px; left: 303px; top: 205px; display: grid; place-items: center; text-align: center; border: 8px solid #C8E35B; border-radius: 50%; color: #C8E35B; font-size: 46px; font-weight: 900; background: #071713; box-shadow: 0 0 90px rgba(200,227,91,.2); z-index: 2; }
+      .condition { position: absolute; min-width: 250px; padding: 24px 30px; border: 2px solid rgba(200,227,91,.55); background: rgba(31,90,70,.78); color: #F1EFE7; font-size: 31px; font-weight: 700; text-align: center; }
+      .c1 { left: 20px; top: 65px; } .c2 { right: 18px; top: 65px; }
+      .c3 { left: -8px; top: 320px; } .c4 { right: -8px; top: 320px; }
+      .c5 { left: 78px; bottom: 55px; } .c6 { right: 78px; bottom: 55px; }
+      .condition-line { position: absolute; height: 3px; width: 250px; left: 333px; top: 358px; background: rgba(200,227,91,.34); transform-origin: center; }
+      .condition-line.l1 { transform: rotate(25deg); } .condition-line.l2 { transform: rotate(-25deg); }
+      .condition-line.l3 { transform: rotate(90deg); }
+      .final-statement { display: flex; flex-direction: column; gap: 22px; }
+      .final-statement strong { font-size: 82px; line-height: 1.12; letter-spacing: -.04em; }
+      .final-statement span { color: rgba(241,239,231,.66); font-size: 33px; line-height: 1.55; }
+      .final-statement strong .lime { display: inline-block; color: #C8E35B; font-size: 82px; line-height: 1.12; }
+
+      .captions { position: absolute; left: 70px; right: 70px; bottom: 92px; height: 160px; z-index: 20; display: flex; align-items: center; justify-content: center; }
+      .caption { position: absolute; width: 100%; min-height: 92px; padding: 24px 34px; display: flex; align-items: center; justify-content: center; text-align: center; border-radius: 26px; background: rgba(7,23,19,.9); border: 1px solid rgba(200,227,91,.35); color: #F1EFE7; font-size: 37px; line-height: 1.4; font-weight: 700; opacity: 0; visibility: hidden; box-shadow: 0 16px 45px rgba(0,0,0,.3); }
+      .caption b { display: inline-block; color: #C8E35B; font-weight: 900; white-space: nowrap; }
+      .caption .risk-word { display: inline-block; color: #FF9B78; white-space: nowrap; }
+
+      .wipe { position: absolute; inset: -50px; z-index: 40; background: #C8E35B; }
+      .wipe::after { content: "条件 / EVIDENCE"; position: absolute; right: 90px; bottom: 140px; color: #071713; font-family: "JetBrains Mono", monospace; font-size: 30px; font-weight: 900; letter-spacing: .08em; }
+      .brand-bug { position: absolute; left: 64px; top: 56px; z-index: 30; display: flex; align-items: center; gap: 16px; font-size: 22px; color: #B8CFC5; letter-spacing: .08em; }
+      .brand-mark { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; background: #C8E35B; color: #071713; font-weight: 900; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="formaldehyde-conditions" data-start="0" data-duration="46.08" data-width="1080" data-height="1920">
+      <div class="ambient" data-layout-ignore>
+        <div class="grid"></div><div class="orb orb-a"></div><div class="orb orb-b"></div><div class="grain"></div>
+      </div>
+      <div class="brand-bug"><div class="brand-mark">时</div><span>净界AI内容工厂</span></div>
+
+      <section id="scene1" class="scene">
+        <div class="scene-content">
+          <div class="scene-top"><span class="eyebrow">CLAIM CHECK</span><span class="counter">01 / 07</span></div>
+          <div class="hero-zone">
+            <div class="hero-stat">
+              <svg viewBox="0 0 650 650"><circle class="ring-track" cx="325" cy="325" r="269"></circle><circle class="ring-progress" cx="325" cy="325" r="269"></circle></svg>
+              <div id="hero99" class="hero-number">99<span>%</span></div><div class="hero-label">除 醛 率</div>
+            </div>
+            <div class="caution-pill"><i class="caution-dot"></i><span>这个数字，能直接相信吗？</span></div>
+            <h1 class="headline">先别急着<br><span class="orange">下结论</span></h1>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene2" class="scene">
+        <div class="scene-content">
+          <div class="scene-top"><span class="eyebrow">READ THE CONDITIONS</span><span class="counter">02 / 07</span></div>
+          <div class="fineprint-layout">
+            <p class="kicker">真正决定可信度的</p><h2 class="headline">往往是旁边<br>那行<span class="lime">小字</span></h2>
+            <div class="claim-sheet">
+              <div class="claim-big">99<small>%</small></div>
+              <div class="fine-lines"><i class="fine-line"></i><i class="fine-line"></i><i class="fine-line"></i><i class="fine-line"></i></div>
+              <div class="magnifier"><div class="magnifier-text">剂量<br>空间<br>时间</div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene3" class="scene">
+        <div class="scene-content">
+          <div class="scene-top"><span class="eyebrow">CONDITION 01–02</span><span class="counter">03 / 07</span></div>
+          <p class="kicker">先问两个最直观的问题</p><h2 class="headline">用了多少？<br>空间多大？</h2>
+          <div class="lab-layout">
+            <div class="dose-column"><div class="bottle"><div class="liquid"></div></div><div class="dose-value">DOSE</div></div>
+            <div class="chamber"><span class="chamber-label">VOLUME / m³</span><div class="volume-cube"></div></div>
+            <div class="formula"><span>剂量</span><span class="op">×</span><span>空间体积</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene4" class="scene">
+        <div class="scene-content">
+          <div class="scene-top"><span class="eyebrow">CONDITION 03–04</span><span class="counter">04 / 07</span></div>
+          <p class="kicker">结果还取决于过程</p><h2 class="headline">作用时间<br>和初始浓度</h2>
+          <div class="time-layout">
+            <div class="time-row"><div class="clock"><i class="clock-hand"></i><i class="clock-center"></i></div><div class="time-copy"><strong>TIME</strong><span>时间越长，不代表真实居家条件相同</span></div></div>
+            <div class="wave-panel"><div class="wave-label"><span>INITIAL CONCENTRATION</span><span>μg/m³</span></div><div class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene5" class="scene">
+        <div class="scene-content">
+          <div class="scene-top"><span class="eyebrow">CONDITION 05–06</span><span class="counter">05 / 07</span></div>
+          <p class="kicker">数字必须能够追溯</p><h2 class="headline">怎样检测？<br>报告来自哪里？</h2>
+          <div class="report-layout">
+            <div class="report">
+              <div class="report-header"><div class="report-title">检测报告</div><div class="report-code">REPORT ID<br>CN-AIR-2026</div></div>
+              <div class="report-table"><div class="report-cell">检测方法</div><div class="report-cell">METHOD / STANDARD</div><div class="report-cell">样品剂量</div><div class="report-cell">DOSAGE</div><div class="report-cell">舱体体积</div><div class="report-cell">CHAMBER VOLUME</div><div class="report-cell">作用时间</div><div class="report-cell">DURATION</div><div class="report-cell">报告来源</div><div class="report-cell">SOURCE / LAB</div></div>
+              <div class="scanline"></div><div class="verified">SOURCE<br>CHECK</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene6" class="scene">
+        <div class="scene-content">
+          <div class="scene-top"><span class="eyebrow">DO NOT OVERGENERALIZE</span><span class="counter">06 / 07</span></div>
+          <p class="kicker orange">实验结果不能直接外推</p><h2 class="headline">实验舱<br><span class="orange">不等于</span>你家</h2>
+          <div class="compare-layout">
+            <div class="compare-side lab"><div class="compare-title lime">小空间实验舱</div><div class="lab-box"></div><div class="compare-metric">大剂量<br>固定时间<br>受控浓度</div></div>
+            <div class="not-equal">≠</div>
+            <div class="compare-side home"><div class="compare-title">真实家庭整屋</div><svg class="home-svg" viewBox="0 0 360 420"><path d="M30 190 L180 55 L330 190 V380 H30 Z" fill="none" stroke="#F1EFE7" stroke-width="12"/><path d="M145 380 V260 H225 V380" fill="none" stroke="#DF744F" stroke-width="12"/><circle cx="100" cy="245" r="30" fill="none" stroke="#C8E35B" stroke-width="9"/></svg><div class="compare-metric">通风变化<br>家具释放<br>空间差异</div></div>
+            <div class="warning-line">小空间、大剂量、长时间的结果，不能直接当成入住保证。</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene7" class="scene">
+        <div class="scene-content">
+          <div class="scene-top"><span class="eyebrow">THE DECISION RULE</span><span class="counter">07 / 07</span></div>
+          <div class="final-layout">
+            <div class="condition-stage">
+              <i class="condition-line l1"></i><i class="condition-line l2"></i><i class="condition-line l3"></i>
+              <div class="condition-core">六项条件<br>缺一不可</div>
+              <div class="condition c1">产品剂量</div><div class="condition c2">空间体积</div><div class="condition c3">作用时间</div><div class="condition c4">初始浓度</div><div class="condition c5">检测方法</div><div class="condition c6">报告来源</div>
+            </div>
+            <div class="final-statement"><strong>条件比数字<br><span class="lime">更重要</span></strong><span>具体产品回到自己的检测报告，再结合真实房屋情况判断。</span></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="captions">
+        <div id="cap1" class="caption">看到“除醛率 <b>99%</b>”，先别急着下结论。</div>
+        <div id="cap2" class="caption">真正决定这个数字能不能参考的，是旁边那行<b>小字</b>。</div>
+        <div id="cap3" class="caption">用了多少产品？测试舱有多大？</div>
+        <div id="cap4" class="caption">作用了多久？初始浓度是多少？</div>
+        <div id="cap5" class="caption">怎样检测？报告来自哪里？</div>
+        <div id="cap6" class="caption"><span class="risk-word">小空间、大剂量、长时间</span>的结果，不能直接等同家庭整屋效果。</div>
+        <div id="cap7" class="caption">判断一份数据，至少要找齐<b>六项条件</b>。</div>
+        <div id="cap8" class="caption">回到检测报告，并结合真实房屋情况判断。</div>
+      </div>
+
+      <div id="wipe" class="wipe" data-layout-allow-occlusion></div>
+      <audio id="narration" class="clip" data-start="0" data-duration="46.08" data-track-index="10" src="assets/voice.wav" data-volume="1"></audio>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      tl.set("#scene1", { opacity: 1, visibility: "visible" }, 0);
+      tl.set(["#scene2", "#scene3", "#scene4", "#scene5", "#scene6", "#scene7"], { opacity: 0, visibility: "hidden" }, 0);
+      tl.set("#wipe", { xPercent: -115 }, 0);
+
+      // Deterministic ambient movement across the complete film.
+      tl.to(".orb-a", { x: 75, y: -48, scale: 1.16, duration: 6, ease: "sine.inOut", repeat: 6, yoyo: true }, 0);
+      tl.to(".orb-b", { x: -62, y: 55, scale: .88, duration: 7.5, ease: "power1.inOut", repeat: 5, yoyo: true }, 0);
+      tl.to(".grid", { backgroundPosition: "136px 204px", duration: 11.5, ease: "none", repeat: 3 }, 0);
+
+      // Scene 1 entrances.
+      tl.from("#scene1 .eyebrow", { x: -60, opacity: 0, duration: .55, ease: "expo.out" }, .18);
+      tl.from("#scene1 .counter", { opacity: 0, scale: .72, duration: .72, ease: "sine.out" }, .28);
+      tl.from("#scene1 .hero-stat", { scale: .62, rotation: -8, opacity: 0, duration: .82, ease: "back.out(1.35)" }, .35);
+      tl.to("#scene1 .ring-progress", { strokeDashoffset: 17, duration: 1.35, ease: "power3.out" }, .55);
+      tl.from("#hero99", { scale: 1.7, filter: "blur(16px)", opacity: 0, duration: .48, ease: "power4.out" }, .72);
+      tl.from("#scene1 .caution-pill", { x: -100, opacity: 0, duration: .42, ease: "power3.out" }, 1.45);
+      tl.from("#scene1 .headline", { y: 84, opacity: 0, duration: .66, ease: "circ.out" }, 1.7);
+      tl.to("#scene1 .caution-dot", { scale: 1.7, opacity: .45, duration: .65, ease: "sine.inOut", repeat: 3, yoyo: true }, 2.1);
+
+      function transition(from, to, at, color) {
+        tl.set("#wipe", { xPercent: -115, backgroundColor: color || "#C8E35B" }, at - .01);
+        tl.to("#wipe", { xPercent: 0, duration: .27, ease: "power4.in" }, at);
+        tl.set(from, { opacity: 0, visibility: "hidden" }, at + .28);
+        tl.set(to, { opacity: 1, visibility: "visible" }, at + .28);
+        tl.to("#wipe", { xPercent: 115, duration: .34, ease: "expo.out" }, at + .28);
+      }
+
+      transition("#scene1", "#scene2", 4.78, "#C8E35B");
+      tl.set("#scene1", { visibility: "hidden" }, 5.06);
+      tl.from("#scene2 .eyebrow", { y: -45, opacity: 0, duration: .42, ease: "power3.out" }, 4.98);
+      tl.from("#scene2 .kicker", { x: 75, opacity: 0, duration: .58, ease: "expo.out" }, 5.04);
+      tl.from("#scene2 .headline", { clipPath: "inset(0 100% 0 0)", duration: .72, ease: "power4.out" }, 5.10);
+      tl.from("#scene2 .claim-sheet", { y: 120, rotation: 2.5, opacity: 0, duration: .78, ease: "back.out(1.15)" }, 5.28);
+      tl.from("#scene2 .claim-big", { scale: 1.45, opacity: 0, duration: .46, ease: "circ.out" }, 6.1);
+      tl.from("#scene2 .fine-line", { scaleX: 0, stagger: .09, duration: .38, ease: "power2.out" }, 6.45);
+      tl.from("#scene2 .magnifier", { x: 120, y: 90, scale: .25, opacity: 0, duration: .68, ease: "back.out(1.5)" }, 7.0);
+      tl.to("#scene2 .magnifier", { x: -120, y: -72, duration: 1.5, ease: "sine.inOut", yoyo: true, repeat: 1 }, 7.8);
+
+      transition("#scene2", "#scene3", 9.55, "#1F5A46");
+      tl.set("#scene2", { visibility: "hidden" }, 9.83);
+      tl.from("#scene3 .eyebrow", { x: 70, opacity: 0, duration: .4, ease: "expo.out" }, 9.70);
+      tl.from("#scene3 .kicker", { opacity: 0, scale: .8, duration: .52, ease: "back.out(1.7)" }, 9.76);
+      tl.from("#scene3 .headline", { x: -90, opacity: 0, duration: .64, ease: "power4.out" }, 9.84);
+      tl.from("#scene3 .bottle", { y: 120, rotation: -9, opacity: 0, duration: .7, ease: "back.out(1.25)" }, 10.18);
+      tl.to("#scene3 .liquid", { height: "66%", duration: 1.1, ease: "power2.inOut" }, 10.85);
+      tl.from("#scene3 .chamber", { scaleX: .25, transformOrigin: "right center", opacity: 0, duration: .72, ease: "expo.out" }, 10.72);
+      tl.from("#scene3 .volume-cube", { scale: .45, rotation: 8, opacity: 0, duration: .74, ease: "circ.out" }, 11.22);
+      tl.from("#scene3 .formula span", { y: 55, opacity: 0, stagger: .13, duration: .45, ease: "power3.out" }, 11.85);
+      tl.to("#scene3 .volume-cube", { scale: 1.06, duration: 1.15, ease: "sine.inOut", repeat: 1, yoyo: true }, 12.7);
+
+      transition("#scene3", "#scene4", 14.93, "#C8E35B");
+      tl.set("#scene3", { visibility: "hidden" }, 15.21);
+      tl.from("#scene4 .eyebrow", { opacity: 0, rotation: -5, duration: .5, ease: "back.out(1.4)" }, 15.06);
+      tl.from("#scene4 .kicker", { x: -70, opacity: 0, duration: .48, ease: "power3.out" }, 15.10);
+      tl.from("#scene4 .headline", { y: 72, opacity: 0, duration: .66, ease: "expo.out" }, 15.16);
+      tl.from("#scene4 .clock", { scale: .3, rotation: -55, opacity: 0, duration: .78, ease: "back.out(1.55)" }, 15.56);
+      tl.from("#scene4 .time-copy", { x: 90, opacity: 0, duration: .58, ease: "circ.out" }, 16.18);
+      tl.to("#scene4 .clock-hand", { rotation: 300, duration: 3.2, ease: "power1.inOut" }, 16.3);
+      tl.from("#scene4 .wave-panel", { clipPath: "inset(100% 0 0 0)", duration: .62, ease: "power3.out" }, 16.7);
+      tl.from("#scene4 .wave i", { scaleY: .12, stagger: .055, duration: .4, ease: "back.out(1.8)" }, 17.25);
+      tl.to("#scene4 .wave i:nth-child(3n+1)", { scaleY: 2.6, duration: .65, ease: "sine.inOut", repeat: 3, yoyo: true }, 18.0);
+      tl.to("#scene4 .wave i:nth-child(3n+2)", { scaleY: 1.7, duration: .48, ease: "power1.inOut", repeat: 4, yoyo: true }, 18.12);
+
+      transition("#scene4", "#scene5", 20.31, "#1F5A46");
+      tl.set("#scene4", { visibility: "hidden" }, 20.59);
+      tl.from("#scene5 .eyebrow", { x: -55, opacity: 0, duration: .42, ease: "expo.out" }, 20.45);
+      tl.from("#scene5 .kicker", { scaleX: .72, opacity: 0, duration: .7, ease: "power2.out" }, 20.49);
+      tl.from("#scene5 .headline", { scale: .82, opacity: 0, duration: .62, ease: "back.out(1.25)" }, 20.56);
+      tl.from("#scene5 .report", { y: 150, rotationX: 16, opacity: 0, duration: .78, ease: "power4.out" }, 20.78);
+      tl.from("#scene5 .report-cell", { opacity: 0, x: -24, stagger: .055, duration: .3, ease: "power2.out" }, 21.55);
+      tl.fromTo("#scene5 .scanline", { y: -30 }, { y: 1050, duration: 1.5, ease: "power1.inOut" }, 21.8);
+      tl.from("#scene5 .verified", { scale: 2.1, rotation: 22, opacity: 0, duration: .45, ease: "power4.out" }, 23.25);
+
+      transition("#scene5", "#scene6", 24.92, "#DF744F");
+      tl.set("#scene5", { visibility: "hidden" }, 25.2);
+      tl.from("#scene6 .eyebrow", { y: -45, opacity: 0, duration: .42, ease: "power4.out" }, 25.05);
+      tl.from("#scene6 .kicker", { x: 100, opacity: 0, duration: .52, ease: "expo.out" }, 25.08);
+      tl.from("#scene6 .headline", { x: -100, opacity: 0, duration: .62, ease: "circ.out" }, 25.14);
+      tl.from("#scene6 .compare-side.lab", { x: -160, rotationY: 12, opacity: 0, duration: .7, ease: "power3.out" }, 25.48);
+      tl.from("#scene6 .compare-side.home", { x: 160, rotationY: -12, opacity: 0, duration: .7, ease: "back.out(1.2)" }, 25.58);
+      tl.from("#scene6 .not-equal", { scale: 4, rotation: -16, opacity: 0, duration: .34, ease: "power4.out" }, 26.72);
+      tl.from("#scene6 .warning-line", { clipPath: "inset(0 100% 0 0)", duration: .74, ease: "expo.out" }, 27.16);
+      tl.to("#scene6 .not-equal", { scale: 1.12, textShadow: "0 0 80px rgba(223,116,79,.8)", duration: .52, ease: "sine.inOut", repeat: 5, yoyo: true }, 28.0);
+      tl.to("#scene6 .lab-box", { scale: .82, duration: 2.3, ease: "power1.inOut", yoyo: true, repeat: 1 }, 29.0);
+      tl.to("#scene6 .home-svg", { scale: 1.08, duration: 2.1, ease: "sine.inOut", yoyo: true, repeat: 1 }, 29.3);
+
+      transition("#scene6", "#scene7", 35.67, "#C8E35B");
+      tl.set("#scene6", { visibility: "hidden" }, 35.95);
+      tl.from("#scene7 .eyebrow", { x: 60, opacity: 0, duration: .45, ease: "expo.out" }, 35.80);
+      tl.from("#scene7 .counter", { opacity: 0, scale: .5, duration: .5, ease: "back.out(1.6)" }, 35.84);
+      tl.from("#scene7 .condition-line", { scaleX: 0, stagger: .08, duration: .52, ease: "power3.out" }, 35.90);
+      tl.from("#scene7 .condition-core", { scale: .2, rotation: -20, opacity: 0, duration: .76, ease: "back.out(1.45)" }, 36.02);
+      tl.from("#scene7 .condition", { scale: .35, opacity: 0, rotation: 5, stagger: .1, duration: .48, ease: "power4.out" }, 36.32);
+      tl.from("#scene7 .final-statement strong", { y: 90, opacity: 0, duration: .72, ease: "expo.out" }, 37.65);
+      tl.from("#scene7 .final-statement span", { x: -60, opacity: 0, duration: .58, ease: "circ.out" }, 38.0);
+      tl.to("#scene7 .condition-core", { boxShadow: "0 0 130px rgba(200,227,91,.46)", scale: 1.05, duration: 1.3, ease: "sine.inOut", repeat: 4, yoyo: true }, 38.4);
+      tl.to("#scene7 .condition", { borderColor: "rgba(200,227,91,1)", stagger: .11, duration: .42, ease: "power1.inOut", repeat: 2, yoyo: true }, 40.0);
+
+      const captionGroups = [
+        ["#cap1", 0.15, 3.75], ["#cap2", 3.75, 9.55], ["#cap3", 9.6, 14.93], ["#cap4", 14.98, 20.31],
+        ["#cap5", 20.35, 24.92], ["#cap6", 24.96, 35.67], ["#cap7", 35.71, 40.8], ["#cap8", 40.8, 46.02]
+      ];
+      captionGroups.forEach(function(group) {
+        const selector = group[0], start = group[1], end = group[2];
+        tl.set(selector, { visibility: "visible" }, start);
+        tl.fromTo(selector, { opacity: 0, y: 28, scale: .96 }, { opacity: 1, y: 0, scale: 1, duration: .28, ease: "power3.out" }, start + .02);
+        tl.to(selector, { opacity: 0, y: -14, scale: .98, duration: .14, ease: "power2.in" }, end - .14);
+        tl.set(selector, { opacity: 0, visibility: "hidden" }, end);
+      });
+
+      // Only the final scene exits.
+      tl.to("#scene7 .scene-content", { opacity: 0, scale: 1.025, duration: .58, ease: "power2.in" }, 45.48);
+      tl.set("#scene7", { visibility: "hidden" }, 46.06);
+      tl.to(".brand-bug", { opacity: 0, duration: .4, ease: "sine.in" }, 45.6);
+
+      window.__timelines["formaldehyde-conditions"] = tl;
+    </script>
+  </body>
+</html>

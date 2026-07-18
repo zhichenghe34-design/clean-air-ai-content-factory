@@ -7,5 +7,10 @@ venv/
 runtime/
 *.log
 node_modules/
+video-compositions/**/renders/
+video-compositions/**/qc/
+video-compositions/**/.hyperframes/
+video-compositions/**/AGENTS.md
+video-compositions/**/CLAUDE.md
 .DS_Store
 Thumbs.db

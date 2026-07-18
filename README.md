@@ -18,6 +18,7 @@
 - 首次选题到成片：**166.88秒**
 - 人工精修后的局部重跑：**5.38秒**
 - 成片：**46.1秒 / 1080×1920 / H.264 + AAC**
+- 画面：**7段连续MG动画 / 30fps / 环形数字、放大镜、液位、时钟波形、报告扫描、空间对照、条件汇聚**
 - 脚本：一次生成4稿，内部代理测试2/4进入可用候选
 - 测试：12项单元测试和浏览器烟雾测试通过
 - 付费API：本次验证0次，完整离线降级仍可运行
@@ -26,7 +27,8 @@
 
 ## 可查看成果
 
-- [首条测试成片](media/sample.mp4)
+- [首条动态测试成片](media/sample.mp4)
+- [可复现动画工程（HyperFrames + GSAP）](video-compositions/formaldehyde-conditions/)
 - [控制台演示](media/console-demo.mp4)
 - [8页初赛方案PDF](docs/competition-proposal.pdf)
 - [结构化运行报告](examples/demo-output/run_report.json)
@@ -43,7 +45,7 @@ flowchart LR
     B --> C["四稿脚本"]
     C --> D["证据与合规预审"]
     D --> E["本地/云端配音"]
-    E --> F["MG卡片 + 字幕 + FFmpeg"]
+    E --> F["HyperFrames动态场景 + 字幕 + FFmpeg"]
     F --> G["人工精修与局部重跑"]
 ```
 
@@ -126,6 +128,7 @@ static/               无框架可视化控制台
 catalog/              受信能力包目录
 examples/             范式卡与一次真实运行的结构化产物
 media/                首条成片与控制台Demo
+video-compositions/   可编辑、可复现的动态成片工程
 docs/                 架构、安全说明、截图与初赛方案
 tests/                 单元测试与浏览器烟雾测试
 app.py                 本地HTTP入口
