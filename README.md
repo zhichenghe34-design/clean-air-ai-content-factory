@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-12%20passed-brightgreen)](#验证结果)
+[![CI](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/actions/workflows/ci.yml)
 [![Safety](https://img.shields.io/badge/agent-trusted%20adapters-0E5A47)](docs/SAFETY.md)
 
 ![控制台](docs/assets/console.png)
