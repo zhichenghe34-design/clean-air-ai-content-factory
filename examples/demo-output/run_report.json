@@ -1,0 +1,69 @@
+{
+  "status": "complete",
+  "topic": "99%除醛率为什么必须看检测条件？",
+  "started_at": "2026-07-18T12:42:42+08:00",
+  "finished_at": "2026-07-18T12:42:48+08:00",
+  "wall_clock_seconds": 5.38,
+  "provider": {
+    "source": "local_deterministic",
+    "api_calls": 0,
+    "fallback_used": false
+  },
+  "voice": {
+    "engine": "voxcpm2",
+    "fallback": false,
+    "reused": true,
+    "reason": "脚本未变化，复用已通过QC的配音"
+  },
+  "render": {
+    "ok": true,
+    "file": "D:\\wen zi you xi\\上海时宜品牌管理有限公司项目\\07_原型实现\\content-factory-console\\runtime\\jobs\\20260718-123242-c1f623\\final.mp4",
+    "duration_seconds": 46.1,
+    "video_codec": "h264",
+    "audio_codec": "aac",
+    "width": 1080,
+    "height": 1920,
+    "fps": "30/1",
+    "subtitle_mode": "burned_into_scene_cards_and_sidecar_srt"
+  },
+  "compliance": {
+    "status": "human_review_required",
+    "blocked": false,
+    "warnings": [
+      {
+        "type": "numeric_claim_context",
+        "level": "review",
+        "message": "出现百分比，但脚本将其作为待核查的广告主张而非产品承诺。",
+        "matches": [
+          "百分之九十九"
+        ]
+      }
+    ],
+    "conditions_present": [
+      "剂量",
+      "空间",
+      "作用时间",
+      "初始浓度",
+      "检测方法",
+      "报告来源"
+    ],
+    "human_confirmation_required": true,
+    "scope": "通用科普，不构成具体产品功效结论",
+    "checked_at": "2026-07-18T12:42:42+08:00"
+  },
+  "adoption_proxy": {
+    "candidate_count": 4,
+    "provisionally_usable_count": 2,
+    "definition": "未命中阻断项且结构完整；尚未经过企业运营团队验证"
+  },
+  "artifacts": [
+    "insight.json",
+    "script_variants.json",
+    "approved_script.json",
+    "review.json",
+    "voice.wav",
+    "captions.srt",
+    "final.mp4",
+    "run_report.json"
+  ]
+}

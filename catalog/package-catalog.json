@@ -1,0 +1,412 @@
+{
+  "schema_version": "0.1.0",
+  "updated_at": "2026-07-18T11:40:00+08:00",
+  "catalog_status": "metadata_reviewed_installers_not_yet_activated",
+  "policy": {
+    "agent_may_browse_for_install_sources": false,
+    "agent_may_submit_urls": false,
+    "agent_may_submit_shell_commands": false,
+    "agent_allowed_requests": [
+      "list_capabilities",
+      "inspect_hardware",
+      "recommend_package_ids",
+      "request_install_by_package_id"
+    ],
+    "installer_resolves_catalog_urls": true,
+    "auto_install_enabled": false,
+    "human_approval_required": true,
+    "require_pinned_version": true,
+    "require_sha256_before_activation": true,
+    "reject_archive_path_traversal": true,
+    "reject_unsigned_catalog_updates": true,
+    "silent_admin_elevation": false,
+    "default_install_scope": "application_managed_directory",
+    "default_install_root": "D:\\时宜AIGC内容工厂",
+    "managed_subdirectories": ["tools", "models", "downloads", "cache", "temp", "logs", "projects"],
+    "minimum_free_space_headroom_ratio": 1.8,
+    "blocked_install_drives_when_free_gb_below": 20
+  },
+  "hardware_profiles": [
+    {
+      "id": "cpu_or_gpu_below_6gb",
+      "label": "基础电脑",
+      "selection": {
+        "max_vram_gb_exclusive": 6
+      },
+      "default_route": "local_media_tools_plus_cloud_generation",
+      "notes": "保留本地转码、解析、字幕和剪辑；语音或视频生成优先走可选云端接口。"
+    },
+    {
+      "id": "gpu_6_to_9gb",
+      "label": "轻量本地 AI",
+      "selection": {
+        "min_vram_gb": 6,
+        "max_vram_gb_exclusive": 10
+      },
+      "default_route": "lightweight_local_tts_and_cloud_video",
+      "notes": "只选择经过本机实测的轻量语音模型；视频生成默认云端。"
+    },
+    {
+      "id": "gpu_10_to_16gb",
+      "label": "主流创作电脑",
+      "selection": {
+        "min_vram_gb": 10,
+        "max_vram_gb_exclusive": 17
+      },
+      "default_route": "local_tts_editing_and_audited_low_vram_video_or_cloud",
+      "notes": "适合 Qwen3-TTS 1.7B、VoxCPM2、GPT-SoVITS 与本地剪辑；一次只运行一个重型生成模型。"
+    },
+    {
+      "id": "gpu_17_to_23gb",
+      "label": "增强型创作电脑",
+      "selection": {
+        "min_vram_gb": 17,
+        "max_vram_gb_exclusive": 24
+      },
+      "default_route": "local_tts_editing_and_cloud_video",
+      "notes": "本地语音与剪辑充足，但仍未达到 Wan2.2 TI2V-5B 官方 24GB 单卡门槛。"
+    },
+    {
+      "id": "gpu_24_to_79gb",
+      "label": "高性能工作站",
+      "selection": {
+        "min_vram_gb": 24,
+        "max_vram_gb_exclusive": 80
+      },
+      "default_route": "local_tts_and_wan_ti2v_5b",
+      "notes": "满足 Wan2.2 TI2V-5B 官方单卡最低显存说明；仍需预留系统内存与磁盘空间。"
+    },
+    {
+      "id": "gpu_80gb_plus",
+      "label": "企业 GPU 节点",
+      "selection": {
+        "min_vram_gb": 80
+      },
+      "default_route": "centralized_large_model_worker",
+      "notes": "大模型视频生成宜作为企业共享算力节点，而不是给每位员工单独安装。"
+    }
+  ],
+  "packages": [
+    {
+      "id": "ffmpeg-windows",
+      "name": "FFmpeg Windows Runtime",
+      "category": "media_runtime",
+      "capabilities": ["probe_media", "transcode", "mux", "render_timeline"],
+      "license": "build_dependent_LGPL_or_GPL",
+      "trust_status": "approved_metadata",
+      "install_status": "pin_and_hash_required",
+      "sources": [
+        {
+          "role": "upstream_source",
+          "url": "https://git.ffmpeg.org/ffmpeg.git",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "official_github_mirror",
+          "url": "https://github.com/FFmpeg/FFmpeg",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "maintainer_listed_windows_build",
+          "url": "https://www.gyan.dev/ffmpeg/builds/",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "maintainer_listed_windows_build_alternative",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases",
+          "maintainer_endorsed": true
+        }
+      ],
+      "recommended_profiles": ["cpu_or_gpu_below_6gb", "gpu_6_to_9gb", "gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "打包前必须确认所选构建的 LGPL/GPL 组件组合和随附许可。"
+    },
+    {
+      "id": "one-stop-audio-video-parser",
+      "name": "一站式音视频解析",
+      "category": "content_analysis",
+      "capabilities": ["public_media_download", "transcription", "ocr", "keyframes", "source_record"],
+      "license": "local_owner_authorized_public_license_not_detected",
+      "trust_status": "approved_local_existing_only",
+      "install_status": "distribution_license_required",
+      "current_local_revision": "68504cecdde865b0d3e5e7a61b80e2eb83ca299b",
+      "sources": [
+        {
+          "role": "owner_repository",
+          "url": "https://github.com/zhichenghe34-design/one-stop-audio-video-parser",
+          "maintainer_endorsed": true
+        }
+      ],
+      "recommended_profiles": ["cpu_or_gpu_below_6gb", "gpu_6_to_9gb", "gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "当前允许登记本机已有副本；在仓库补齐明确许可证、版本发布和哈希前，不向陌生用户自动分发。"
+    },
+    {
+      "id": "qwen3-tts-0.6b-base",
+      "name": "Qwen3-TTS 0.6B Base",
+      "category": "local_tts_model",
+      "capabilities": ["voice_clone", "tts"],
+      "license": "Apache-2.0",
+      "trust_status": "approved_metadata",
+      "install_status": "pin_and_hash_required",
+      "sources": [
+        {
+          "role": "upstream_code",
+          "url": "https://github.com/QwenLM/Qwen3-TTS",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "primary_weights",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "mainland_china_weights",
+          "url": "https://modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+          "maintainer_endorsed": true
+        }
+      ],
+      "recommended_profiles": ["gpu_6_to_9gb", "gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "声音克隆仍需取得说话人授权；模型许可证不替代人格权、版权和广告合规审查。"
+    },
+    {
+      "id": "qwen3-tts-1.7b-base",
+      "name": "Qwen3-TTS 1.7B Base",
+      "category": "local_tts_model",
+      "capabilities": ["voice_clone", "tts", "fine_tuning_base"],
+      "license": "Apache-2.0",
+      "trust_status": "approved_and_locally_validated",
+      "install_status": "pin_and_hash_required",
+      "local_validation": {
+        "machine": "RTX 4080 Laptop 12GB",
+        "top_level_model_bytes": 3861933962,
+        "observed_revision": "fd4b254389122332181a7c3db7f27e918eec64e3"
+      },
+      "sources": [
+        {
+          "role": "upstream_code",
+          "url": "https://github.com/QwenLM/Qwen3-TTS",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "primary_weights",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "mainland_china_weights",
+          "url": "https://modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+          "maintainer_endorsed": true
+        }
+      ],
+      "recommended_profiles": ["gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "声音克隆仍需取得说话人授权。"
+    },
+    {
+      "id": "voxcpm2-2b",
+      "name": "VoxCPM2 2B",
+      "category": "local_tts_model",
+      "capabilities": ["multilingual_tts", "voice_design", "controllable_voice_clone"],
+      "license": "Apache-2.0",
+      "trust_status": "approved_and_locally_validated",
+      "install_status": "pin_and_hash_required",
+      "hardware_requirements": {
+        "official_approx_vram_gb": 8,
+        "safe_catalog_min_vram_gb": 10
+      },
+      "local_validation": {
+        "machine": "RTX 4080 Laptop 12GB",
+        "top_level_model_bytes": 4960731703,
+        "observed_revision": "bffb3df5a29440629464e5e839f4d214c8714c3d"
+      },
+      "sources": [
+        {
+          "role": "upstream_code",
+          "url": "https://github.com/OpenBMB/VoxCPM",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "primary_weights",
+          "url": "https://huggingface.co/openbmb/VoxCPM2",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "mainland_china_weights",
+          "url": "https://modelscope.cn/models/OpenBMB/VoxCPM2",
+          "maintainer_endorsed": true
+        }
+      ],
+      "recommended_profiles": ["gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "声音设计和克隆输出仍需做授权、冒充与品牌安全检查。"
+    },
+    {
+      "id": "gpt-sovits",
+      "name": "GPT-SoVITS",
+      "category": "local_tts_workbench",
+      "capabilities": ["few_shot_tts", "trained_identity_voice", "voice_conversion"],
+      "license": "MIT",
+      "trust_status": "approved_and_locally_validated",
+      "install_status": "pin_and_hash_required",
+      "sources": [
+        {
+          "role": "upstream_code",
+          "url": "https://github.com/RVC-Boss/GPT-SoVITS",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "official_windows_package",
+          "url": "https://huggingface.co/lj1995/GPT-SoVITS-windows-package",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "official_models",
+          "url": "https://huggingface.co/lj1995/GPT-SoVITS",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "upstream_supported_mainland_route_documentation",
+          "url": "https://github.com/RVC-Boss/GPT-SoVITS#installation",
+          "maintainer_endorsed": true,
+          "notes": "上游安装器支持 ModelScope；激活安装器前仍需固定实际模型清单与哈希。"
+        }
+      ],
+      "recommended_profiles": ["gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "训练音色和参考音频必须有明确授权。"
+    },
+    {
+      "id": "comfyui-portable-nvidia",
+      "name": "ComfyUI Official Windows Portable",
+      "category": "generation_runtime",
+      "capabilities": ["image_generation", "workflow_api", "video_generation_host"],
+      "license": "GPL-3.0",
+      "trust_status": "approved_metadata",
+      "install_status": "pin_release_asset_and_hash_required",
+      "sources": [
+        {
+          "role": "upstream_code",
+          "url": "https://github.com/comfy-org/ComfyUI",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "official_portable_releases",
+          "url": "https://github.com/comfy-org/ComfyUI/releases",
+          "maintainer_endorsed": true
+        }
+      ],
+      "recommended_profiles": ["gpu_6_to_9gb", "gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "第三方自定义节点和模型各自有独立许可证与代码风险，不能因为 ComfyUI 主程序已审核就自动放行。"
+    },
+    {
+      "id": "wan2.2-ti2v-5b",
+      "name": "Wan2.2 TI2V-5B",
+      "category": "local_video_model",
+      "capabilities": ["text_to_video", "image_to_video", "720p_24fps"],
+      "license": "Apache-2.0",
+      "trust_status": "approved_metadata_hardware_gated",
+      "install_status": "pin_and_hash_required",
+      "hardware_requirements": {
+        "official_single_gpu_min_vram_gb": 24,
+        "notes": "官方单卡命令使用卸载、模型精度转换和 T5 CPU 仍要求至少 24GB 显存。"
+      },
+      "sources": [
+        {
+          "role": "upstream_code",
+          "url": "https://github.com/Wan-Video/Wan2.2",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "primary_weights",
+          "url": "https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B",
+          "maintainer_endorsed": true
+        },
+        {
+          "role": "mainland_china_weights",
+          "url": "https://modelscope.cn/models/Wan-AI/Wan2.2-TI2V-5B",
+          "maintainer_endorsed": true
+        }
+      ],
+      "recommended_profiles": ["gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "12GB 机器不自动安装；低显存量化或第三方工作流必须另立能力包、单独审计与实测。"
+    },
+    {
+      "id": "video-autopilot-kit",
+      "name": "video-autopilot-kit",
+      "category": "programmatic_editing_reference",
+      "capabilities": ["vertical_video_timeline", "captions", "b_roll_alignment", "ffmpeg_render"],
+      "license": "MIT",
+      "trust_status": "approved_for_isolated_evaluation",
+      "install_status": "pinned_commit_smoke_test_required",
+      "sources": [
+        {
+          "role": "upstream_code",
+          "url": "https://github.com/Hao0321/video-autopilot-kit",
+          "maintainer_endorsed": true
+        }
+      ],
+      "recommended_profiles": ["cpu_or_gpu_below_6gb", "gpu_6_to_9gb", "gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "只启用 Programmatic/FFmpeg 路线，不自动修改剪映工程。"
+    },
+    {
+      "id": "openreel-video",
+      "name": "OpenReel Video",
+      "category": "human_refinement_editor",
+      "capabilities": ["local_multitrack_editing", "captions", "color", "keyframes"],
+      "license": "MIT",
+      "trust_status": "approved_for_isolated_evaluation",
+      "install_status": "pinned_release_smoke_test_required",
+      "sources": [
+        {
+          "role": "upstream_code",
+          "url": "https://github.com/Augani/openreel-video",
+          "maintainer_endorsed": true
+        }
+      ],
+      "recommended_profiles": ["gpu_6_to_9gb", "gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "作为人工精修界面候选，不假定已有 Agent 控制接口。"
+    },
+    {
+      "id": "video-use-methods",
+      "name": "video-use Workflow Methods",
+      "category": "workflow_reference",
+      "capabilities": ["edl", "word_level_cuts", "caption_order", "render_qa"],
+      "license": "MIT",
+      "trust_status": "approved_for_method_reference",
+      "install_status": "do_not_install_whole_project",
+      "sources": [
+        {
+          "role": "upstream_code",
+          "url": "https://github.com/browser-use/video-use",
+          "maintainer_endorsed": true
+        }
+      ],
+      "recommended_profiles": [],
+      "commercial_notes": "借鉴 EDL 与质检规则；不引入其默认云转写依赖。"
+    },
+    {
+      "id": "hyperframes-bundled-capability",
+      "name": "HyperFrames Bundled Capability",
+      "category": "bundled_animation_capability",
+      "capabilities": ["mg_animation", "data_cards", "caption_overlays", "html_video"],
+      "license": "bundled_runtime_terms",
+      "trust_status": "approved_when_provided_by_current_codex_runtime",
+      "install_status": "not_a_public_auto_install_package",
+      "sources": [],
+      "recommended_profiles": ["cpu_or_gpu_below_6gb", "gpu_6_to_9gb", "gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "仅在当前受信运行时已提供时调用，不让 Agent 从搜索结果安装同名第三方包。"
+    }
+  ],
+  "cloud_provider_slots": [
+    {
+      "id": "deepseek-openai-compatible",
+      "role": "planner_and_orchestrator",
+      "enabled_by_default": true,
+      "stores_api_key_in_catalog": false,
+      "notes": "DeepSeek 负责意图理解、规划与能力包选择；下载地址和安装命令不由模型生成。"
+    },
+    {
+      "id": "optional-generation-api",
+      "role": "hardware_or_policy_fallback",
+      "enabled_by_default": false,
+      "stores_api_key_in_catalog": false,
+      "notes": "企业管理员或个人用户可按需配置视频/语音云接口；未配置时不影响本地能力。"
+    }
+  ]
+}

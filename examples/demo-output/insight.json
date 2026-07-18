@@ -1,0 +1,70 @@
+{
+  "topic": "99%除醛率为什么必须看检测条件？",
+  "audience": "新房装修、租房、母婴家庭",
+  "selected_pattern_cards": [
+    {
+      "item_id": "03",
+      "type": "合规反例",
+      "hook": "99%大字承诺是真的吗",
+      "structure": [
+        "展示醒目宣传语",
+        "放大小字条件",
+        "还原用量/体积/时间",
+        "对比消费者理解与真实测试条件",
+        "风险提醒"
+      ],
+      "evidence_devices": [
+        "广告截图",
+        "小字特写",
+        "4罐/1.5立方米/24小时等限定条件"
+      ],
+      "reusable_pattern": "大字主张→小字证据→条件换算→现实场景反差→合规结论",
+      "risks": [
+        "引用数字仍须回到原检测报告核验"
+      ],
+      "status": "compliance_negative_example"
+    },
+    {
+      "item_id": "06",
+      "type": "钩子教学",
+      "hook": "没人看不是干货不行，而是第一秒被划走",
+      "structure": [
+        "解释三秒流失",
+        "四类钩子",
+        "三个常见错误",
+        "钩子后的三秒承接",
+        "模板示例"
+      ],
+      "evidence_devices": [
+        "后台三秒流失指标",
+        "正反例句式"
+      ],
+      "reusable_pattern": "痛点/反常识/结果承诺/悬念数字四选一→一至两句说明正文交付→进入主体",
+      "risks": [
+        "完播率翻倍等普遍性效果未经验证",
+        "钩子需避免夸张承诺"
+      ],
+      "status": "method_candidate"
+    }
+  ],
+  "pattern": "大字主张→小字条件→条件换算→现实场景反差→行动建议",
+  "source_boundary": "公开视频仅用于学习内容结构，不作为产品功效证据",
+  "evidence_requirements": [
+    "剂量",
+    "空间体积",
+    "作用时间",
+    "初始浓度",
+    "检测方法",
+    "报告来源"
+  ],
+  "official_references": [
+    {
+      "name": "GB/T 18883-2022 室内空气质量标准",
+      "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436"
+    },
+    {
+      "name": "中华人民共和国广告法",
+      "url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html"
+    }
+  ]
+}

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>时宜 AIGC 内容工厂</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">时</div>
+        <div><strong>时宜内容工厂</strong><span>LOCAL AIGC STUDIO</span></div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-view="workbench">工作台</button>
+        <button class="nav-item" data-view="discovery">本地工具</button>
+        <button class="nav-item" data-view="catalog">能力商店</button>
+        <button class="nav-item" data-view="settings">接口设置</button>
+        <button class="nav-item" data-view="jobs">运行记录</button>
+      </nav>
+      <div class="side-foot">
+        <span id="safeBadge" class="status-dot"></span>
+        <div><strong>安全模式</strong><small>未知项目不会自动执行</small></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow">AIGC VIDEO OPERATING SYSTEM</p><h1 id="pageTitle">内容生产工作台</h1></div>
+        <div class="top-status"><span id="providerBadge" class="pill">DeepSeek 未配置</span><button id="refreshAll" class="icon-btn" title="刷新">↻</button></div>
+      </header>
+
+      <section id="view-workbench" class="view active">
+        <div class="hero-grid">
+          <article class="hero-card">
+            <p class="eyebrow">AGENT COMMAND</p>
+            <h2>说清目标，系统负责组织工具。</h2>
+            <textarea id="goalInput" rows="5" placeholder="例如：用现有除甲醛范式生成一条60秒科普短视频，先审核功效表达，再生成配音、MG信息卡和9:16测试成片。"></textarea>
+            <div class="action-row">
+              <button id="planBtn" class="primary">让 Agent 规划</button>
+              <button id="saveJobBtn" class="secondary" disabled>保存为任务</button>
+              <span id="planHint" class="hint">没有Key时仍可生成本地示范计划</span>
+            </div>
+          </article>
+          <article class="metrics-card">
+            <div><span>已发现工具</span><strong id="metricTools">0</strong></div>
+            <div><span>可用能力</span><strong id="metricCaps">0</strong></div>
+            <div><span>任务记录</span><strong id="metricJobs">0</strong></div>
+            <div><span>默认模型</span><strong id="metricModel" class="small-value">deepseek-v4-flash</strong></div>
+          </article>
+        </div>
+
+        <article class="panel pipeline-panel">
+          <div class="panel-head"><div><p class="eyebrow">PIPELINE</p><h2>端到端生产线</h2></div><span class="pill muted">适配器可替换</span></div>
+          <div id="pipeline" class="pipeline"></div>
+        </article>
+
+        <article class="panel demo-production">
+          <div class="panel-head"><div><p class="eyebrow">FIRST END-TO-END DEMO</p><h2>一键创建首条科普样片</h2></div><span class="pill">45-60秒 · 9:16</span></div>
+          <div class="demo-grid">
+            <div>
+              <label>选题<input id="demoTopic" value="99%除醛率为什么必须看检测条件？"></label>
+              <label>目标受众<input id="demoAudience" value="新房装修、租房、母婴家庭"></label>
+              <div class="action-row"><button id="createDemoBtn" class="primary">创建样片任务</button><span class="hint">创建后仍须在“运行记录”人工批准</span></div>
+            </div>
+            <div id="latestArtifact" class="artifact-preview">
+              <strong>尚无成片</strong><span>完成任务后可在这里直接预览MP4和下载中间产物。</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel" id="planPanel" hidden>
+          <div class="panel-head"><div><p class="eyebrow">EXECUTION PLAN</p><h2>Agent 执行计划</h2></div><span id="plannerBadge" class="pill"></span></div>
+          <p id="planSummary" class="lead"></p>
+          <div id="planSteps" class="plan-steps"></div>
+          <div id="missingBox" class="notice" hidden></div>
+        </article>
+      </section>
+
+      <section id="view-discovery" class="view">
+        <article class="panel">
+          <div class="panel-head"><div><p class="eyebrow">LOCAL DISCOVERY</p><h2>扫描本地项目</h2></div><button id="scanBtn" class="primary">开始只读扫描</button></div>
+          <p class="lead">每行填写一个目录。系统只读取文件名和项目标记，识别能力与入口，不会执行其中的脚本。</p>
+          <textarea id="rootsInput" rows="5" class="mono"></textarea>
+          <div id="scanMeta" class="hint"></div>
+        </article>
+        <div id="toolGrid" class="tool-grid"></div>
+      </section>
+
+      <section id="view-settings" class="view">
+        <div class="settings-grid">
+          <article class="panel">
+            <p class="eyebrow">MODEL PROVIDER</p><h2>OpenAI兼容接口</h2>
+            <label>供应商名称<input id="providerName"></label>
+            <label>Base URL<input id="baseUrl" class="mono"></label>
+            <label>模型<input id="modelName" class="mono"></label>
+            <label>API Key<input id="apiKey" type="password" placeholder="默认读取 DEEPSEEK_API_KEY"></label>
+            <label class="check"><input id="persistKey" type="checkbox"><span>保存到本机（默认不勾选）</span></label>
+            <div class="action-row"><button id="saveSettings" class="primary">保存设置</button><button id="testProvider" class="secondary">测试连接</button></div>
+            <div id="providerResult" class="hint"></div>
+          </article>
+          <article class="panel">
+            <p class="eyebrow">SAFETY</p><h2>执行边界</h2>
+            <div class="safety-list">
+              <div><strong>目录扫描</strong><span>只读，可直接执行</span></div>
+              <div><strong>Agent规划</strong><span>主动点击后才调用API</span></div>
+              <div><strong>素材上传</strong><span>默认关闭</span></div>
+              <div><strong>未知外部命令</strong><span>默认关闭</span></div>
+              <div><strong>合规结论</strong><span>必须人工确认</span></div>
+            </div>
+          </article>
+          <article class="panel storage-settings">
+            <p class="eyebrow">LOCAL STORAGE</p><h2>本地安装资源库</h2>
+            <label>默认安装根目录<input id="storageRoot" class="mono" placeholder="D:\时宜AIGC内容工厂"></label>
+            <p class="lead">保存后自动创建工具、模型、下载、缓存、临时文件、日志和项目目录。不能直接选择 D:\ 或其他磁盘根目录。</p>
+            <div id="storageDirectories" class="storage-directories"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="view-catalog" class="view">
+        <div class="catalog-summary">
+          <article class="panel hardware-panel">
+            <div class="panel-head"><div><p class="eyebrow">HARDWARE PROFILE</p><h2 id="hardwareProfile">正在检测电脑…</h2></div><span id="installPolicyBadge" class="pill muted">受控安装</span></div>
+            <div id="hardwareFacts" class="hardware-facts"></div>
+            <div id="diskWarnings" class="notice" hidden></div>
+          </article>
+          <article class="panel">
+            <p class="eyebrow">TRUST POLICY</p><h2>DeepSeek 只能选，不能乱下</h2>
+            <div class="safety-list">
+              <div><strong>网上搜索安装源</strong><span>禁止</span></div>
+              <div><strong>提交任意网址/命令</strong><span>禁止</span></div>
+              <div><strong>按能力包 ID 推荐</strong><span>允许</span></div>
+              <div><strong>固定版本与 SHA-256</strong><span>启用安装前必须</span></div>
+              <div><strong>用户确认与失败回滚</strong><span>必须</span></div>
+            </div>
+          </article>
+        </div>
+        <article class="panel">
+          <div class="panel-head"><div><p class="eyebrow">TRUSTED CAPABILITY CATALOG</p><h2>已审核来源</h2></div><span id="catalogCount" class="pill muted">0 个能力包</span></div>
+          <p class="lead">绿色“适合本机”只表示硬件档位匹配。首版自动安装保持关闭，固定版本、哈希和沙箱测试通过后才会逐项开放。</p>
+        </article>
+        <div id="packageGrid" class="tool-grid package-grid"></div>
+      </section>
+
+      <section id="view-jobs" class="view">
+        <article class="panel">
+          <div class="panel-head"><div><p class="eyebrow">RUN HISTORY</p><h2>可恢复任务记录</h2></div><button id="reloadJobs" class="secondary">刷新</button></div>
+          <div id="jobList" class="job-list"></div>
+        </article>
+        <article class="panel" id="jobDetailPanel" hidden>
+          <div class="panel-head"><div><p class="eyebrow">HUMAN REFINEMENT</p><h2>脚本精修与产物</h2></div><span id="jobDetailBadge" class="pill"></span></div>
+          <textarea id="approvedScriptInput" rows="9" placeholder="任务首次运行后在此显示已采用脚本"></textarea>
+          <div class="action-row"><button id="saveScriptBtn" class="secondary">保存脚本并准备重跑</button><button id="rerunJobBtn" class="primary">重新生成配音与成片</button></div>
+          <div id="artifactLinks" class="artifact-links"></div>
+          <video id="artifactVideo" class="artifact-video" controls playsinline hidden></video>
+        </article>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

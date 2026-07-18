@@ -1,0 +1,25 @@
+{
+  "status": "human_review_required",
+  "blocked": false,
+  "warnings": [
+    {
+      "type": "numeric_claim_context",
+      "level": "review",
+      "message": "出现百分比，但脚本将其作为待核查的广告主张而非产品承诺。",
+      "matches": [
+        "百分之九十九"
+      ]
+    }
+  ],
+  "conditions_present": [
+    "剂量",
+    "空间",
+    "作用时间",
+    "初始浓度",
+    "检测方法",
+    "报告来源"
+  ],
+  "human_confirmation_required": true,
+  "scope": "通用科普，不构成具体产品功效结论",
+  "checked_at": "2026-07-18T12:42:42+08:00"
+}
