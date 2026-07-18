@@ -1,6 +1,6 @@
 # 净界AI内容工厂 / CleanAir Content Factory
 
-> 面向除甲醛健康科普的可审计 AIGC 短视频生产线：内容洞察 → 四稿脚本 → 证据与广告合规预审 → 本地配音 → 竖屏合成 → 人工精修。
+> 给它一个选题，它会先查资料，再写4版脚本、拦住没有依据的功效表述、完成配音和动态竖屏视频。Flash负责判断，真正的搜索、审核和剪辑由受控工具完成；每一步都有记录，运营人员随时可以修改和重跑。
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
@@ -11,17 +11,19 @@
 
 ## 为什么做
 
-除甲醛产品依赖短视频种草，但一条成片常需1–2天，质量依赖个人经验，健康科普又不能牺牲科学与广告合规。本项目不是再造一个孤立的“爆款打分器”，而是把样片范式、脚本候选、证据边界、本地语音和自动合成组织成一条可复核、可修改、可局部重跑的生产线。
+做除甲醛短视频有一个很现实的矛盾：运营需要日更，消费者却不能只看到一个醒目的“99%”。这个数字是在多大空间测的、用了多少产品、测了多久、由谁出具报告，都可能改变它的意义。传统流程既慢，又很依赖某个运营人员的经验。
+
+所以我们没有再做一个“爆款评分器”，也不想只交一个会吐脚本的聊天框。这个项目把样片分析、联网查证、四稿脚本、广告风险预审、本地配音和动态视频合成接成一个任务；如果资料不足，系统宁可换成安全科普脚本，也不会硬编产品功效。
 
 首个验证选题：**“99%除醛率为什么必须看检测条件？”**
 
-- 首次选题到成片：**166.88秒**
-- 人工精修后的局部重跑：**5.38秒**
-- 成片：**46.1秒 / 1080×1920 / H.264 + AAC**
-- 画面：**7段连续MG动画 / 30fps / 环形数字、放大镜、液位、时钟波形、报告扫描、空间对照、条件汇聚**
-- 脚本：一次生成4稿，内部代理测试2/4进入可用候选
-- 测试：29项单元测试、真实DeepSeek Tool Calls和控制台烟雾测试通过
-- 付费API：本次验证0次，完整离线降级仍可运行
+- 真实选题到成片：**208.36秒**
+- Flash：**10次真实工具调用**，整理出**7条研究发现和4个来源**
+- 真实联调成片：**52.01秒 / 1080×1920 / H.264 + AAC**
+- 设计基准样片：**46.1秒 / 7段连续MG动画 / 30fps**
+- 脚本：一次生成4稿；“至少2稿只需小改”作为内部验证目标
+- 测试：**29项单元测试**、真实DeepSeek Tool Calls和控制台烟雾测试通过
+- 降级：没有Key仍可走确定性脚本；本地语音不可用时可切换Windows SAPI
 
 > 2/4是内部原型指标，不冒充企业运营采用率；具体产品功效必须由品牌检测材料支持。
 
@@ -35,15 +37,17 @@
 - [第二选题复现工程：气味小就代表甲醛少吗？](video-compositions/forward-test-smell-vs-formaldehyde/)
 - [控制台演示](media/console-demo.mp4)
 - [8页初赛方案PDF](docs/competition-proposal.pdf)
+- [初赛开题报告文本](docs/SUBMISSION_TEXT.md)
+- [初赛交付摘要](docs/COMPETITION.md)
 - [结构化运行报告](examples/demo-output/run_report.json)
 - [合规预审结果](examples/demo-output/review.json)
 - [四个脚本候选](examples/demo-output/script_variants.json)
 
 ![样片关键帧](docs/assets/sample-frame.png)
 
-## Flash大脑 + 受信工具
+## Flash是大脑，工具才是手脚
 
-DeepSeek V4 Flash只负责理解目标、选择工具、整理证据和生成脚本，本身不假装具备搜索、下载、ASR、OCR或剪辑能力。联网调研由LangGraph维护状态，Flash通过[官方Tool Calls协议](https://api-docs.deepseek.com/guides/tool_calls/)选择两个受控工具：
+DeepSeek V4 Flash并不会凭空获得搜索、ASR、OCR或剪辑能力。它只理解目标、选择工具、整理证据和生成脚本。联网调研的状态由LangGraph保存，Flash通过[官方Tool Calls协议](https://api-docs.deepseek.com/guides/tool_calls/)调用两个受控工具：
 
 - `web_search`：DDGS免费搜索适配器，可替换成其他实现；
 - `extract_url`：调用项目内置网页/平台提取Skill，复杂页面会继续尝试Playwright或一站式音视频解析。
@@ -148,7 +152,7 @@ python -m unittest discover -s tests -v
 node --check static/app.js
 ```
 
-当前基线：21项单元测试全部通过；浏览器烟雾测试无控制台错误；第二选题的自动生成动画工程通过HyperFrames运行时、布局、运动与44/44文字对比度检查。
+当前基线：29项单元测试全部通过；浏览器烟雾测试无控制台错误；第二选题的自动生成动画工程通过HyperFrames运行时、布局、运动与44/44文字对比度检查。
 
 ## 项目结构
 
