@@ -1,0 +1,123 @@
+{
+  "status": "complete",
+  "topic": "99%除醛率为什么必须看检测条件？",
+  "started_at": "2026-07-18T16:10:32+08:00",
+  "finished_at": "2026-07-18T16:14:01+08:00",
+  "wall_clock_seconds": 208.36,
+  "provider": {
+    "source": "DeepSeek",
+    "api_calls": 7,
+    "fallback_used": false,
+    "research_api_calls": 6,
+    "api_call_budget": 7,
+    "tool_calls": 10
+  },
+  "voice": {
+    "engine": "windows_sapi",
+    "fallback": true,
+    "fallback_reason": "Local Voice Workbench或参考音频不存在",
+    "duration_seconds": 51.982,
+    "tempo_adjusted": true,
+    "original_duration_seconds": 76.811,
+    "tempo_factor": 1.4771,
+    "original_file": "runtime\\real-full-e2e-final3\\voice.original.wav"
+  },
+  "render": {
+    "ok": true,
+    "mode": "animated_hyperframes",
+    "file": "runtime\\real-full-e2e-final3\\final.mp4",
+    "project_dir": "runtime\\real-full-e2e-final3\\animation_project",
+    "duration_seconds": 52.011,
+    "video_codec": "h264",
+    "audio_codec": "aac",
+    "width": 1080,
+    "height": 1920,
+    "fps": "30/1",
+    "motion_validation": {
+      "ok": true,
+      "scene_count": 7,
+      "visual_family_count": 7,
+      "no_static_only_scenes": true,
+      "timeline_continuous": true
+    },
+    "subtitle_mode": "animated_caption_overlay_and_sidecar_srt"
+  },
+  "compliance": {
+    "status": "human_review_required",
+    "blocked": false,
+    "warnings": [
+      {
+        "type": "numeric_claim_context",
+        "level": "review",
+        "message": "出现百分比，但脚本将其作为待核查的广告主张而非产品承诺。",
+        "matches": [
+          "百分之九十九"
+        ]
+      }
+    ],
+    "conditions_present": [
+      "剂量",
+      "空间",
+      "作用时间",
+      "初始浓度",
+      "检测方法",
+      "报告来源"
+    ],
+    "human_confirmation_required": true,
+    "scope": "通用科普，不构成具体产品功效结论",
+    "checked_at": "2026-07-18T16:11:28+08:00",
+    "safety_fallback": {
+      "applied": true,
+      "reason": "Flash修订后仍命中本地阻断规则",
+      "previous_warnings": [
+        {
+          "type": "numeric_claim_context",
+          "level": "review",
+          "message": "出现百分比，但脚本将其作为待核查的广告主张而非产品承诺。",
+          "matches": [
+            "99%"
+          ]
+        },
+        {
+          "type": "unsupported_measurement",
+          "level": "block",
+          "message": "通用科普稿包含无品牌证据支撑的具体测量数字。",
+          "matches": [
+            "1罐",
+            "1m³",
+            "1.05mg/m³",
+            "24小时",
+            "20平方米",
+            "1罐"
+          ]
+        },
+        {
+          "type": "missing_conditions",
+          "level": "block",
+          "message": "数值功效语境没有覆盖六项内部审核条件。",
+          "present": [
+            "空间",
+            "初始浓度"
+          ]
+        }
+      ]
+    }
+  },
+  "adoption_proxy": {
+    "candidate_count": 4,
+    "provisionally_usable_count": 0,
+    "definition": "未命中阻断项且结构完整；尚未经过企业运营团队验证"
+  },
+  "artifacts": [
+    "research.json",
+    "insight.json",
+    "script_variants.json",
+    "approved_script.json",
+    "review.json",
+    "voice.wav",
+    "captions.srt",
+    "motion_plan.json",
+    "final.mp4",
+    "run_report.json"
+  ]
+}

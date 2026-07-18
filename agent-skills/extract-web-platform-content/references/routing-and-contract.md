@@ -4,6 +4,7 @@
 
 - `complete`: requested body, transcript or platform record was extracted.
 - `partial`: useful metadata or text exists, but media/transcript coverage is incomplete.
+- `adapter_missing`: the requested safe route exists, but its optional Playwright or media-parser adapter is not installed/configured.
 - `auth_required`: a user-approved logged-in read-only browser is required.
 - `blocked`: the target is private, unsafe, forbidden or outside the allowed policy.
 - `failed`: all installed safe routes failed and their actual errors are recorded.
@@ -13,11 +14,11 @@
 
 | Page shape | Route order |
 |---|---|
-| Ordinary public page | `direct_http`, `playwright`, `manual_auth` |
-| Known media platform | `one_stop_media_parser`, `direct_http`, `playwright`, `manual_auth` |
+| Ordinary public page | bundled `direct_http`, optional `playwright`, `manual_auth` |
+| Known media platform | optional `one_stop_media_parser`, bundled `direct_http`, optional `playwright`, `manual_auth` |
 | Downloaded media | `media_probe`, `asr`, `ocr`, `source_record` |
 
-Do not flatten these routes into a universal browser. A route may be unavailable because its dependency is not installed; that is an installation state, not proof that the page cannot be extracted.
+Do not flatten these routes into a universal browser. Playwright and the media parser are not installed by the default requirements. A route may be unavailable because its dependency is missing; report `adapter_missing`, which is an installation state rather than proof that the page cannot be extracted.
 
 ## Normalized JSON
 

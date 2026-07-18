@@ -72,6 +72,18 @@ class ExtractionSkillTests(unittest.TestCase):
         self.assertEqual(result["source"]["title"], "Rendered")
         self.assertEqual([item["route"] for item in result["attempts"]], ["direct_http", "playwright"])
 
+    def test_missing_optional_browser_is_reported_as_adapter_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.object(
+            EXTRACT, "validate_public_url", return_value=urllib.parse.urlsplit("https://example.com")
+        ), patch.object(
+            EXTRACT, "direct_http", side_effect=EXTRACT.ExtractionError("no readable body")
+        ), patch.object(
+            EXTRACT, "playwright_extract", side_effect=EXTRACT.ExtractionError("Playwright is not installed")
+        ):
+            result = EXTRACT.extract("https://example.com", Path(temp))
+        self.assertEqual(result["status"], "adapter_missing")
+        self.assertIn("install/configure", result["next_action"])
+
 
 if __name__ == "__main__":
     unittest.main()

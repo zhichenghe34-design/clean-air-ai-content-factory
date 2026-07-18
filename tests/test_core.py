@@ -11,7 +11,7 @@ from core.motion_director import MotionPlanError, build_motion_plan, build_motio
 from core.orchestrator import JobStore, local_fallback_plan
 from core.provider import OpenAICompatibleProvider, ProviderError
 from core.production import DEFAULT_SCRIPT, ProductionRunner, review_script
-from core.web_agent import WebResearchAgent
+from core.web_agent import WebResearchAgent, normalize_research_result
 from core.web_tools import TrustedWebToolRegistry
 
 
@@ -142,10 +142,27 @@ class MockFlashProvider:
             "content": json.dumps({
                 "status": "complete",
                 "summary": "检测结果必须结合条件理解",
-                "findings": [{"claim": "需看检测条件", "source_urls": ["https://example.com/report"], "confidence": "high"}],
+                "findings": [{
+                    "claim": "需看检测条件",
+                    "source_urls": ["https://example.com/report"],
+                    "evidence": [{
+                        "url": "https://example.com/report",
+                        "excerpt": "检测结果应结合剂量、空间、时间与方法。",
+                        "source_type": "institutional",
+                        "retrieved_at": "2026-07-18T16:10:32+08:00",
+                    }],
+                    "confidence": "high",
+                    "limitations": [],
+                }],
                 "content_patterns": ["主张→条件→建议"],
                 "evidence_gaps": [],
-                "sources": [{"url": "https://example.com/report", "title": "权威资料"}],
+                "sources": [{
+                    "url": "https://example.com/report",
+                    "title": "权威资料",
+                    "publisher": "示例机构",
+                    "source_type": "institutional",
+                    "retrieved_at": "2026-07-18T16:10:32+08:00",
+                }],
             }, ensure_ascii=False),
         }
 
@@ -179,6 +196,38 @@ class WebAgentTests(unittest.TestCase):
             self.assertEqual(provider.calls, 3)
             self.assertEqual([item["tool"] for item in result["tool_trace"]], ["web_search", "extract_url"])
             self.assertTrue(result["tool_trace"][1]["result"]["ok"])
+            self.assertEqual(result["evidence_review"]["script_eligible_count"], 1)
+
+    def test_high_confidence_finding_without_excerpt_is_downgraded(self):
+        result = normalize_research_result({
+            "status": "complete",
+            "findings": [{
+                "claim": "没有摘录的判断",
+                "source_urls": ["https://example.com/report"],
+                "confidence": "high",
+            }],
+            "sources": [{"url": "https://example.com/report", "title": "来源"}],
+            "evidence_gaps": [],
+        })
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["findings"][0]["confidence"], "low")
+        self.assertFalse(result["findings"][0]["script_eligible"])
+        self.assertEqual(result["script_eligible_findings"], [])
+
+    def test_unknown_evidence_url_cannot_enter_script_fact_layer(self):
+        result = normalize_research_result({
+            "status": "complete",
+            "findings": [{
+                "claim": "引用了未登记网址",
+                "source_urls": ["https://invented.example/claim"],
+                "evidence": [{"url": "https://invented.example/claim", "excerpt": "伪证据"}],
+                "confidence": "high",
+            }],
+            "sources": [{"url": "https://example.com/report", "title": "来源"}],
+            "evidence_gaps": [],
+        })
+        self.assertFalse(result["findings"][0]["script_eligible"])
+        self.assertEqual(result["findings"][0]["source_urls"], [])
 
     def test_model_invented_url_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -197,9 +246,15 @@ class WebAgentTests(unittest.TestCase):
             self.assertIn("除醛", result["query"])
 
     def test_research_is_included_in_insight(self):
-        research = {"status": "complete", "findings": [{"claim": "示例"}]}
+        research = {
+            "status": "complete",
+            "findings": [{"claim": "仅留档"}],
+            "script_eligible_findings": [{"claim": "可进入脚本"}],
+            "tool_trace": [{"tool": "web_search"}],
+        }
         insight = ProductionRunner._build_insight({"topic": "测试", "audience": "家庭", "pattern_card_ids": []}, research)
-        self.assertEqual(insight["web_research"], research)
+        self.assertEqual(insight["web_research"]["findings"], [{"claim": "可进入脚本"}])
+        self.assertNotIn("tool_trace", insight["web_research"])
 
     def test_global_research_switch_overrides_job_default(self):
         with tempfile.TemporaryDirectory() as folder:

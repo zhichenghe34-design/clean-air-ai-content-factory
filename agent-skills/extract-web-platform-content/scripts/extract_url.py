@@ -327,6 +327,13 @@ def extract(
         base["status"] = "complete" if len(text) >= MIN_USEFUL_TEXT_CHARS and platform == "web" else "partial"
         base["next_action"] = None if base["status"] == "complete" else "authorize a read-only browser or configure the approved media parser"
     else:
+        missing_adapter = any(
+            item.get("status") == "failed"
+            and any(marker in str(item.get("detail", "")).lower() for marker in ("not installed", "not configured"))
+            for item in base["attempts"]
+        )
+        if missing_adapter:
+            base["status"] = "adapter_missing"
         base["next_action"] = "authorize a read-only browser or install/configure an approved extraction adapter"
     return base
 
@@ -351,7 +358,7 @@ def main() -> int:
         destination = output / "extraction.json"
         destination.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(destination)
-        return 0 if result["status"] in {"complete", "partial", "planned", "auth_required"} else 2
+        return 0 if result["status"] in {"complete", "partial", "planned", "auth_required", "adapter_missing"} else 2
     except Exception as exc:
         output.mkdir(parents=True, exist_ok=True)
         failure = {"schema_version": SCHEMA_VERSION, "status": "blocked", "error": str(exc), "source": {"url": args.url}, "attempts": []}

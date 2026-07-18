@@ -337,6 +337,11 @@ class ProductionRunner:
     def _build_insight(config: dict[str, Any], research: dict[str, Any] | None = None) -> dict[str, Any]:
         ids = {str(value) for value in config.get("pattern_card_ids", [])}
         selected = [card for card in load_pattern_cards() if str(card.get("item_id")) in ids]
+        research_for_script = dict(research or {})
+        if research_for_script:
+            research_for_script["findings"] = list(research_for_script.get("script_eligible_findings", []))
+            research_for_script.pop("script_eligible_findings", None)
+            research_for_script.pop("tool_trace", None)
         return {
             "topic": config["topic"],
             "audience": config["audience"],
@@ -348,7 +353,7 @@ class ProductionRunner:
                 {"name": "GB/T 18883-2022 室内空气质量标准", "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436"},
                 {"name": "中华人民共和国广告法", "url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html"},
             ],
-            "web_research": research or {},
+            "web_research": research_for_script,
         }
 
     def _generate_variants(self, config: dict[str, Any], insight: dict[str, Any], *, allow_provider: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any]]:

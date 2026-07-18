@@ -18,14 +18,14 @@
 首个验证选题：**“99%除醛率为什么必须看检测条件？”**
 
 - 真实选题到成片：**208.36秒**
-- Flash：**10次真实工具调用**，整理出**7条研究发现和4个来源**
+- Flash：**10次真实工具调用**，原始整理**7条研究发现和4个来源**；人工复核后5条可进入脚本事实层、2条降级，并补充2个官方依据
 - 真实联调成片：**52.01秒 / 1080×1920 / H.264 + AAC**
 - 设计基准样片：**46.1秒 / 7段连续MG动画 / 30fps**
-- 脚本：一次生成4稿；“至少2稿只需小改”作为内部验证目标
-- 测试：**29项单元测试**、真实DeepSeek Tool Calls和控制台烟雾测试通过
+- 脚本：真实DeepSeek联调候选**0/4**，随后触发安全模板；设计基准确实为**2/4**
+- 测试：**32项单元测试**、真实DeepSeek Tool Calls和控制台烟雾测试通过
 - 降级：没有Key仍可走确定性脚本；本地语音不可用时可切换Windows SAPI
 
-> 2/4是内部原型指标，不冒充企业运营采用率；具体产品功效必须由品牌检测材料支持。
+> 真实联调0/4和设计基准2/4都只是原型内部结果，企业采用率尚未验证；具体产品功效必须由品牌检测材料支持。
 
 ## 可查看成果
 
@@ -34,6 +34,8 @@
 - [Agent动态视频导演Skill](agent-skills/produce-dynamic-health-video/)
 - [Agent联网与平台内容提取Skill](agent-skills/extract-web-platform-content/)
 - [真实DeepSeek端到端验证记录](docs/REAL_E2E_VALIDATION.md)
+- [真实联调人工审定研究记录](examples/real-e2e/research.json)
+- [真实联调结构化运行报告](examples/real-e2e/run_report.json)
 - [第二选题复现工程：气味小就代表甲醛少吗？](video-compositions/forward-test-smell-vs-formaldehyde/)
 - [控制台演示](media/console-demo.mp4)
 - [8页初赛方案PDF](docs/competition-proposal.pdf)
@@ -50,7 +52,7 @@
 DeepSeek V4 Flash并不会凭空获得搜索、ASR、OCR或剪辑能力。它只理解目标、选择工具、整理证据和生成脚本。联网调研的状态由LangGraph保存，Flash通过[官方Tool Calls协议](https://api-docs.deepseek.com/guides/tool_calls/)调用两个受控工具：
 
 - `web_search`：DDGS免费搜索适配器，可替换成其他实现；
-- `extract_url`：调用项目内置网页/平台提取Skill，复杂页面会继续尝试Playwright或一站式音视频解析。
+- `extract_url`：普通公开网页使用内置HTTP提取；动态网页和视频平台可接入Playwright、受信浏览器或一站式音视频解析等可选适配器。
 
 只有用户输入或搜索工具返回的URL才能交给提取器，模型临时编造的地址会被拒绝。网页正文始终按不可信数据处理，不能借网页文字改变系统规则、执行命令或读取密钥。每个任务最多7次模型请求，其中联网调研最多5轮；无论模型是否完成，本地合规硬规则都会兜底，运行报告记录实际用量。真实DeepSeek Tool Calls和无Key降级路线均纳入测试。
 
@@ -91,9 +93,9 @@ run_report.json
 
 `ProductionRunner` 默认先生成 `motion_plan.json`，再调用项目内受信模板生成HyperFrames工程。动态导演Skill把本次人工精修经验固化为约束：每场双层运动、至少三种视觉语法、转场遮罩离开前主体入场、字幕两行上限、结尾条件汇聚，并要求逐转场抽帧检查。HyperFrames不可用时才退回静态FFmpeg卡片，同时在运行报告中明确标记 `static_fallback`，不会把降级结果冒充动态成片。
 
-### 复杂网页也不直接放弃
+### 复杂网页的真实能力边界
 
-`extract-web-platform-content` Skill把普通网页、动态网页和公开视频平台分开路由。普通HTML先做受限HTTP提取，正文不足时升级Playwright；抖音、B站、X、YouTube和TikTok优先交给受信音视频解析Adapter，必要时继续ASR、OCR与来源记录。登录、验证码或账号权限会返回 `auth_required`，要求用户授权只读浏览器，而不是伪造内容或绕过访问控制。所有路线统一输出 `extraction.json`，记录来源、哈希、提取时间、尝试路径和下一步。
+`extract-web-platform-content` Skill把普通网页、动态网页和公开视频平台分开路由。普通公开网页可直接提取；动态网页和视频平台通过可插拔的Playwright、受信浏览器或一站式音视频解析适配器增强。这些适配器不属于默认依赖。未安装适配器时返回 `adapter_missing`，需要登录、验证码或账号权限时返回 `auth_required`；已有部分内容时返回 `partial`。系统记录真实尝试路径和下一步，不伪造内容，也不绕过访问控制。
 
 ## 快速开始
 
@@ -152,7 +154,7 @@ python -m unittest discover -s tests -v
 node --check static/app.js
 ```
 
-当前基线：29项单元测试全部通过；浏览器烟雾测试无控制台错误；第二选题的自动生成动画工程通过HyperFrames运行时、布局、运动与44/44文字对比度检查。
+当前基线：32项单元测试全部通过；浏览器烟雾测试无控制台错误；第二选题的自动生成动画工程通过HyperFrames运行时、布局、运动与44/44文字对比度检查。
 
 ## 项目结构
 

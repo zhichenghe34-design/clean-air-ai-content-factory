@@ -1,0 +1,392 @@
+{
+  "status": "partial",
+  "summary": "真实工具原始整理7条发现和4个来源；人工复核后5条可进入脚本事实层，2条因证据不足或绝对化表述被降级；另补充2个官方合规依据。",
+  "findings": [
+    {
+      "claim": "99%除醛率测试通常在1m³或1.5m³密闭实验舱进行",
+      "source_urls": [
+        "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+        "https://www.sohu.com/a/1008795753_355158",
+        "https://www.sohu.com/a/983839742_122633154"
+      ],
+      "confidence": "high",
+      "limitations": [],
+      "review_status": "human_verified",
+      "evidence": [
+        {
+          "url": "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+          "excerpt": "1罐产品在1m3试验舱内24小时除醛率为99.93%",
+          "source_type": "media_original",
+          "retrieved_at": "2026-07-18T17:59:27+08:00"
+        }
+      ],
+      "script_eligible": true
+    },
+    {
+      "claim": "商家宣传的适用范围（如1罐覆盖10-15㎡）与实验舱条件不符",
+      "source_urls": [
+        "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+        "https://www.sohu.com/a/1008795753_355158"
+      ],
+      "confidence": "medium",
+      "limitations": [
+        "来源为消费调查，不能外推到所有品牌或产品"
+      ],
+      "review_status": "human_verified",
+      "evidence": [
+        {
+          "url": "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+          "excerpt": "一罐覆盖10-15平方米，但商家拿不出完整检测报告",
+          "source_type": "media_original",
+          "retrieved_at": "2026-07-18T17:59:27+08:00"
+        }
+      ],
+      "script_eligible": true
+    },
+    {
+      "claim": "除醛凝胶变色（可视化）与除醛效果无直接定量关系",
+      "source_urls": [
+        "https://www.sohu.com/a/1008795753_355158",
+        "https://www.sohu.com/a/983839742_122633154"
+      ],
+      "confidence": "medium",
+      "limitations": [
+        "当前抓取页为媒体转载，应继续寻找原始采访或实验材料"
+      ],
+      "review_status": "human_verified",
+      "evidence": [
+        {
+          "url": "https://www.sohu.com/a/1008795753_355158",
+          "excerpt": "变色与是否存在甲醛、分解多少没有直接定量关系",
+          "source_type": "media_reprint",
+          "retrieved_at": "2026-07-18T17:59:27+08:00"
+        }
+      ],
+      "script_eligible": true
+    },
+    {
+      "claim": "真实环境中甲醛持续释放数年，无法靠短期产品彻底去除",
+      "source_urls": [
+        "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html"
+      ],
+      "confidence": "low",
+      "limitations": [
+        "当前来源为媒体评论，未取得原始研究或官方技术材料",
+        "缺少可回溯的页面证据摘录"
+      ],
+      "review_status": "evidence_missing",
+      "evidence": [],
+      "script_eligible": false
+    },
+    {
+      "claim": "开窗通风是性价比最高、效果最好的除醛方式",
+      "source_urls": [
+        "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+        "https://www.sohu.com/a/1008795753_355158",
+        "https://www.sohu.com/a/983839742_122633154"
+      ],
+      "confidence": "low",
+      "limitations": [
+        "“最高、最好”属于绝对比较，现有来源不足以支持",
+        "缺少可回溯的页面证据摘录"
+      ],
+      "review_status": "evidence_missing",
+      "evidence": [],
+      "script_eligible": false
+    },
+    {
+      "claim": "报道中的部分除醛设备工作时释放臭氧，存在二次污染隐患",
+      "source_urls": [
+        "https://www.sohu.com/a/1008795753_355158"
+      ],
+      "confidence": "medium",
+      "limitations": [
+        "仅适用于报道涉及的设备，不能泛化到全部除醛产品"
+      ],
+      "review_status": "human_verified",
+      "evidence": [
+        {
+          "url": "https://www.sohu.com/a/1008795753_355158",
+          "excerpt": "设备工作时释放的臭氧，引发二次污染隐患",
+          "source_type": "media_reprint",
+          "retrieved_at": "2026-07-18T17:59:27+08:00"
+        }
+      ],
+      "script_eligible": true
+    },
+    {
+      "claim": "SGS对GB/T 18883-2022的解读称甲醛限值调整为0.08mg/m3",
+      "source_urls": [
+        "https://m.sgsonline.com.cn/case/detail?id=1739",
+        "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436"
+      ],
+      "confidence": "medium",
+      "limitations": [
+        "官方页面确认标准身份与有效状态；具体限值引用SGS解读",
+        "原记录中的关闭门窗12小时未获本次证据支持，已删除"
+      ],
+      "review_status": "human_verified",
+      "evidence": [
+        {
+          "url": "https://m.sgsonline.com.cn/case/detail?id=1739",
+          "excerpt": "甲醛限值从0.1mg/m3缩紧至0.08mg/m3",
+          "source_type": "institutional_secondary",
+          "retrieved_at": "2026-07-18T17:59:27+08:00"
+        }
+      ],
+      "script_eligible": true
+    }
+  ],
+  "content_patterns": [
+    "商家使用实验室小型舱数据冒充真实环境效果",
+    "大字突出99%除醛率，小字注明测试条件",
+    "可视化变色与除醛效果无必然联系",
+    "虚假大学或科研机构背书"
+  ],
+  "evidence_gaps": [
+    "缺少除醛产品在真实家居环境中的除醛率实测数据",
+    "缺少不同除醛产品在国家标准检测条件下的对比测试结果",
+    "缺少除醛产品长期使用的效果跟踪数据",
+    "持续释放数年的说法缺少本次可回溯的原始研究或官方技术材料",
+    "“性价比最高、效果最好”属于绝对比较，未进入脚本事实层",
+    "关闭门窗12小时未由本次抓取证据支持，已从审定发现中删除",
+    "未进入脚本事实层：真实环境中甲醛持续释放数年，无法靠短期产品彻底去除",
+    "未进入脚本事实层：开窗通风是性价比最高、效果最好的除醛方式"
+  ],
+  "sources": [
+    {
+      "url": "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+      "title": "99%除醛率，网红凝胶牛皮吹破了天_新京报",
+      "publisher": "新京报",
+      "source_type": "media_original",
+      "retrieved_at": "2026-07-18T17:59:27+08:00"
+    },
+    {
+      "url": "https://www.sohu.com/a/1008795753_355158",
+      "title": "抽检50件测醛仪全不准！号称99%除醛率的除醛产品却威胁健康……_甲醛_检测_臭氧",
+      "publisher": "半岛都市报（搜狐转载页）",
+      "source_type": "media_reprint",
+      "retrieved_at": "2026-07-18T17:59:27+08:00"
+    },
+    {
+      "url": "https://www.sohu.com/a/983839742_122633154",
+      "title": "消费调查 | 希望树、霍尼韦尔等品牌99%除醛率宣传存疑_果冻_甲醛_产品",
+      "publisher": "315诚搜网（搜狐转载页）",
+      "source_type": "media_reprint",
+      "retrieved_at": "2026-07-18T17:59:27+08:00"
+    },
+    {
+      "url": "https://m.sgsonline.com.cn/case/detail?id=1739",
+      "title": "事关室内环境安全——最新版《室内空气质量标准》",
+      "publisher": "SGS在线商城",
+      "source_type": "institutional_secondary",
+      "retrieved_at": "2026-07-18T17:59:27+08:00"
+    },
+    {
+      "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436",
+      "title": "GB/T 18883-2022《室内空气质量标准》官方信息",
+      "publisher": "国家市场监督管理总局 国家标准化管理委员会",
+      "source_type": "government_standard_metadata",
+      "retrieved_at": "2026-07-18T17:59:27+08:00"
+    },
+    {
+      "url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html",
+      "title": "中华人民共和国广告法",
+      "publisher": "国家市场监督管理总局",
+      "source_type": "government_law",
+      "retrieved_at": "2026-07-18T17:59:27+08:00"
+    }
+  ],
+  "model_calls": 6,
+  "tool_trace_summary": [
+    {
+      "sequence": 1,
+      "tool": "web_search",
+      "ok": true,
+      "query": "99%除醛率 检测条件 标准 检测方法 权威",
+      "result_count": 5
+    },
+    {
+      "sequence": 2,
+      "tool": "web_search",
+      "ok": true,
+      "query": "除甲醛产品 99%除醛率 虚假宣传 检测报告 条件 国家标准",
+      "result_count": 5
+    },
+    {
+      "sequence": 3,
+      "tool": "web_search",
+      "ok": true,
+      "query": "GB/T 18883 室内空气质量标准 甲醛检测条件",
+      "result_count": 5
+    },
+    {
+      "sequence": 4,
+      "tool": "extract_url",
+      "ok": true,
+      "url": "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+      "status": "complete"
+    },
+    {
+      "sequence": 5,
+      "tool": "extract_url",
+      "ok": true,
+      "url": "https://www.sohu.com/a/1008795753_355158",
+      "status": "complete"
+    },
+    {
+      "sequence": 6,
+      "tool": "extract_url",
+      "ok": true,
+      "url": "https://www.sohu.com/a/983839742_122633154",
+      "status": "complete"
+    },
+    {
+      "sequence": 7,
+      "tool": "web_search",
+      "ok": false,
+      "query": "除醛产品检测标准 实验舱 立方米 国家标准 检测方法",
+      "result_count": 0
+    },
+    {
+      "sequence": 8,
+      "tool": "web_search",
+      "ok": false,
+      "query": "GB/T 18883-2022 甲醛检测 关闭门窗12小时 采样条件",
+      "result_count": 0
+    },
+    {
+      "sequence": 9,
+      "tool": "extract_url",
+      "ok": false,
+      "url": "https://zhuanlan.zhihu.com/p/559756525",
+      "status": "failed"
+    },
+    {
+      "sequence": 10,
+      "tool": "extract_url",
+      "ok": true,
+      "url": "https://m.sgsonline.com.cn/case/detail?id=1739",
+      "status": "complete"
+    }
+  ],
+  "provenance": {
+    "raw_artifact": "research.raw.json",
+    "raw_finding_count": 7,
+    "raw_source_count": 4,
+    "reviewed_at": "2026-07-18T17:59:27+08:00",
+    "reviewer": "human_reviewed_submission_baseline",
+    "note": "完整真实工具轨迹保存在本地raw文件；提交版只保留无本机路径的调用摘要，人工仅补充证据绑定、来源分级和适用边界。"
+  },
+  "script_eligible_findings": [
+    {
+      "claim": "99%除醛率测试通常在1m³或1.5m³密闭实验舱进行",
+      "source_urls": [
+        "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+        "https://www.sohu.com/a/1008795753_355158",
+        "https://www.sohu.com/a/983839742_122633154"
+      ],
+      "confidence": "high",
+      "limitations": [],
+      "review_status": "human_verified",
+      "evidence": [
+        {
+          "url": "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+          "excerpt": "1罐产品在1m3试验舱内24小时除醛率为99.93%",
+          "source_type": "media_original",
+          "retrieved_at": "2026-07-18T17:59:27+08:00"
+        }
+      ],
+      "script_eligible": true
+    },
+    {
+      "claim": "商家宣传的适用范围（如1罐覆盖10-15㎡）与实验舱条件不符",
+      "source_urls": [
+        "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+        "https://www.sohu.com/a/1008795753_355158"
+      ],
+      "confidence": "medium",
+      "limitations": [
+        "来源为消费调查，不能外推到所有品牌或产品"
+      ],
+      "review_status": "human_verified",
+      "evidence": [
+        {
+          "url": "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+          "excerpt": "一罐覆盖10-15平方米，但商家拿不出完整检测报告",
+          "source_type": "media_original",
+          "retrieved_at": "2026-07-18T17:59:27+08:00"
+        }
+      ],
+      "script_eligible": true
+    },
+    {
+      "claim": "除醛凝胶变色（可视化）与除醛效果无直接定量关系",
+      "source_urls": [
+        "https://www.sohu.com/a/1008795753_355158",
+        "https://www.sohu.com/a/983839742_122633154"
+      ],
+      "confidence": "medium",
+      "limitations": [
+        "当前抓取页为媒体转载，应继续寻找原始采访或实验材料"
+      ],
+      "review_status": "human_verified",
+      "evidence": [
+        {
+          "url": "https://www.sohu.com/a/1008795753_355158",
+          "excerpt": "变色与是否存在甲醛、分解多少没有直接定量关系",
+          "source_type": "media_reprint",
+          "retrieved_at": "2026-07-18T17:59:27+08:00"
+        }
+      ],
+      "script_eligible": true
+    },
+    {
+      "claim": "报道中的部分除醛设备工作时释放臭氧，存在二次污染隐患",
+      "source_urls": [
+        "https://www.sohu.com/a/1008795753_355158"
+      ],
+      "confidence": "medium",
+      "limitations": [
+        "仅适用于报道涉及的设备，不能泛化到全部除醛产品"
+      ],
+      "review_status": "human_verified",
+      "evidence": [
+        {
+          "url": "https://www.sohu.com/a/1008795753_355158",
+          "excerpt": "设备工作时释放的臭氧，引发二次污染隐患",
+          "source_type": "media_reprint",
+          "retrieved_at": "2026-07-18T17:59:27+08:00"
+        }
+      ],
+      "script_eligible": true
+    },
+    {
+      "claim": "SGS对GB/T 18883-2022的解读称甲醛限值调整为0.08mg/m3",
+      "source_urls": [
+        "https://m.sgsonline.com.cn/case/detail?id=1739",
+        "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436"
+      ],
+      "confidence": "medium",
+      "limitations": [
+        "官方页面确认标准身份与有效状态；具体限值引用SGS解读",
+        "原记录中的关闭门窗12小时未获本次证据支持，已删除"
+      ],
+      "review_status": "human_verified",
+      "evidence": [
+        {
+          "url": "https://m.sgsonline.com.cn/case/detail?id=1739",
+          "excerpt": "甲醛限值从0.1mg/m3缩紧至0.08mg/m3",
+          "source_type": "institutional_secondary",
+          "retrieved_at": "2026-07-18T17:59:27+08:00"
+        }
+      ],
+      "script_eligible": true
+    }
+  ],
+  "evidence_review": {
+    "finding_count": 7,
+    "script_eligible_count": 5,
+    "excluded_count": 2
+  }
+}
