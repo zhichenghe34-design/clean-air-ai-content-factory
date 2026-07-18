@@ -30,6 +30,7 @@
 - [首条动态测试成片](media/sample.mp4)
 - [可复现动画工程（HyperFrames + GSAP）](video-compositions/formaldehyde-conditions/)
 - [Agent动态视频导演Skill](agent-skills/produce-dynamic-health-video/)
+- [Agent联网与平台内容提取Skill](agent-skills/extract-web-platform-content/)
 - [第二选题复现工程：气味小就代表甲醛少吗？](video-compositions/forward-test-smell-vs-formaldehyde/)
 - [控制台演示](media/console-demo.mp4)
 - [8页初赛方案PDF](docs/competition-proposal.pdf)
@@ -68,6 +69,10 @@ run_report.json
 ### 动画如何量产
 
 `ProductionRunner` 默认先生成 `motion_plan.json`，再调用项目内受信模板生成HyperFrames工程。动态导演Skill把本次人工精修经验固化为约束：每场双层运动、至少三种视觉语法、转场遮罩离开前主体入场、字幕两行上限、结尾条件汇聚，并要求逐转场抽帧检查。HyperFrames不可用时才退回静态FFmpeg卡片，同时在运行报告中明确标记 `static_fallback`，不会把降级结果冒充动态成片。
+
+### 复杂网页也不直接放弃
+
+`extract-web-platform-content` Skill把普通网页、动态网页和公开视频平台分开路由。普通HTML先做受限HTTP提取，正文不足时升级Playwright；抖音、B站、X、YouTube和TikTok优先交给受信音视频解析Adapter，必要时继续ASR、OCR与来源记录。登录、验证码或账号权限会返回 `auth_required`，要求用户授权只读浏览器，而不是伪造内容或绕过访问控制。所有路线统一输出 `extraction.json`，记录来源、哈希、提取时间、尝试路径和下一步。
 
 ## 快速开始
 
@@ -125,7 +130,7 @@ python -m unittest discover -s tests -v
 node --check static/app.js
 ```
 
-当前基线：15项单元测试全部通过；浏览器烟雾测试无控制台错误；第二选题的自动生成动画工程通过HyperFrames运行时、布局、运动与44/44文字对比度检查。
+当前基线：21项单元测试全部通过；浏览器烟雾测试无控制台错误；第二选题的自动生成动画工程通过HyperFrames运行时、布局、运动与44/44文字对比度检查。
 
 ## 项目结构
 

@@ -5,11 +5,13 @@
   "policy": {
     "agent_may_browse_for_install_sources": false,
     "agent_may_submit_urls": false,
+    "agent_may_extract_user_or_registered_search_urls": true,
     "agent_may_submit_shell_commands": false,
     "agent_allowed_requests": [
       "list_capabilities",
       "inspect_hardware",
       "recommend_package_ids",
+      "extract_user_or_registered_search_url",
       "request_install_by_package_id"
     ],
     "installer_resolves_catalog_urls": true,
@@ -379,6 +381,18 @@
       ],
       "recommended_profiles": [],
       "commercial_notes": "借鉴 EDL 与质检规则；不引入其默认云转写依赖。"
+    },
+    {
+      "id": "web-platform-extraction-skill",
+      "name": "联网与平台内容提取 Skill",
+      "category": "bundled_agent_skill",
+      "capabilities": ["web_extraction", "dynamic_page_fallback", "platform_media_routing", "source_evidence", "prompt_injection_boundary"],
+      "license": "MIT_project_code_with_external_adapter_licenses",
+      "trust_status": "approved_bundled_skill",
+      "install_status": "bundled_no_external_auto_install",
+      "sources": [],
+      "recommended_profiles": ["cpu_or_gpu_below_6gb", "gpu_6_to_9gb", "gpu_10_to_16gb", "gpu_17_to_23gb", "gpu_24_to_79gb", "gpu_80gb_plus"],
+      "commercial_notes": "Skill本身随项目提供；Playwright、SearXNG、yt-dlp及外部平台解析器仍按各自许可证和平台规则使用。"
     },
     {
       "id": "hyperframes-bundled-capability",

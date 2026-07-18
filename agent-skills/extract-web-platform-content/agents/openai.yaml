@@ -1,0 +1,4 @@
+interface:
+  display_name: "联网与平台内容提取"
+  short_description: "分级提取普通网页、动态页面和公开视频平台内容并保留证据"
+  default_prompt: "Use $extract-web-platform-content to extract this URL through safe fallback routes and return traceable evidence."

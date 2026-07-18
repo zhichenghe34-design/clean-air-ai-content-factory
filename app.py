@@ -166,8 +166,15 @@ class AppHandler(BaseHTTPRequestHandler):
         config = config_store.public_config()
         with state_lock:
             tools = list(app_state["tools"])
-        capabilities = sorted({cap for tool in tools for cap in tool.get("capabilities", [])})
         catalog = package_catalog.load()
+        discovered_capabilities = {cap for tool in tools for cap in tool.get("capabilities", [])}
+        bundled_capabilities = {
+            cap
+            for package in catalog.get("packages", [])
+            if package.get("trust_status") == "approved_bundled_skill"
+            for cap in package.get("capabilities", [])
+        }
+        capabilities = sorted(discovered_capabilities | bundled_capabilities)
         return {
             "name": "时宜 AIGC 内容工厂",
             "version": "0.1.0",

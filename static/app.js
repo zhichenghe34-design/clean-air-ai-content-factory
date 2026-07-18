@@ -1,5 +1,6 @@
 const state = { config: null, status: null, tools: [], jobs: [], plan: null, catalog: null, hardware: null, selectedJob: null };
 const pipelineLabels = [
+  ["web_extraction", "联网调研", "普通网页、动态页面、公开视频平台"],
   ["content_insight", "内容洞察", "转写、OCR、范式提炼"],
   ["script_generation", "脚本生成", "品牌语气与多版本"],
   ["compliance_review", "证据与合规", "事实、功效、广告边界"],

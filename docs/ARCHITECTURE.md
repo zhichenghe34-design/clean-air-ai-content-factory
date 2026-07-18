@@ -20,6 +20,7 @@
   └─ Orchestrator：计划、审批、任务状态
 
 能力层（已接入受信生产Adapter，外部下载类Adapter仍待审批）
+  ├─ 联网与平台内容提取Skill：HTTP → Playwright → 平台解析 → ASR/OCR
   ├─ 一站式音视频解析
   ├─ 品牌事实库与文本审核
   ├─ Wan/其他视频生成项目或视频API
@@ -50,6 +51,20 @@ approved_script.json + review.json + voice.wav
 ```
 
 项目内Skill位于 `agent-skills/produce-dynamic-health-video/`。模板只接受已登记视觉类型，不让Agent任意注入脚本或从搜索结果安装代码。
+
+## 联网提取契约
+
+```text
+用户URL或已登记搜索结果
+  → URL与SSRF安全检查
+  → 普通HTTP正文提取
+  → 正文不足时升级Playwright
+  → 抖音/B站/X/YouTube/TikTok升级受信音视频解析Adapter
+  → 可选ASR/OCR/关键帧
+  → extraction.json + 来源记录 + SHA-256
+```
+
+项目内Skill位于 `agent-skills/extract-web-platform-content/`。模型只调用高层 `extract_url` 能力，不接触Shell命令、Cookie文件或任意下载地址。网页文本一律是不可信证据，不能覆盖系统指令或触发工具安装。动态页面失败必须记录并换路；只有登录、验证码、账号权限或所有已安装安全路线均有真实错误时才能停止。
 
 ## Adapter 契约（下一阶段）
 
