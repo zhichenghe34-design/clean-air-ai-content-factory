@@ -29,7 +29,7 @@
     <main>
       <header class="topbar">
         <div><p class="eyebrow">AIGC VIDEO OPERATING SYSTEM</p><h1 id="pageTitle">内容生产工作台</h1></div>
-        <div class="top-status"><span id="providerBadge" class="pill">DeepSeek 未配置</span><button id="refreshAll" class="icon-btn" title="刷新">↻</button></div>
+        <div class="top-status"><span id="portBadge" class="pill muted">127.0.0.1</span><span id="providerBadge" class="pill">DeepSeek 未配置</span><button id="refreshAll" class="icon-btn" title="刷新">↻</button></div>
       </header>
 
       <section id="view-workbench" class="view active">
@@ -92,17 +92,17 @@
       <section id="view-settings" class="view">
         <div class="settings-grid">
           <article class="panel">
-            <p class="eyebrow">MODEL PROVIDER</p><h2>OpenAI兼容接口</h2>
-            <label>供应商名称<input id="providerName"></label>
-            <label>Base URL<input id="baseUrl" class="mono"></label>
+            <p class="eyebrow">MODEL PROVIDER</p><h2>DeepSeek 官方接口</h2>
+            <label>供应商名称<input id="providerName" readonly></label>
+            <label>Base URL（只读白名单）<input id="baseUrl" class="mono" readonly></label>
             <label>模型<input id="modelName" class="mono"></label>
             <label>API Key<input id="apiKey" type="password" placeholder="默认读取 DEEPSEEK_API_KEY"></label>
             <label class="check"><input id="persistKey" type="checkbox"><span>保存到本机（默认不勾选）</span></label>
             <label class="check"><input id="researchEnabled" type="checkbox"><span>生产任务启用Flash联网工具调度</span></label>
-            <label>一站式音视频解析目录<input id="mediaParserRoot" class="mono" placeholder="D:\wen zi you xi\一站式音视频解析"></label>
+            <label>一站式音视频解析目录<input id="mediaParserRoot" class="mono" placeholder="可选：选择本机解析器目录"></label>
             <p class="hint">Flash只做决策；免费搜索、网页提取、音视频解析和剪辑均由受信工具执行。单任务设有7次模型请求硬上限。</p>
             <div class="action-row"><button id="saveSettings" class="primary">保存设置</button><button id="testProvider" class="secondary">测试连接</button></div>
-            <div id="providerResult" class="hint"></div>
+            <div id="providerResult" class="hint"></div><div id="secretWarning" class="notice" hidden></div>
           </article>
           <article class="panel">
             <p class="eyebrow">SAFETY</p><h2>执行边界</h2>
@@ -116,8 +116,8 @@
           </article>
           <article class="panel storage-settings">
             <p class="eyebrow">LOCAL STORAGE</p><h2>本地安装资源库</h2>
-            <label>默认安装根目录<input id="storageRoot" class="mono" placeholder="D:\时宜AIGC内容工厂"></label>
-            <p class="lead">保存后自动创建工具、模型、下载、缓存、临时文件、日志和项目目录。不能直接选择 D:\ 或其他磁盘根目录。</p>
+            <label>默认安装根目录<input id="storageRoot" class="mono" placeholder="选择专用的本地目录"></label>
+            <p class="lead">保存后自动创建工具、模型、下载、缓存、临时文件、日志和项目目录。不能直接选择任何磁盘根目录。</p>
             <div id="storageDirectories" class="storage-directories"></div>
           </article>
         </div>
@@ -154,9 +154,23 @@
           <div id="jobList" class="job-list"></div>
         </article>
         <article class="panel" id="jobDetailPanel" hidden>
-          <div class="panel-head"><div><p class="eyebrow">HUMAN REFINEMENT</p><h2>脚本精修与产物</h2></div><span id="jobDetailBadge" class="pill"></span></div>
-          <textarea id="approvedScriptInput" rows="9" placeholder="任务首次运行后在此显示已采用脚本"></textarea>
-          <div class="action-row"><button id="saveScriptBtn" class="secondary">保存脚本并准备重跑</button><button id="rerunJobBtn" class="primary">重新生成配音与成片</button></div>
+          <div class="panel-head"><div><p class="eyebrow">V2 HUMAN GATES</p><h2>人工审定、脚本精修与产物</h2></div><span id="jobDetailBadge" class="pill"></span></div>
+          <div id="jobSummary" class="job-summary"></div>
+          <section id="researchApprovalPanel" class="approval-panel" hidden>
+            <h3>研究证据逐项审定</h3><p class="lead">自动系统只做预警。请亲自核对来源后，对每条 finding 决定是否可进入脚本，并选择逐字证据或转述证据。</p>
+            <div id="researchFindings" class="finding-list"></div>
+            <div class="approval-fields"><label>审批人<input id="researchReviewer" autocomplete="off"></label><label>审批备注<input id="researchNote" autocomplete="off"></label></div>
+            <div class="action-row"><button id="approveResearchBtn" class="primary">批准研究证据</button><button id="rejectResearchBtn" class="danger">退回研究</button></div>
+          </section>
+          <section id="complianceApprovalPanel" class="approval-panel" hidden>
+            <h3>最终脚本合规门禁</h3><p id="complianceSummary" class="lead"></p>
+            <div class="approval-fields"><label>审批人<input id="complianceReviewer" autocomplete="off"></label><label>审批备注<input id="complianceNote" autocomplete="off"></label></div>
+            <div class="action-row"><button id="approveComplianceBtn" class="primary">批准脚本并允许渲染</button><button id="rejectComplianceBtn" class="danger">退回改稿</button></div>
+          </section>
+          <label>当前待审脚本<textarea id="approvedScriptInput" rows="9" placeholder="内容阶段完成后在此显示待审脚本"></textarea></label>
+          <div id="durationEstimate" class="hint"></div>
+          <div class="action-row"><button id="saveScriptBtn" class="secondary">保存人工改稿并重算合规</button><button id="rerunJobBtn" class="primary">推进到下一阶段</button></div>
+          <h3 class="subhead">成功运行与历史尝试</h3><div id="runHistory" class="run-history"></div>
           <div id="artifactLinks" class="artifact-links"></div>
           <video id="artifactVideo" class="artifact-video" controls playsinline hidden></video>
         </article>

@@ -10,6 +10,10 @@ permissions:
 jobs:
   test:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,14 +21,53 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
       - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Install locked Node dependencies
+        run: npm ci
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
-      - name: Check frontend JavaScript
-        run: node --check static/app.js
+      - name: Check frontend JavaScript and dependency audit
+        run: |
+          npm run check:js
+          npm audit --audit-level=high
+
+      - name: Validate release text and proposal consistency
+        run: |
+          python tools/scan_release.py
+          python tools/check_submission_consistency.py
+
+      - name: Start local console and run Playwright smoke
+        shell: pwsh
+        run: |
+          $process = Start-Process python -ArgumentList '-B','app.py','--host','127.0.0.1','--port','8765' -WindowStyle Hidden -PassThru
+          try {
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/status | Out-Null; break } catch { Start-Sleep -Milliseconds 500 }
+            }
+            npm run test:smoke
+          } finally {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Validate committed media with ffprobe
+        if: matrix.python-version == '3.12'
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          $videos = Get-ChildItem media -Filter *.mp4
+          foreach ($video in $videos) {
+            ffprobe -v error -show_entries stream=codec_name,width,height -show_entries format=duration -of json $video.FullName | ConvertFrom-Json | Out-Null
+          }

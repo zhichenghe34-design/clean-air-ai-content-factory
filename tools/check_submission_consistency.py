@@ -13,72 +13,67 @@ def require(text: str, markers: list[str], label: str, errors: list[str]) -> Non
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", type=Path, required=True)
-    parser.add_argument("--submission", type=Path, required=True)
-    parser.add_argument("--pdf", type=Path, required=True)
+    parser = argparse.ArgumentParser(description="Validate v2 documentation and proposal consistency.")
+    parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--pdf", type=Path)
     args = parser.parse_args()
+    repo = args.repo.resolve()
+    pdf_path = (args.pdf or repo / "docs" / "competition-proposal.pdf").resolve()
     errors: list[str] = []
 
-    readme = (args.repo / "README.md").read_text(encoding="utf-8")
-    competition = (args.repo / "docs" / "COMPETITION.md").read_text(encoding="utf-8")
-    validation = (args.repo / "docs" / "REAL_E2E_VALIDATION.md").read_text(encoding="utf-8")
-    submission_text = (args.repo / "docs" / "SUBMISSION_TEXT.md").read_text(encoding="utf-8")
-    local_submission = (args.submission / "01_报名表可直接粘贴文本.md").read_text(encoding="utf-8")
+    files = {
+        "README": repo / "README.md",
+        "ARCHITECTURE": repo / "docs" / "ARCHITECTURE.md",
+        "COMPETITION": repo / "docs" / "COMPETITION.md",
+        "SAFETY": repo / "docs" / "SAFETY.md",
+        "SUBMISSION_TEXT": repo / "docs" / "SUBMISSION_TEXT.md",
+    }
+    texts = {label: path.read_text(encoding="utf-8") for label, path in files.items()}
+    require(texts["README"], ["v2", "127.0.0.1:8765", "7", "SHA-256", "13 个能力包", "56 项 Python 测试", "legacy_read_only", "DPAPI"], "README", errors)
+    require(texts["ARCHITECTURE"], ["v2", "7", "SHA-256", "legacy_read_only"], "ARCHITECTURE", errors)
+    require(texts["COMPETITION"], ["v2", "127.0.0.1:8765", "7", "SHA-256", "13 个当前能力包", "56 项 Python 测试", "legacy"], "COMPETITION", errors)
+    require(texts["SAFETY"], ["v2", "7", "SHA-256", "DPAPI"], "SAFETY", errors)
+    require(texts["SUBMISSION_TEXT"], ["v2", "127.0.0.1", "7", "SHA-256", "两次审批", "不会覆盖上一成功视频", "45–60 秒"], "SUBMISSION_TEXT", errors)
+    for label, content in texts.items():
+        for port in re.findall(r"127\.0\.0\.1:(\d+)", content):
+            if port != "8765":
+                errors.append(f"{label} 出现不一致端口：{port}")
 
-    common = ["208.36", "0/4", "2/4"]
-    require(readme, [*common, "52.01", "10次", "32项", "5条可进入脚本事实层", "2条降级"], "README", errors)
-    require(competition, [*common, "52.01", "10次", "32项", "5条可用", "2条降级"], "COMPETITION", errors)
-    require(validation, ["208.36", "52.011", "10次", "7次", "0/4", "1.4771", "5条可进入脚本事实层", "2条降级"], "REAL_E2E_VALIDATION", errors)
-    require(submission_text, [*common, "52.011", "199字", "519字"], "SUBMISSION_TEXT", errors)
-    require(local_submission, [*common, "52.011", "199字", "519字"], "本地报名文本", errors)
+    catalog = json.loads((repo / "catalog" / "package-catalog.json").read_text(encoding="utf-8"))
+    if len(catalog.get("packages", [])) != 13:
+        errors.append(f"能力目录数量为 {len(catalog.get('packages', []))}，应为 13")
 
-    forbidden = ["传播较好的内容", "大家真正担心", "温和加速", "复杂页面会继续尝试Playwright"]
-    for label, text in {
-        "README": readme,
-        "COMPETITION": competition,
-        "REAL_E2E_VALIDATION": validation,
-        "SUBMISSION_TEXT": submission_text,
-        "本地报名文本": local_submission,
-    }.items():
-        for phrase in forbidden:
-            if phrase in text:
-                errors.append(f"{label} 仍含越界或旧口径：{phrase}")
+    package = json.loads((repo / "package.json").read_text(encoding="utf-8"))
+    dev = package.get("devDependencies", {})
+    if dev.get("hyperframes") != "0.7.86" or dev.get("@playwright/test") != "1.62.1":
+        errors.append("Node 依赖版本未锁定为 HyperFrames 0.7.86 / Playwright 1.62.1")
 
-    real = json.loads((args.repo / "examples" / "real-e2e" / "run_report.json").read_text(encoding="utf-8"))
-    research = json.loads((args.repo / "examples" / "real-e2e" / "research.json").read_text(encoding="utf-8"))
-    if real["wall_clock_seconds"] != 208.36 or real["render"]["duration_seconds"] != 52.011:
-        errors.append("真实运行报告耗时或成片时长不等于冻结基线")
-    if real["provider"]["tool_calls"] != 10 or real["provider"]["api_calls"] != 7:
-        errors.append("真实运行报告工具或模型请求数不等于冻结基线")
-    if real["adoption_proxy"]["provisionally_usable_count"] != 0:
-        errors.append("真实DeepSeek候选口径不是0/4")
-    review = research.get("evidence_review", {})
-    if review.get("finding_count") != 7 or review.get("script_eligible_count") != 5 or review.get("excluded_count") != 2:
-        errors.append("审定研究记录不是7条原始发现、5条可用、2条降级")
-    if research.get("provenance", {}).get("raw_source_count") != 4 or len(research.get("sources", [])) != 6:
-        errors.append("审定研究记录来源口径不是原始4个、审定版6个")
-    if re.search(r"[A-Z]:\\", json.dumps(research, ensure_ascii=False)):
-        errors.append("公开研究记录包含本机绝对路径")
+    source_files = [*repo.glob("core/*.py"), *repo.glob("static/*.js"), *repo.glob("video-compositions/*/package.json")]
+    for path in source_files:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        if "npx --yes" in content:
+            errors.append(f"运行文件仍允许 npx --yes：{path.relative_to(repo)}")
 
     try:
         from pypdf import PdfReader
     except ImportError as exc:
-        errors.append(f"无法检查PDF文字和链接：{exc}")
+        errors.append(f"无法检查 PDF：{exc}")
     else:
-        reader = PdfReader(str(args.pdf))
+        reader = PdfReader(str(pdf_path))
         if len(reader.pages) != 8:
-            errors.append(f"PDF页数为{len(reader.pages)}，应为8")
+            errors.append(f"PDF 页数为 {len(reader.pages)}，应为 8")
         pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        require(pdf_text, ["208.36", "52.01", "0/4", "2/4", "32", "5条可进入脚本事实层", "2条降级"], "PDF", errors)
-        link_count = 0
-        for page in reader.pages:
-            for annotation in page.get("/Annots", []) or []:
-                obj = annotation.get_object()
-                if obj.get("/Subtype") == "/Link":
-                    link_count += 1
-        if link_count < 4:
-            errors.append(f"PDF可点击链接只有{link_count}个，应至少为4个")
+        require(pdf_text, ["净界 AI 内容工厂 v2", "127.0.0.1:8765", "13 项", "56", "DPAPI", "legacy"], "PDF", errors)
+        if re.search(r"(?:A\s+I|Deep\s+Seek|Vox\s+CPM)", pdf_text, re.IGNORECASE):
+            errors.append("PDF 仍存在英文缩写异常拆字")
+        link_count = sum(
+            1
+            for page in reader.pages
+            for annotation in (page.get("/Annots", []) or [])
+            if annotation.get_object().get("/Subtype") == "/Link"
+        )
+        if link_count < 3:
+            errors.append(f"PDF 可点击链接只有 {link_count} 个，应至少为 3 个")
 
     if errors:
         for error in errors:

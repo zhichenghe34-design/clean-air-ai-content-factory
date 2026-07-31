@@ -1,0 +1,14 @@
+{
+  "name": "shiyi-clean-air-ai-content-factory",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Pinned frontend and HyperFrames test dependencies for the v2 competition prototype.",
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "hyperframes": "0.7.86"
+  },
+  "scripts": {
+    "check:js": "node --check static/app.js && node --check tests/smoke_ui.js",
+    "test:smoke": "node tests/smoke_ui.js"
+  }
+}
