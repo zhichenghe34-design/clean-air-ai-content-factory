@@ -3,8 +3,15 @@ from __future__ import annotations
 import copy
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
+
+from core.provider import validate_provider_base_url
+from core.secrets import SecretStorageError, protect_secret, unprotect_secret
+
+
+DEFAULT_STORAGE_ROOT = str(Path.home() / "ShiyiAIGC")
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -27,13 +34,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_model_turns": 5,
         "max_provider_calls_per_job": 7,
         "max_chars_per_page": 6000,
-        "media_parser_root": "D:\\wen zi you xi\\一站式音视频解析",
+        "media_parser_root": "",
     },
     "discovery": {
-        "roots": [
-            "D:\\wen zi you xi\\一站式音视频解析",
-            "F:\\AI",
-        ],
+        "roots": [],
         "max_depth": 3,
         "max_directories": 1500,
     },
@@ -44,7 +48,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "allow_media_upload": False,
     },
     "storage": {
-        "root": "D:\\时宜AIGC内容工厂",
+        "root": DEFAULT_STORAGE_ROOT,
         "subdirectories": {
             "tools": "tools",
             "models": "models",
@@ -75,6 +79,8 @@ class ConfigStore:
         self.config_path = self.runtime_dir / "config.json"
         self.secrets_path = self.runtime_dir / "secrets.json"
         self._session_api_key = ""
+        self.secret_warning = ""
+        self._migrate_legacy_secret()
 
     def load(self) -> dict[str, Any]:
         data: dict[str, Any] = {}
@@ -86,13 +92,29 @@ class ConfigStore:
         return _deep_merge(DEFAULT_CONFIG, data)
 
     def save(self, incoming: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(incoming, dict):
+            raise ValueError("配置必须是JSON对象")
         current = self.load()
-        safe = {k: v for k, v in incoming.items() if k in {"provider", "research", "discovery", "security", "storage"}}
+        safe = copy.deepcopy({k: v for k, v in incoming.items() if k in {"provider", "research", "discovery", "security", "storage"}})
         provider = safe.get("provider", {})
+        if not isinstance(provider, dict):
+            raise ValueError("provider配置必须是JSON对象")
         api_key = str(provider.pop("api_key", "") or "").strip()
         persist = bool(provider.pop("persist_api_key", False))
+        clear_api_key = bool(provider.pop("clear_api_key", False))
+        provider["name"] = "DeepSeek"
+        provider["kind"] = "openai_compatible"
+        provider["api_key_env"] = "DEEPSEEK_API_KEY"
+        provider["base_url"] = validate_provider_base_url(provider.get("base_url", current["provider"]["base_url"]))
 
         merged = _deep_merge(current, safe)
+        merged["provider"]["name"] = "DeepSeek"
+        merged["provider"]["kind"] = "openai_compatible"
+        merged["provider"]["api_key_env"] = "DEEPSEEK_API_KEY"
+        merged["provider"]["base_url"] = validate_provider_base_url(merged["provider"]["base_url"])
+        merged["research"]["max_provider_calls_per_job"] = min(
+            7, max(0, int(merged.get("research", {}).get("max_provider_calls_per_job", 7)))
+        )
         roots = merged.get("discovery", {}).get("roots", [])
         merged["discovery"]["roots"] = [str(Path(p).expanduser()) for p in roots if str(p).strip()]
         merged["storage"]["root"] = str(self._validated_storage_root(merged["storage"].get("root", "")))
@@ -102,8 +124,15 @@ class ConfigStore:
         if api_key:
             self._session_api_key = api_key
             if persist:
-                self._atomic_json(self.secrets_path, {"api_key": api_key})
-        elif provider.get("clear_api_key"):
+                if os.name != "nt":
+                    self.secret_warning = "当前系统不支持DPAPI，Key仅保留在本次进程会话中"
+                else:
+                    encrypted = protect_secret(api_key)
+                    if unprotect_secret(encrypted) != api_key:
+                        raise SecretStorageError("DPAPI回读校验失败")
+                    self._atomic_json(self.secrets_path, encrypted)
+                    self.secret_warning = ""
+        elif clear_api_key:
             self._session_api_key = ""
             if self.secrets_path.exists():
                 self.secrets_path.unlink()
@@ -143,22 +172,25 @@ class ConfigStore:
         if self._session_api_key:
             return self._session_api_key
         config = self.load()
-        env_name = config["provider"].get("api_key_env", "DEEPSEEK_API_KEY")
-        env_value = os.environ.get(env_name, "").strip()
+        env_value = os.environ.get("DEEPSEEK_API_KEY", "").strip()
         if env_value:
             return env_value
         if self.secrets_path.exists():
             try:
-                return str(json.loads(self.secrets_path.read_text(encoding="utf-8")).get("api_key", ""))
-            except (OSError, json.JSONDecodeError):
+                payload = json.loads(self.secrets_path.read_text(encoding="utf-8"))
+                return unprotect_secret(payload).strip()
+            except (OSError, json.JSONDecodeError, SecretStorageError):
                 return ""
         return ""
 
     def public_config(self) -> dict[str, Any]:
         config = self.load()
+        persisted = self._has_valid_persisted_key()
         config["provider"]["has_api_key"] = bool(self.get_api_key())
         config["provider"]["api_key"] = ""
-        config["provider"]["persisted_api_key"] = self.secrets_path.exists()
+        config["provider"]["persisted_api_key"] = persisted
+        config["provider"]["secret_storage"] = "dpapi-current-user" if persisted else "session_or_environment"
+        config["provider"]["secret_warning"] = self.secret_warning
         config["storage"]["directories"] = self.storage_layout(config)
         return config
 
@@ -172,6 +204,34 @@ class ConfigStore:
 
     @staticmethod
     def _atomic_json(path: Path, data: dict[str, Any]) -> None:
-        temp = path.with_suffix(path.suffix + ".tmp")
+        temp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(path)
+
+    def _migrate_legacy_secret(self) -> None:
+        if not self.secrets_path.exists():
+            return
+        try:
+            payload = json.loads(self.secrets_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            self.secret_warning = "持久化密钥文件损坏，已停止使用"
+            return
+        plaintext = payload.get("api_key") if isinstance(payload, dict) else None
+        if not plaintext:
+            return
+        try:
+            encrypted = protect_secret(str(plaintext))
+            if unprotect_secret(encrypted) != str(plaintext):
+                raise SecretStorageError("DPAPI回读校验失败")
+            self._atomic_json(self.secrets_path, encrypted)
+        except (OSError, SecretStorageError) as exc:
+            self.secret_warning = f"旧明文密钥迁移失败，已停止使用：{type(exc).__name__}"
+
+    def _has_valid_persisted_key(self) -> bool:
+        if not self.secrets_path.exists():
+            return False
+        try:
+            payload = json.loads(self.secrets_path.read_text(encoding="utf-8"))
+            return bool(unprotect_secret(payload).strip())
+        except (OSError, json.JSONDecodeError, SecretStorageError):
+            return False

@@ -271,7 +271,7 @@ class OrchestratorTests(unittest.TestCase):
             job = jobs.create(plan)
             self.assertEqual(job["status"], "planned")
             job = jobs.approve(job["id"])
-            self.assertEqual(job["status"], "approved")
+            self.assertEqual(job["status"], "authorized")
             job = jobs.run_safe(job["id"])
             self.assertEqual(job["status"], "needs_attention")
             event_file = Path(folder) / "jobs" / job["id"] / "events.jsonl"
@@ -281,19 +281,17 @@ class OrchestratorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             plan = local_fallback_plan("做一条视频", [])
             jobs = JobStore(Path(folder))
-            job = jobs.create(plan, production_input={"topic": "demo"})
+            job = jobs.create(plan, production_input={"topic": "气味小就代表甲醛少吗？"})
             jobs.approve(job["id"])
-            updated = jobs.update_script(job["id"], DEFAULT_SCRIPT)
-            self.assertEqual(updated["status"], "approved")
-            script_path = Path(folder) / "jobs" / job["id"] / "approved_script.json"
-            self.assertEqual(json.loads(script_path.read_text(encoding="utf-8"))["script"], DEFAULT_SCRIPT)
+            with self.assertRaises(Exception):
+                jobs.update_script(job["id"], DEFAULT_SCRIPT, review_script(DEFAULT_SCRIPT), {"estimated_seconds": 50})
 
 
 class ProductionTests(unittest.TestCase):
     def test_default_script_requires_human_review_but_is_not_blocked(self):
         result = review_script(DEFAULT_SCRIPT)
         self.assertFalse(result["blocked"])
-        self.assertEqual(result["status"], "human_review_required")
+        self.assertEqual(result["status"], "needs_human")
         self.assertEqual(len(result["conditions_present"]), 6)
 
     def test_dangerous_claim_is_blocked(self):
