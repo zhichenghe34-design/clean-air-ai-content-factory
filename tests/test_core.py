@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +22,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             store = ConfigStore(Path(folder))
             self.assertEqual(store.load()["provider"]["model"], "deepseek-v4-flash")
+            self.assertEqual(store.load()["research"]["max_model_turns"], 4)
             public = store.save({"provider": {"model": "custom-model", "api_key": "secret", "persist_api_key": False}})
             self.assertEqual(public["provider"]["model"], "custom-model")
             self.assertTrue(public["provider"]["has_api_key"])
@@ -205,6 +208,7 @@ class WebAgentTests(unittest.TestCase):
                 "claim": "没有摘录的判断",
                 "source_urls": ["https://example.com/report"],
                 "confidence": "high",
+                "limitations": "仅有模型判断，未取得页面摘录",
             }],
             "sources": [{"url": "https://example.com/report", "title": "来源"}],
             "evidence_gaps": [],
@@ -212,7 +216,23 @@ class WebAgentTests(unittest.TestCase):
         self.assertEqual(result["status"], "partial")
         self.assertEqual(result["findings"][0]["confidence"], "low")
         self.assertFalse(result["findings"][0]["script_eligible"])
+        self.assertEqual(
+            result["findings"][0]["limitations"],
+            ["仅有模型判断，未取得页面摘录", "缺少可回溯的页面证据摘录"],
+        )
         self.assertEqual(result["script_eligible_findings"], [])
+
+    def test_repo_tools_can_run_directly(self):
+        repo = Path(__file__).resolve().parents[1]
+        for name in ("review_research_artifact.py", "run_real_media_smoke.py"):
+            completed = subprocess.run(
+                [sys.executable, str(repo / "tools" / name), "--help"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_unknown_evidence_url_cannot_enter_script_fact_layer(self):
         result = normalize_research_result({
@@ -235,6 +255,28 @@ class WebAgentTests(unittest.TestCase):
             result = registry.execute("extract_url", {"url": "https://invented.example/claim"})
             self.assertFalse(result["ok"])
             self.assertIn("拒绝访问", result["error"])
+
+    def test_extractor_failure_reason_is_preserved_in_trace(self):
+        def blocked_extract(url, output_dir):
+            return {
+                "status": "blocked",
+                "error": "private or non-global target is blocked",
+                "source": {"final_url": url},
+                "content": {"text": ""},
+                "attempts": [],
+                "warnings": [],
+            }
+
+        with tempfile.TemporaryDirectory() as folder:
+            registry = TrustedWebToolRegistry(
+                Path(folder),
+                extractor=blocked_extract,
+                seed_urls=["https://example.com/report"],
+            )
+            result = registry.execute("extract_url", {"url": "https://example.com/report"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("private or non-global", result["error"])
 
     def test_off_topic_search_is_reanchored_to_the_selected_topic(self):
         with tempfile.TemporaryDirectory() as folder:

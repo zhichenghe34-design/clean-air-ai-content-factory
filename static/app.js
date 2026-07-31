@@ -258,6 +258,28 @@ function renderRunHistory(job) {
   }).join("");
 }
 
+function renderResearchFindings(findings) {
+  const eligibleCount = findings.filter(item => item.auto_review_status === "eligible").length;
+  const excludedCount = findings.length - eligibleCount;
+  const summary = eligibleCount
+    ? `共 ${findings.length} 条：${eligibleCount} 条等待你的逐项决定，${excludedCount} 条因缺少有效证据被自动排除。`
+    : `共 ${findings.length} 条，但没有可进入脚本的证据。批准只会形成空证据集，建议退回研究。`;
+  const rows = findings.map(item => {
+    const sources = (item.source_urls || []).join(" · ") || "无可回溯来源";
+    const excerpts = (item.evidence || []).map(entry => `<li><q>${escapeHtml(entry.excerpt || "")}</q><small>${escapeHtml(entry.url || "")}</small></li>`).join("");
+    if (item.auto_review_status === "eligible") {
+      return `<div class="finding" data-finding-id="${escapeHtml(item.finding_id)}"><strong>${escapeHtml(item.claim || "未命名结论")}</strong><small>${escapeHtml(sources)}</small>
+        ${excerpts ? `<ul class="evidence-list">${excerpts}</ul>` : ""}
+        <div><label>决定<select data-field="decision"><option value="approved">允许进入脚本</option><option value="rejected">拒绝</option></select></label>
+        <label>证据类型<select data-field="evidence_type"><option value="paraphrase">转述 paraphrase</option><option value="verbatim">逐字 verbatim</option></select></label></div></div>`;
+    }
+    const limitations = (item.limitations || []).join("；") || "缺少满足要求的原文摘录";
+    return `<div class="finding finding-excluded"><strong>${escapeHtml(item.claim || "未命名结论")}</strong><span class="finding-status">自动排除 · 不会进入脚本</span><small>${escapeHtml(sources)}</small>
+      ${excerpts ? `<ul class="evidence-list">${excerpts}</ul>` : ""}<p>${escapeHtml(limitations)}</p></div>`;
+  }).join("");
+  return `<p class="lead">${summary}</p>${rows || `<p class="lead">研究未产生 finding，建议退回研究。</p>`}`;
+}
+
 async function openJob(id) {
   try {
     const job = await api(`/api/jobs/${id}`);
@@ -274,10 +296,7 @@ async function openJob(id) {
       state.reviewFiles.research = await readJsonArtifact(`/api/jobs/${id}/review-artifacts/research.json`);
       if (!researchPanel.hidden) {
         const findings = state.reviewFiles.research.data.findings || [];
-        document.getElementById("researchFindings").innerHTML = findings.filter(item => item.auto_review_status === "eligible").map(item => `
-          <div class="finding" data-finding-id="${escapeHtml(item.finding_id)}"><strong>${escapeHtml(item.claim || "未命名结论")}</strong><small>${escapeHtml((item.source_urls || []).join(" · "))}</small>
-          <div><label>决定<select data-field="decision"><option value="approved">允许进入脚本</option><option value="rejected">拒绝</option></select></label>
-          <label>证据类型<select data-field="evidence_type"><option value="paraphrase">转述 paraphrase</option><option value="verbatim">逐字 verbatim</option></select></label></div></div>`).join("") || `<p class="lead">没有自动筛出的可入脚本 finding；仍可批准空证据集。</p>`;
+        document.getElementById("researchFindings").innerHTML = renderResearchFindings(findings);
       }
     } catch (_) { /* research may not exist before the first stage */ }
     try {
@@ -304,7 +323,7 @@ async function openJob(id) {
 async function submitResearch(decision) {
   const job = state.selectedJob;
   if (!job || !state.reviewFiles.research) return;
-  const findings = [...document.querySelectorAll("#researchFindings .finding")].map(row => ({
+  const findings = [...document.querySelectorAll("#researchFindings .finding[data-finding-id]")].map(row => ({
     finding_id: row.dataset.findingId,
     decision: row.querySelector('[data-field="decision"]').value,
     evidence_type: row.querySelector('[data-field="evidence_type"]').value,

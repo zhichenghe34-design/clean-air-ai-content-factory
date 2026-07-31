@@ -110,11 +110,18 @@ def validate_public_url(url: str, *, resolve_dns: bool = True) -> urllib.parse.S
                 addresses.update(item[4][0] for item in socket.getaddrinfo(host, parsed.port or default_port))
             except OSError as exc:
                 raise ExtractionError(f"DNS resolution failed: {exc}") from exc
-    proxy_fake_network = ipaddress.ip_network("198.18.0.0/15")
+    proxy_fake_networks = (
+        ipaddress.ip_network("198.18.0.0/15"),
+        ipaddress.ip_network("fdfe:dcba:9876::/48"),
+    )
     proxy_is_configured = bool(urllib.request.getproxies())
     for value in addresses:
         ip = ipaddress.ip_address(value)
-        if not host_is_literal and proxy_is_configured and ip in proxy_fake_network:
+        if (
+            not host_is_literal
+            and proxy_is_configured
+            and any(ip.version == network.version and ip in network for network in proxy_fake_networks)
+        ):
             continue
         if not ip.is_global:
             raise ExtractionError(f"private or non-global target is blocked: {ip}")

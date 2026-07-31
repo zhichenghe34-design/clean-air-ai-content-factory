@@ -27,6 +27,16 @@ findings每项包含claim, source_urls, evidence, confidence, limitations；evid
 sources每项包含url, title, publisher, source_type, retrieved_at。高置信发现必须有来自已读取页面的短证据摘录；没有证据的判断必须降级并写入evidence_gaps。"""
 
 
+def _string_list(value: Any) -> list[str]:
+    """Normalize a JSON string-or-array field without splitting strings into characters."""
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return [cleaned] if cleaned else []
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 def normalize_research_result(result: dict[str, Any]) -> dict[str, Any]:
     """Bind findings to captured evidence and exclude unsupported claims from scripts."""
     normalized = dict(result) if isinstance(result, dict) else {}
@@ -40,7 +50,7 @@ def normalize_research_result(result: dict[str, Any]) -> dict[str, Any]:
         source.setdefault("retrieved_at", "")
         sources.append(source)
     known_urls = {str(item["url"]) for item in sources}
-    gaps = [str(item) for item in normalized.get("evidence_gaps", []) if str(item).strip()]
+    gaps = _string_list(normalized.get("evidence_gaps", []))
     findings: list[dict[str, Any]] = []
     eligible: list[dict[str, Any]] = []
 
@@ -48,7 +58,7 @@ def normalize_research_result(result: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(raw, dict) or not str(raw.get("claim", "")).strip():
             continue
         item = dict(raw)
-        urls = [str(url) for url in item.get("source_urls", []) if str(url) in known_urls]
+        urls = [url for url in _string_list(item.get("source_urls", [])) if url in known_urls]
         evidence: list[dict[str, Any]] = []
         for entry in item.get("evidence", []):
             if not isinstance(entry, dict):
@@ -68,7 +78,7 @@ def normalize_research_result(result: dict[str, Any]) -> dict[str, Any]:
                 )
         item["source_urls"] = urls
         item["evidence"] = evidence
-        item["limitations"] = [str(value) for value in item.get("limitations", []) if str(value).strip()]
+        item["limitations"] = _string_list(item.get("limitations", []))
         requested_status = str(item.get("review_status", "")).strip()
         if evidence and urls:
             item["review_status"] = requested_status or "evidence_bound"
@@ -78,7 +88,8 @@ def normalize_research_result(result: dict[str, Any]) -> dict[str, Any]:
                 item["confidence"] = "low"
             item["review_status"] = "evidence_missing"
             item["script_eligible"] = False
-            item["limitations"].append("缺少可回溯的页面证据摘录")
+            if "缺少可回溯的页面证据摘录" not in item["limitations"]:
+                item["limitations"].append("缺少可回溯的页面证据摘录")
             gaps.append(f"未进入脚本事实层：{item['claim']}")
         findings.append(item)
         if item["script_eligible"]:
@@ -104,7 +115,7 @@ class WebResearchAgent:
         provider: OpenAICompatibleProvider,
         registry: TrustedWebToolRegistry,
         *,
-        max_model_turns: int = 6,
+        max_model_turns: int = 4,
     ):
         self.provider = provider
         self.registry = registry

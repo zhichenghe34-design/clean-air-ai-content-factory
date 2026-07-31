@@ -47,7 +47,10 @@ class ExtractionSkillTests(unittest.TestCase):
             EXTRACT.validate_public_url("http://127.0.0.1/private", resolve_dns=False)
 
     def test_proxy_fake_ip_is_allowed_only_for_domain_with_proxy(self) -> None:
-        answer = [(2, 1, 6, "", ("198.18.4.13", 443))]
+        answer = [
+            (2, 1, 6, "", ("198.18.4.13", 443)),
+            (23, 1, 6, "", ("fdfe:dcba:9876::2d2", 443, 0, 0)),
+        ]
         with patch.object(EXTRACT.socket, "getaddrinfo", return_value=answer), patch.object(
             EXTRACT.urllib.request, "getproxies", return_value={"https": "http://127.0.0.1:7890"}
         ):

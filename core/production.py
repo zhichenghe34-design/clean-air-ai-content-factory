@@ -443,7 +443,7 @@ class ProductionRunner:
             agent = WebResearchAgent(
                 self.provider,
                 registry,
-                max_model_turns=int(self.research_config.get("max_model_turns", 5)),
+                max_model_turns=int(self.research_config.get("max_model_turns", 4)),
             )
             return agent.run(str(config["topic"]), str(config["audience"]), source_urls)
         except Exception as exc:

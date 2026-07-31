@@ -3,9 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from core.web_agent import normalize_research_result
 
@@ -23,7 +28,7 @@ def evidence(url: str, excerpt: str, source_type: str, retrieved_at: str) -> dic
     }
 
 
-def review(raw: dict[str, Any], reviewed_at: str) -> dict[str, Any]:
+def review(raw: dict[str, Any], processed_at: str) -> dict[str, Any]:
     sources = {str(item.get("url")): dict(item) for item in raw.get("sources", []) if item.get("url")}
     metadata = {
         "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html":
@@ -34,21 +39,21 @@ def review(raw: dict[str, Any], reviewed_at: str) -> dict[str, Any]:
     }
     for url, source in sources.items():
         publisher, source_type = metadata.get(url, ("未标注", "unknown"))
-        source.update({"publisher": publisher, "source_type": source_type, "retrieved_at": reviewed_at})
+        source.update({"publisher": publisher, "source_type": source_type, "retrieved_at": processed_at})
 
     sources[STANDARD_URL] = {
         "url": STANDARD_URL,
         "title": "GB/T 18883-2022《室内空气质量标准》官方信息",
         "publisher": "国家市场监督管理总局 国家标准化管理委员会",
         "source_type": "government_standard_metadata",
-        "retrieved_at": reviewed_at,
+        "retrieved_at": processed_at,
     }
     sources[AD_LAW_URL] = {
         "url": AD_LAW_URL,
         "title": "中华人民共和国广告法",
         "publisher": "国家市场监督管理总局",
         "source_type": "government_law",
-        "retrieved_at": reviewed_at,
+        "retrieved_at": processed_at,
     }
 
     url_news = next(url for url in sources if "bjnews" in url)
@@ -58,44 +63,46 @@ def review(raw: dict[str, Any], reviewed_at: str) -> dict[str, Any]:
     for item in raw.get("findings", []):
         claim = str(item.get("claim", ""))
         reviewed = dict(item)
+        for forbidden in ("review_status", "reviewer", "reviewed_at", "human_verified", "approved_by", "approved_at"):
+            reviewed.pop(forbidden, None)
         reviewed["limitations"] = []
-        reviewed["review_status"] = "human_verified"
+        reviewed["auto_review_status"] = "eligible"
         if claim.startswith("99%除醛率测试通常"):
-            reviewed["evidence"] = [evidence(url_news, "1罐产品在1m3试验舱内24小时除醛率为99.93%", "media_original", reviewed_at)]
+            reviewed["evidence"] = [evidence(url_news, "1罐产品在1m3试验舱内24小时除醛率为99.93%", "media_original", processed_at)]
         elif claim.startswith("商家宣传的适用范围"):
             reviewed["confidence"] = "medium"
-            reviewed["evidence"] = [evidence(url_news, "一罐覆盖10-15平方米，但商家拿不出完整检测报告", "media_original", reviewed_at)]
+            reviewed["evidence"] = [evidence(url_news, "一罐覆盖10-15平方米，但商家拿不出完整检测报告", "media_original", processed_at)]
             reviewed["limitations"] = ["来源为消费调查，不能外推到所有品牌或产品"]
         elif claim.startswith("除醛凝胶变色"):
             reviewed["confidence"] = "medium"
-            reviewed["evidence"] = [evidence(url_reprint, "变色与是否存在甲醛、分解多少没有直接定量关系", "media_reprint", reviewed_at)]
+            reviewed["evidence"] = [evidence(url_reprint, "变色与是否存在甲醛、分解多少没有直接定量关系", "media_reprint", processed_at)]
             reviewed["limitations"] = ["当前抓取页为媒体转载，应继续寻找原始采访或实验材料"]
         elif claim.startswith("真实环境中甲醛持续释放数年"):
             reviewed["confidence"] = "low"
             reviewed["evidence"] = []
-            reviewed["review_status"] = "excluded"
+            reviewed["auto_review_status"] = "excluded"
             reviewed["limitations"] = ["当前来源为媒体评论，未取得原始研究或官方技术材料"]
         elif claim.startswith("开窗通风是性价比最高"):
             reviewed["confidence"] = "low"
             reviewed["evidence"] = []
-            reviewed["review_status"] = "excluded"
+            reviewed["auto_review_status"] = "excluded"
             reviewed["limitations"] = ["“最高、最好”属于绝对比较，现有来源不足以支持"]
         elif claim.startswith("部分除醛产品使用臭氧"):
             reviewed["claim"] = "报道中的部分除醛设备工作时释放臭氧，存在二次污染隐患"
             reviewed["source_urls"] = [url_reprint]
             reviewed["confidence"] = "medium"
-            reviewed["evidence"] = [evidence(url_reprint, "设备工作时释放的臭氧，引发二次污染隐患", "media_reprint", reviewed_at)]
+            reviewed["evidence"] = [evidence(url_reprint, "设备工作时释放的臭氧，引发二次污染隐患", "media_reprint", processed_at)]
             reviewed["limitations"] = ["仅适用于报道涉及的设备，不能泛化到全部除醛产品"]
         elif claim.startswith("GB/T 18883-2022规定"):
             reviewed["claim"] = "SGS对GB/T 18883-2022的解读称甲醛限值调整为0.08mg/m3"
             reviewed["source_urls"] = [url_sgs, STANDARD_URL]
             reviewed["confidence"] = "medium"
-            reviewed["evidence"] = [evidence(url_sgs, "甲醛限值从0.1mg/m3缩紧至0.08mg/m3", "institutional_secondary", reviewed_at)]
+            reviewed["evidence"] = [evidence(url_sgs, "甲醛限值从0.1mg/m3缩紧至0.08mg/m3", "institutional_secondary", processed_at)]
             reviewed["limitations"] = ["官方页面确认标准身份与有效状态；具体限值引用SGS解读", "原记录中的关闭门窗12小时未获本次证据支持，已删除"]
         else:
             reviewed["confidence"] = "low"
             reviewed["evidence"] = []
-            reviewed["review_status"] = "excluded"
+            reviewed["auto_review_status"] = "excluded"
             reviewed["limitations"] = ["未建立审定规则"]
         reviewed_findings.append(reviewed)
 
@@ -135,9 +142,9 @@ def review(raw: dict[str, Any], reviewed_at: str) -> dict[str, Any]:
         "raw_artifact": "research.raw.json",
         "raw_finding_count": len(raw.get("findings", [])),
         "raw_source_count": len(raw.get("sources", [])),
-        "reviewed_at": reviewed_at,
-        "reviewer": "human_reviewed_submission_baseline",
-        "note": "完整真实工具轨迹保存在本地raw文件；提交版只保留无本机路径的调用摘要，人工仅补充证据绑定、来源分级和适用边界。",
+        "processed_at": processed_at,
+        "auto_review_status": "legacy_evidence_normalized",
+        "note": "该工具只做旧证据的自动归一化，不代表人工批准。v2 人工决定必须通过研究审批接口写入独立 approvals 记录。",
     }
     return normalize_research_result(reviewed)
 
@@ -152,8 +159,8 @@ def main() -> None:
     if args.raw_copy:
         args.raw_copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(args.input, args.raw_copy)
-    reviewed_at = datetime.now().astimezone().isoformat(timespec="seconds")
-    reviewed = review(raw, reviewed_at)
+    processed_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    reviewed = review(raw, processed_at)
     args.output.write_text(json.dumps(reviewed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 

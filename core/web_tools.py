@@ -156,6 +156,7 @@ class TrustedWebToolRegistry:
         return {
             "ok": result.get("status") in {"complete", "partial"},
             "status": result.get("status", "unknown"),
+            "error": str(result.get("error", "")),
             "url": normalized,
             "final_url": source.get("final_url") or normalized,
             "title": source.get("title", ""),
