@@ -17,6 +17,25 @@ SPEC.loader.exec_module(EXTRACT)
 
 
 class ExtractionSkillTests(unittest.TestCase):
+    def test_parser_config_is_allowlisted_and_secret_free(self) -> None:
+        config = EXTRACT.build_isolated_parser_config(
+            {
+                "enable_asr": True,
+                "whisper_model": "tiny",
+                "api_key": "should-never-leave-source-config",
+                "cookie": "private-cookie",
+                "authorization": "Bearer private",
+                "unknown_field": "ignored",
+            },
+            Path("input"),
+            Path("output"),
+        )
+        rendered = str(config).lower()
+        self.assertTrue(config["enable_asr"])
+        self.assertEqual(config["whisper_model"], "tiny")
+        for marker in ("api_key", "cookie", "authorization", "private"):
+            self.assertNotIn(marker, rendered)
+
     def test_platform_routes_upgrade_instead_of_stopping(self) -> None:
         routes = EXTRACT.planned_routes("https://www.douyin.com/video/123")
         self.assertEqual(routes[0], "one_stop_media_parser")
