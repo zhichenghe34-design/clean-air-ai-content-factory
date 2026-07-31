@@ -29,12 +29,15 @@ def main() -> int:
         "SUBMISSION_TEXT": repo / "docs" / "SUBMISSION_TEXT.md",
     }
     texts = {label: path.read_text(encoding="utf-8") for label, path in files.items()}
-    require(texts["README"], ["v2", "127.0.0.1:8765", "7", "SHA-256", "13 个能力包", "56 项 Python 测试", "legacy_read_only", "DPAPI"], "README", errors)
+    require(texts["README"], ["v2", "127.0.0.1:8765", "7", "SHA-256", "13 个能力包", "72 项 Python 测试", "legacy_read_only", "DPAPI"], "README", errors)
     require(texts["ARCHITECTURE"], ["v2", "7", "SHA-256", "legacy_read_only"], "ARCHITECTURE", errors)
-    require(texts["COMPETITION"], ["v2", "127.0.0.1:8765", "7", "SHA-256", "13 个当前能力包", "56 项 Python 测试", "legacy"], "COMPETITION", errors)
+    require(texts["COMPETITION"], ["v2", "127.0.0.1:8765", "7", "SHA-256", "13 个当前能力包", "72 项 Python 测试", "legacy"], "COMPETITION", errors)
     require(texts["SAFETY"], ["v2", "7", "SHA-256", "DPAPI"], "SAFETY", errors)
     require(texts["SUBMISSION_TEXT"], ["v2", "127.0.0.1", "7", "SHA-256", "两次审批", "不会覆盖上一成功视频", "45–60 秒"], "SUBMISSION_TEXT", errors)
     for label, content in texts.items():
+        for stale in ("56 项 Python 测试", "v2 真实联调只会在", "最终 v2 DeepSeek 证据包将在"):
+            if stale in content:
+                errors.append(f"{label} 仍含过期口径：{stale}")
         for port in re.findall(r"127\.0\.0\.1:(\d+)", content):
             if port != "8765":
                 errors.append(f"{label} 出现不一致端口：{port}")
@@ -63,7 +66,7 @@ def main() -> int:
         if len(reader.pages) != 8:
             errors.append(f"PDF 页数为 {len(reader.pages)}，应为 8")
         pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        require(pdf_text, ["净界 AI 内容工厂 v2", "127.0.0.1:8765", "13 项", "56", "DPAPI", "legacy"], "PDF", errors)
+        require(pdf_text, ["净界 AI 内容工厂 v2", "127.0.0.1:8765", "13 项", "72", "DPAPI", "legacy"], "PDF", errors)
         if re.search(r"(?:A\s+I|Deep\s+Seek|Vox\s+CPM)", pdf_text, re.IGNORECASE):
             errors.append("PDF 仍存在英文缩写异常拆字")
         link_count = sum(

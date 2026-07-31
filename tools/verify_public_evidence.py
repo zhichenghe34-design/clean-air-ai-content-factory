@@ -123,8 +123,8 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
 
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     approvals = json.loads((folder / "approvals.json").read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 2 or manifest.get("stage") != "render" or manifest.get("status") != "complete":
-        errors.append("manifest 不是成功的 v2 render 清单")
+    if manifest.get("schema_version") != 2 or manifest.get("stage") not in {"render", "report_rebuild"} or manifest.get("status") != "complete":
+        errors.append("manifest 不是成功发布的 v2 render/report_rebuild 清单")
     entries = {str(item.get("name")): item for item in manifest.get("artifacts", []) if isinstance(item, dict)}
     expected_entries = REQUIRED - {"manifest.json"}
     if set(entries) != expected_entries:
@@ -144,8 +144,14 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
     compliance_approval = approvals.get("compliance", {})
     if research_approval.get("status") != "approved" or compliance_approval.get("status") != "approved":
         errors.append("两道人工审批未全部通过")
-    if research_approval.get("artifact_sha256") != sha256(folder / "research.json"):
-        errors.append("研究审批哈希与 research.json 不一致")
+    source_research_hash = research_approval.get("source_artifact_sha256", research_approval.get("artifact_sha256"))
+    if research_approval.get("artifact_sha256") != source_research_hash:
+        errors.append("研究审批原始哈希记录不一致")
+    if manifest.get("approval_hashes", {}).get("research") != source_research_hash:
+        errors.append("研究审批原始哈希与源 manifest 记录不一致")
+    public_research_hash = research_approval.get("public_artifact_sha256", research_approval.get("artifact_sha256"))
+    if public_research_hash != sha256(folder / "research.json"):
+        errors.append("研究审批公开副本哈希与 research.json 不一致")
     if compliance_approval.get("artifact_sha256") != sha256(folder / "review.json"):
         errors.append("合规审批哈希与 review.json 不一致")
     if compliance_approval.get("script_sha256") != sha256(folder / "approved_script.json"):

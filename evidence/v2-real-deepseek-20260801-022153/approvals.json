@@ -1,0 +1,43 @@
+{
+  "research": {
+    "status": "approved",
+    "reviewer": "何sir",
+    "reviewed_at": "2026-08-01T01:49:33+08:00",
+    "artifact_sha256": "ef3dd1af292eab9e35bfc00fd23204c6f824cf5792b42343a21d5cd13346b11b",
+    "note": "证据明确，通过",
+    "findings": [
+      {
+        "finding_id": "e1a56c050816640c",
+        "decision": "approved",
+        "evidence_type": "paraphrase",
+        "note": ""
+      },
+      {
+        "finding_id": "2db258690a089345",
+        "decision": "approved",
+        "evidence_type": "paraphrase",
+        "note": ""
+      },
+      {
+        "finding_id": "243a0601c4f3c609",
+        "decision": "approved",
+        "evidence_type": "paraphrase",
+        "note": ""
+      }
+    ],
+    "source_artifact_sha256": "ef3dd1af292eab9e35bfc00fd23204c6f824cf5792b42343a21d5cd13346b11b",
+    "public_artifact_sha256": "b8314ba709ea784803f8633c6f5516739660e2045bcb231e46e11ae4ce1248c7",
+    "public_sanitization": {
+      "email_addresses_redacted": 2,
+      "scope": "source-page contact text only"
+    }
+  },
+  "compliance": {
+    "status": "approved",
+    "reviewer": "何sir",
+    "reviewed_at": "2026-08-01T01:58:49+08:00",
+    "artifact_sha256": "b8e5531489f0c13e5b995ab78fa63364c5e51560cbbcd2e731d0a295a4ca1eab",
+    "script_sha256": "b9dee87df2b3b57e67035b8694f2c2bdf2542a4107910fba658781ef498f2e6d",
+    "note": "确凿，放行"
+  }
+}

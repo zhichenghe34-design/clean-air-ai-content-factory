@@ -1,0 +1,35 @@
+{
+  "status": "needs_human",
+  "blocked": false,
+  "warnings": [
+    {
+      "type": "numeric_claim_context",
+      "level": "review",
+      "message": "出现百分比，但脚本将其作为待核查的广告主张而非产品承诺。",
+      "matches": [
+        "99.93%"
+      ]
+    },
+    {
+      "type": "evidence_bound_measurement",
+      "level": "review",
+      "message": "具体测量数字已在批准证据中找到，仍需人工确认没有扩大适用范围。",
+      "matches": [
+        "1罐",
+        "1立方米",
+        "24小时"
+      ]
+    }
+  ],
+  "conditions_present": [
+    "剂量",
+    "空间",
+    "作用时间",
+    "初始浓度",
+    "检测方法",
+    "报告来源"
+  ],
+  "human_confirmation_required": true,
+  "scope": "通用科普，不构成具体产品功效结论",
+  "checked_at": "2026-08-01T01:57:06+08:00"
+}

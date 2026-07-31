@@ -1,88 +1,43 @@
-# MVP 架构与边界
+# v2 架构与数据契约
 
-## 产品目标
+## 信任边界
 
-用户只需要提供目标、素材地址和已有工具目录。控制台负责发现能力、选择本地或 API 后端、生成计划、记录每一步输入输出，并把最终工程交给人工精修。
-
-## 分层
+控制台仅监听 `127.0.0.1`。浏览器取得随机 HttpOnly 会话 Cookie 和 CSRF token 后，写请求还必须通过 JSON Content-Type 与当前实际端口 Origin 校验。
 
 ```text
-可视化控制台
-  ├─ 工作台：目标输入、Agent规划、任务状态
-  ├─ 工具发现：扫描本地根目录并分类
-  ├─ 接口设置：DeepSeek/OpenAI兼容接口
-  └─ 运行记录：job.json + events.jsonl
-
-控制层
-  ├─ ConfigStore：非敏感配置与Key生命周期
-  ├─ ProjectDiscovery：只读识别本地项目
-  ├─ OpenAICompatibleProvider：/models 与 /chat/completions
-  └─ Orchestrator：计划、审批、任务状态
-
-能力层（已接入受信生产Adapter，外部下载类Adapter仍待审批）
-  ├─ 联网与平台内容提取Skill：内置HTTP → 可选Playwright/平台解析 → 可选ASR/OCR
-  ├─ 一站式音视频解析
-  ├─ 品牌事实库与文本审核
-  ├─ Wan/其他视频生成项目或视频API
-  ├─ Local Voice Workbench
-  ├─ 动态视频导演Skill：脚本→motion_plan.json
-  ├─ HyperFrames受信模板：motion_plan→可编辑动画工程
-  ├─ FFmpeg/video-autopilot式自动成片
-  └─ OpenReel/ChatCut人工精修
+浏览器控制台
+  -> 本地 HTTP API（会话 / CSRF / Origin）
+  -> JobStore（状态机、锁、审批、运行目录、manifest）
+  -> ProductionRunner（研究 / 内容 / 渲染三个独立阶段）
+  -> 登记 Provider 与本地适配器
 ```
 
-## 首版执行策略
+Provider 地址经过规范化。正式模式只允许 DeepSeek 官方 HTTPS 域名、标准端口与根路径或 `/v1`；测试 loopback 必须显式设置 `SHIYI_ALLOW_TEST_PROVIDER=1`。
 
-- 扫描：可直接执行，只读。
-- Agent规划：用户主动点击后调用配置的API；没有Key时本地回退。
-- 外部工具：只识别、展示和写入计划，默认不执行。
-- API Key：默认仅内存保存；用户明确勾选才持久化。
-- 任务：每个任务拥有固定目录和事件日志，支持后续恢复。
-- 动画：默认走动态导演Skill与HyperFrames；不可用时可降级静态卡片，但运行报告必须标记降级原因。
+## Job 与 Run
 
-## 动画生产契约
+新任务固定 `schema_version: 2`。任务目录的 `draft/` 只保存当前待审研究、脚本和合规文件。每次 `/run` 创建不可变 `runs/{run_id}/staging/`；成功后原子改名为 `artifacts/`，失败则改名为 `failed/`。
 
-```text
-approved_script.json + review.json + voice.wav
-  → motion_plan.json（场景语义、双层运动、连续时间轴）
-  → animation_project/（受信HTML模板，不接受模型生成命令或下载地址）
-  → HyperFrames check（运行时/布局/运动/对比度）
-  → final.mp4
-```
+最终成功 render 才更新 `current_run_id`；对已验证成功媒体进行纯报告修正时，可发布独立的 `report_rebuild` 成功运行，预算与媒体哈希不变。普通产物地址只解析当前 run 的 manifest，历史地址必须显式携带成功的 render/report_rebuild `run_id`。旧任务读取时装饰为 `legacy_read_only`，原文件不改写。
 
-项目内Skill位于 `agent-skills/produce-dynamic-health-video/`。模板只接受已登记视觉类型，不让Agent任意注入脚本或从搜索结果安装代码。
+## 审批
 
-## 联网提取契约
+研究审批绑定 `research.json` SHA-256，并对所有 `auto_review_status=eligible` finding 逐项提交决定与 `verbatim/paraphrase`。自动研究会删除模型输出中的人工审定人、人工时间与 `human_verified` 标签。
 
-```text
-用户URL或已登记搜索结果
-  → URL与SSRF安全检查
-  → 普通HTTP正文提取
-  → 正文不足时尝试已安装的可选Playwright Adapter
-  → 抖音/B站/X/YouTube/TikTok尝试已配置的受信音视频解析Adapter
-  → 可选ASR/OCR/关键帧
-  → extraction.json + 来源记录 + SHA-256
-```
+合规审批同时绑定 `review.json` 与 `approved_script.json` SHA-256。人工改稿会重算本地审核和预计朗读时长、撤销旧合规审批，但研究文件未变化时保留研究审批。
 
-项目内Skill位于 `agent-skills/extract-web-platform-content/`。默认依赖只保证普通公开网页的受限HTTP提取；Playwright和一站式解析器均为可选适配器。模型只调用高层 `extract_url` 能力，不接触Shell命令、Cookie文件或任意下载地址。网页文本一律是不可信证据，不能覆盖系统指令或触发工具安装。未安装适配器返回 `adapter_missing`，登录边界返回 `auth_required`，已有不完整内容返回 `partial`。
+## 预算与并发
 
-## Adapter 契约（下一阶段）
+`BudgetLedger` 在 HTTP 请求发出前增加 `attempted`；成功、HTTP 错误、超时和无效 JSON 都占用同一任务的硬上限 7。研究、研究收束、脚本、修订和模型预审共享台账；连接测试与普通规划不计入任务预算。
 
-每个可执行工具必须有显式清单：
+同任务同时只有一个执行线程和一个带 PID 的磁盘锁。相同 `Idempotency-Key` 返回已有结果；不同 Key 在运行中返回 409。失效 PID 锁会把最后一个运行标为 `interrupted`。
 
-```json
-{
-  "id": "media-analyzer",
-  "name": "一站式音视频解析",
-  "capabilities": ["content_insight", "asr", "ocr"],
-  "entrypoint": "绝对路径",
-  "arguments_schema": {},
-  "input_contract": {},
-  "output_contract": {},
-  "healthcheck": {},
-  "enabled": false,
-  "requires_approval": true
-}
-```
+## 生产适配器
 
-发现器不能自行生成并执行命令；只有人工审核过的 Adapter 才能进入执行层。
+研究层使用受控搜索和 URL 提取。音视频解析配置由字段白名单构造并在子进程结束后删除。配音后检查实际时长；只有 0.75-1.5 倍安全变速能落入 45-60 秒时才继续。
+
+渲染优先使用锁定版 HyperFrames，缺失时返回明确适配器状态；运行时不允许 `npx --yes` 下载。CI 可通过构造参数注入假配音和假渲染适配器，生产默认仍使用真实本地工具。
+
+## Manifest
+
+最终 `manifest.json` 包含 job/run ID、输入哈希、研究/合规审批哈希、时间、预算统计，以及产物的名称、阶段、MIME、大小和 SHA-256。公开包以 manifest 为准复算文件，不信任报告中的自述状态。

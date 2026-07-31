@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import re
 import shutil
 import tempfile
 import zipfile
@@ -10,6 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from verify_public_evidence import CANONICAL, REQUIRED, probe_video, scan_text, sha256, validate_srt, verify
+
+
+EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 
 
 def main() -> int:
@@ -28,8 +32,9 @@ def main() -> int:
     if not source_manifest_path.is_file():
         raise SystemExit("源目录没有 manifest.json")
     source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
-    if source_manifest.get("schema_version") != 2 or source_manifest.get("stage") != "render" or source_manifest.get("status") != "complete":
-        raise SystemExit("源目录不是成功的 v2 render 运行")
+    source_stage = source_manifest.get("stage")
+    if source_manifest.get("schema_version") != 2 or source_stage not in {"render", "report_rebuild"} or source_manifest.get("status") != "complete":
+        raise SystemExit("源目录不是成功发布的 v2 render/report_rebuild 运行")
     needed = set(CANONICAL) | {"approvals.json"}
     missing = sorted(name for name in needed if not (source / name).is_file())
     if missing:
@@ -41,6 +46,21 @@ def main() -> int:
     try:
         for name in sorted(needed):
             shutil.copy2(source / name, temporary / name)
+        research_path = temporary / "research.json"
+        research_text = research_path.read_text(encoding="utf-8")
+        research_text, redacted_email_count = EMAIL_PATTERN.subn("[REDACTED_EMAIL]", research_text)
+        if redacted_email_count:
+            research_path.write_text(research_text, encoding="utf-8")
+            approvals_path = temporary / "approvals.json"
+            approvals = json.loads(approvals_path.read_text(encoding="utf-8"))
+            research_approval = approvals.get("research", {})
+            research_approval["source_artifact_sha256"] = research_approval.get("artifact_sha256")
+            research_approval["public_artifact_sha256"] = sha256(research_path)
+            research_approval["public_sanitization"] = {
+                "email_addresses_redacted": redacted_email_count,
+                "scope": "source-page contact text only",
+            }
+            approvals_path.write_text(json.dumps(approvals, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         source_findings = []
         for path in temporary.iterdir():
             source_findings.extend(scan_text(path))
@@ -60,8 +80,9 @@ def main() -> int:
             f"- 成片：`{media['duration_seconds']}` 秒，`{media['width']}×{media['height']}`，`{media['video_codec']}/{media['audio_codec']}`\n"
             "- 字幕：时间轴从 0 连续到成片末尾，允许误差 0.15 秒。\n"
             "- 审批：研究 finding 逐项决定与最终脚本合规放行均来自用户本人操作；自动流程不代签。\n"
+            f"- 公开副本脱敏：research.json 中 {redacted_email_count} 处来源页联系邮箱替换为 [REDACTED_EMAIL]；原审批哈希保留在 approvals.json，公开副本哈希另行记录。\n"
             "- 脱敏：包内不含 Key、Cookie、Authorization、本机绝对路径、原始配置、邮箱或手机号。\n"
-            "- 清单：公开包在不改动原十项产物和 approvals.json 的前提下，加入本说明并重新计算逐文件哈希。\n"
+            "- 清单：公开包加入本说明，并对公开副本重新计算逐文件大小与 SHA-256。\n"
         )
         (temporary / "VALIDATION.md").write_text(validation, encoding="utf-8")
 
@@ -74,7 +95,7 @@ def main() -> int:
             path = temporary / name
             manifest["artifacts"].append({
                 "name": name,
-                "stage": "render" if name != "VALIDATION.md" else "validation",
+                "stage": source_stage if name != "VALIDATION.md" else "validation",
                 "mime": mimetypes.guess_type(name)[0] or "application/octet-stream",
                 "size": path.stat().st_size,
                 "sha256": sha256(path),

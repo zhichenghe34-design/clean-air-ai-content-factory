@@ -1,0 +1,295 @@
+{
+  "topic": "99%除醛率为什么必须看检测条件？",
+  "audience": "新房装修、租房及有儿童家庭",
+  "selected_pattern_cards": [
+    {
+      "item_id": "03",
+      "type": "合规反例",
+      "hook": "99%大字承诺是真的吗",
+      "structure": [
+        "展示醒目宣传语",
+        "放大小字条件",
+        "还原用量/体积/时间",
+        "对比消费者理解与真实测试条件",
+        "风险提醒"
+      ],
+      "evidence_devices": [
+        "广告截图",
+        "小字特写",
+        "4罐/1.5立方米/24小时等限定条件"
+      ],
+      "reusable_pattern": "大字主张→小字证据→条件换算→现实场景反差→合规结论",
+      "risks": [
+        "引用数字仍须回到原检测报告核验"
+      ],
+      "status": "compliance_negative_example"
+    },
+    {
+      "item_id": "06",
+      "type": "钩子教学",
+      "hook": "没人看不是干货不行，而是第一秒被划走",
+      "structure": [
+        "解释三秒流失",
+        "四类钩子",
+        "三个常见错误",
+        "钩子后的三秒承接",
+        "模板示例"
+      ],
+      "evidence_devices": [
+        "后台三秒流失指标",
+        "正反例句式"
+      ],
+      "reusable_pattern": "痛点/反常识/结果承诺/悬念数字四选一→一至两句说明正文交付→进入主体",
+      "risks": [
+        "完播率翻倍等普遍性效果未经验证",
+        "钩子需避免夸张承诺"
+      ],
+      "status": "method_candidate"
+    }
+  ],
+  "pattern": "大字主张→小字条件→条件换算→现实场景反差→行动建议",
+  "source_boundary": "公开视频仅用于学习内容结构，不作为产品功效证据",
+  "evidence_requirements": [
+    "剂量",
+    "空间体积",
+    "作用时间",
+    "初始浓度",
+    "检测方法",
+    "报告来源"
+  ],
+  "official_references": [
+    {
+      "name": "GB/T 18883-2022 室内空气质量标准",
+      "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436"
+    },
+    {
+      "name": "中华人民共和国广告法",
+      "url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html"
+    }
+  ],
+  "web_research": {
+    "status": "partial",
+    "summary": "联网调研未完整结束，生产线将采用本地范式和保守表述继续。",
+    "findings": [
+      {
+        "claim": "全国标准信息公共服务平台列明GB/T 18883-2022的中文名称为《室内空气质量标准》。",
+        "source_urls": [
+          "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436"
+        ],
+        "evidence": [
+          {
+            "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436",
+            "excerpt": "标准号：GB/T 18883-2022 中文标准名称： 室内空气质量标准",
+            "source_type": "government_standard_metadata",
+            "retrieved_at": "2026-08-01T01:39:46+08:00",
+            "evidence_type": "unclassified"
+          }
+        ],
+        "confidence": "high",
+        "limitations": [
+          "官方页面只确认标准身份，不能证明具体除醛产品的功效。"
+        ],
+        "binding_method": "exact_tool_excerpt",
+        "review_summary": "这只是确认：确实存在一份叫《室内空气质量标准》的国家标准。",
+        "allowed_use": "可以把它作为标准名称和背景来源。",
+        "prohibited_use": "不能拿它证明某款除醛产品有效，更不能证明99%除醛。",
+        "source_label": "国家标准官方页面",
+        "script_eligible": true,
+        "strict_review_status": "proven_for_limited_use",
+        "finding_id": "e1a56c050816640c",
+        "auto_review_status": "eligible"
+      },
+      {
+        "claim": "《中华人民共和国广告法》要求广告中的数据等引证内容真实准确并标明出处；有适用范围或有效期限的，应明确表示。",
+        "source_urls": [
+          "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html"
+        ],
+        "evidence": [
+          {
+            "url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html",
+            "excerpt": "广告使用数据、统计资料、调查结果、文摘、引用语等引证内容的，应当真实、准确，并表明出处。引证内容有适用范围和有效期限的，应当明确表示。",
+            "source_type": "government_law",
+            "retrieved_at": "2026-08-01T01:39:46+08:00",
+            "evidence_type": "unclassified"
+          }
+        ],
+        "confidence": "high",
+        "limitations": [
+          "该条文支持引证内容的披露要求，不直接判定某个具体商品违法。"
+        ],
+        "binding_method": "exact_tool_excerpt",
+        "review_summary": "广告里引用检测数字时，不能只写一个好看的百分比，还要交代出处和适用条件。",
+        "allowed_use": "可以提醒观众：看到99%时，要继续查看检测出处、适用范围和有效期限。",
+        "prohibited_use": "不能仅凭这条法律就断言某个具体商家已经违法。",
+        "source_label": "国家市场监督管理总局公布的《广告法》",
+        "script_eligible": true,
+        "strict_review_status": "proven_for_limited_use",
+        "finding_id": "2db258690a089345",
+        "auto_review_status": "eligible"
+      },
+      {
+        "claim": "新京报文章记录的商品页面中，99.93%数据对应1罐产品、1m³试验舱和24小时条件。",
+        "source_urls": [
+          "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html"
+        ],
+        "evidence": [
+          {
+            "url": "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+            "excerpt": "1罐产品在1m3试验舱内24小时除醛率为99.93%、除味率99.1%、除菌率99.99%。",
+            "source_type": "media_original",
+            "retrieved_at": "2026-08-01T01:39:46+08:00",
+            "evidence_type": "unclassified"
+          }
+        ],
+        "confidence": "medium",
+        "limitations": [
+          "该证据记录的是报道所述商品页面，不能外推到所有产品。"
+        ],
+        "binding_method": "exact_tool_excerpt",
+        "review_summary": "新京报文章举出的99.93%，对应的是1罐产品、1立方米试验舱、24小时，不等于普通家庭里的实际效果。",
+        "allowed_use": "可以明确说：报道记录的这个数据是在特定试验条件下得到的。",
+        "prohibited_use": "不能扩大成所有产品都这样，也不能把报道案例当成完整检测报告。",
+        "source_label": "新京报原始文章",
+        "script_eligible": true,
+        "strict_review_status": "proven_for_limited_use",
+        "finding_id": "243a0601c4f3c609",
+        "auto_review_status": "eligible"
+      }
+    ],
+    "content_patterns": [],
+    "evidence_gaps": [
+      "已达到模型调度次数上限"
+    ],
+    "sources": [
+      {
+        "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436",
+        "title": "国家标准|GB/T 18883-2022",
+        "publisher": "国家市场监督管理总局 国家标准化管理委员会",
+        "source_type": "government_standard_metadata",
+        "retrieved_at": "2026-08-01T01:39:46+08:00"
+      },
+      {
+        "url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html",
+        "title": "中华人民共和国广告法",
+        "publisher": "国家市场监督管理总局",
+        "source_type": "government_law",
+        "retrieved_at": "2026-08-01T01:39:46+08:00"
+      },
+      {
+        "url": "https://epaper.bjnews.com.cn/html/2026/20260717/20260717_A02/20260717_A02_04_7058_2077772172956274690.html",
+        "title": "99%除醛率，网红凝胶牛皮吹破了天_新京报",
+        "publisher": "新京报",
+        "source_type": "media_original",
+        "retrieved_at": "2026-08-01T01:39:46+08:00"
+      }
+    ],
+    "local_evidence_binding": {
+      "method": "exact_tool_excerpt",
+      "added_count": 3
+    },
+    "strict_audit": {
+      "policy": "assume_all_claims_false_until_independently_proven",
+      "promotion_rule": "模型只能否决或降级，不能推翻本地证据失败项",
+      "model_review_required": true,
+      "model_review_status": "complete",
+      "status": "passed",
+      "finding_count": 3,
+      "passed_count": 3,
+      "rejected_count": 0,
+      "findings": [
+        {
+          "audit_id": "a88a7b375325540e",
+          "claim": "全国标准信息公共服务平台列明GB/T 18883-2022的中文名称为《室内空气质量标准》。",
+          "initial_assumption": "false",
+          "local_checks": {
+            "previous_evidence_gate": true,
+            "captured_exact_excerpt": true,
+            "trusted_source_type": true,
+            "numbers_present_in_evidence": true,
+            "explicit_scope_limit": true,
+            "binding_is_not_model_assertion": true,
+            "no_absolute_or_medical_overreach": true
+          },
+          "local_verdict": "supported_limited",
+          "model_verdict": "supported_limited",
+          "final_verdict": "supported_limited",
+          "rejection_reasons": [],
+          "model_reasons": [
+            "摘录直接显示平台页面包含标准号GB/T 18883-2022和中文名称'室内空气质量标准'，但此摘录只证明该标准的存在和名称，不涉及任何产品功效，且范围仅限于该标准本身，不扩展到其他内容。"
+          ]
+        },
+        {
+          "audit_id": "9c1d9be171fb1800",
+          "claim": "《中华人民共和国广告法》要求广告中的数据等引证内容真实准确并标明出处；有适用范围或有效期限的，应明确表示。",
+          "initial_assumption": "false",
+          "local_checks": {
+            "previous_evidence_gate": true,
+            "captured_exact_excerpt": true,
+            "trusted_source_type": true,
+            "numbers_present_in_evidence": true,
+            "explicit_scope_limit": true,
+            "binding_is_not_model_assertion": true,
+            "no_absolute_or_medical_overreach": true
+          },
+          "local_verdict": "supported_limited",
+          "model_verdict": "supported_limited",
+          "final_verdict": "supported_limited",
+          "rejection_reasons": [],
+          "model_reasons": [
+            "摘录直接来自政府网站，明确包含广告法相关条文内容，要求引证内容真实准确并标明出处，且对适用范围和有效期限有明确表示要求，但该摘录仅支持条文描述，不涉及具体案例或商品合规判断。"
+          ]
+        },
+        {
+          "audit_id": "50dc9122d84fcf2e",
+          "claim": "新京报文章记录的商品页面中，99.93%数据对应1罐产品、1m³试验舱和24小时条件。",
+          "initial_assumption": "false",
+          "local_checks": {
+            "previous_evidence_gate": true,
+            "captured_exact_excerpt": true,
+            "trusted_source_type": true,
+            "numbers_present_in_evidence": true,
+            "explicit_scope_limit": true,
+            "binding_is_not_model_assertion": true,
+            "no_absolute_or_medical_overreach": true
+          },
+          "local_verdict": "supported_limited",
+          "model_verdict": "supported_limited",
+          "final_verdict": "supported_limited",
+          "rejection_reasons": [],
+          "model_reasons": [
+            "摘录直接来自新京报原文，明确记载了99.93%对应的参数为1罐产品、1m³试验舱和24小时条件，但该摘录仅能证明报道中提及的特定商品页面信息，不能推及其他产品，且未提供原始页面链接或更详细证据。"
+          ]
+        }
+      ],
+      "model_review_findings": [
+        {
+          "audit_id": "a88a7b375325540e",
+          "verdict": "supported_limited",
+          "reasons": [
+            "摘录直接显示平台页面包含标准号GB/T 18883-2022和中文名称'室内空气质量标准'，但此摘录只证明该标准的存在和名称，不涉及任何产品功效，且范围仅限于该标准本身，不扩展到其他内容。"
+          ],
+          "safe_scope": "仅在引用该平台页面时，确认GB/T 18883-2022标准号及其中文名称，不用于支持除醛产品效果。"
+        },
+        {
+          "audit_id": "9c1d9be171fb1800",
+          "verdict": "supported_limited",
+          "reasons": [
+            "摘录直接来自政府网站，明确包含广告法相关条文内容，要求引证内容真实准确并标明出处，且对适用范围和有效期限有明确表示要求，但该摘录仅支持条文描述，不涉及具体案例或商品合规判断。"
+          ],
+          "safe_scope": "仅引用该法律条文时，确认广告引证内容需真实准确并标明出处，且适用范围和有效期限需明确，不用于判定具体广告内容。"
+        },
+        {
+          "audit_id": "50dc9122d84fcf2e",
+          "verdict": "supported_limited",
+          "reasons": [
+            "摘录直接来自新京报原文，明确记载了99.93%对应的参数为1罐产品、1m³试验舱和24小时条件，但该摘录仅能证明报道中提及的特定商品页面信息，不能推及其他产品，且未提供原始页面链接或更详细证据。"
+          ],
+          "safe_scope": "仅引用该新京报文章时，可说明文章中记录的该商品页面数据条件，不扩展至其他产品或其他测试条件。"
+        }
+      ],
+      "model_review_error": "",
+      "model_provider_reported_status": "insufficient"
+    },
+    "model_calls": 2
+  }
+}
