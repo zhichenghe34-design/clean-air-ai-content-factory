@@ -258,26 +258,73 @@ function renderRunHistory(job) {
   }).join("");
 }
 
-function renderResearchFindings(findings) {
+function findingReviewGuide(item) {
+  if (item.review_summary) return {
+    summary: item.review_summary,
+    allowed: item.allowed_use || "只按这条证据原意做保守转述。",
+    prohibited: item.prohibited_use || (item.limitations || []).join("；") || "不能超出证据原意。",
+    source: item.source_label || "已抓取公开来源",
+  };
+  const sourceType = item.evidence?.[0]?.source_type || "";
+  if (sourceType === "government_standard_metadata") return {
+    summary: "这只是确认：确实存在一份叫《室内空气质量标准》的现行国家标准。",
+    allowed: "可以把它作为标准名称和背景来源。",
+    prohibited: "不能拿它证明某款除醛产品有效，更不能证明“99%除醛”。",
+    source: "国家标准官方页面",
+  };
+  if (sourceType === "government_law") return {
+    summary: "广告里引用检测数字时，不能只写一个好看的百分比，还要交代出处和适用条件。",
+    allowed: "可以提醒观众：看到99%时，要继续查看检测出处、适用范围和有效期限。",
+    prohibited: "不能仅凭这条法律就断言某个具体商家已经违法。",
+    source: "国家市场监督管理总局公布的《广告法》",
+  };
+  if (sourceType === "media_original") return {
+    summary: "新京报文章举出的99.93%，对应的是1罐产品、1立方米试验舱、24小时，不等于普通家庭里的实际效果。",
+    allowed: "可以明确说“报道记录的这个数据是在特定试验条件下得到的”。",
+    prohibited: "不能扩大成所有产品都这样，也不能把报道案例当成完整检测报告。",
+    source: "新京报原始文章",
+  };
+  return {
+    summary: item.claim || "未生成易懂解释。",
+    allowed: "只按原意保守转述，并保留来源限制。",
+    prohibited: (item.limitations || []).join("；") || "没有原文证据时不能写进脚本。",
+    source: "公开来源",
+  };
+}
+
+function renderResearchFindings(findings, strictAudit = null) {
   const eligibleCount = findings.filter(item => item.auto_review_status === "eligible").length;
   const excludedCount = findings.length - eligibleCount;
-  const summary = eligibleCount
-    ? `共 ${findings.length} 条：${eligibleCount} 条等待你的逐项决定，${excludedCount} 条因缺少有效证据被自动排除。`
-    : `共 ${findings.length} 条，但没有可进入脚本的证据。批准只会形成空证据集，建议退回研究。`;
+  const summary = strictAudit
+    ? `严格审核 Agent 已按“所有内容默认虚假”完成反向举证：${strictAudit.passed_count || 0} 条限定通过，${strictAudit.rejected_count || 0} 条被否决。模型只能否决，不能替证据不足的内容翻案。`
+    : eligibleCount
+    ? `系统已把 ${eligibleCount} 条证据翻译成人话并给出安全用法；${excludedCount} 条无效内容已自动排除。你不需要阅读机器字段。`
+    : `没有可用于脚本的证据，系统建议退回研究。`;
   const rows = findings.map(item => {
     const sources = (item.source_urls || []).join(" · ") || "无可回溯来源";
     const excerpts = (item.evidence || []).map(entry => `<li><q>${escapeHtml(entry.excerpt || "")}</q><small>${escapeHtml(entry.url || "")}</small></li>`).join("");
+    const guide = findingReviewGuide(item);
     if (item.auto_review_status === "eligible") {
-      return `<div class="finding" data-finding-id="${escapeHtml(item.finding_id)}"><strong>${escapeHtml(item.claim || "未命名结论")}</strong><small>${escapeHtml(sources)}</small>
-        ${excerpts ? `<ul class="evidence-list">${excerpts}</ul>` : ""}
-        <div><label>决定<select data-field="decision"><option value="approved">允许进入脚本</option><option value="rejected">拒绝</option></select></label>
-        <label>证据类型<select data-field="evidence_type"><option value="paraphrase">转述 paraphrase</option><option value="verbatim">逐字 verbatim</option></select></label></div></div>`;
+      const strictPassed = item.strict_review_status === "proven_for_limited_use";
+      return `<div class="finding" data-finding-id="${escapeHtml(item.finding_id)}" data-evidence-type="paraphrase" data-decision="approved">
+        <span class="review-recommendation">${strictPassed ? "严格审核 Agent：反向举证通过（仅限安全转述）" : "系统建议：采用安全转述"}</span><strong>${escapeHtml(guide.summary)}</strong>
+        <dl class="review-guide"><dt>可以怎么说</dt><dd>${escapeHtml(guide.allowed)}</dd><dt>绝对不能怎么说</dt><dd>${escapeHtml(guide.prohibited)}</dd></dl>
+        ${strictPassed ? "" : `<div class="finding-control"><label>你的决定<select data-field="decision"><option value="approved">采用系统建议</option><option value="rejected">这条不用</option></select></label></div>`}
+        <details><summary>查看原文和来源（需要时再展开）</summary><p>${escapeHtml(guide.source)}</p>${excerpts ? `<ul class="evidence-list">${excerpts}</ul>` : ""}<small>${escapeHtml(sources)}</small></details></div>`;
     }
-    const limitations = (item.limitations || []).join("；") || "缺少满足要求的原文摘录";
-    return `<div class="finding finding-excluded"><strong>${escapeHtml(item.claim || "未命名结论")}</strong><span class="finding-status">自动排除 · 不会进入脚本</span><small>${escapeHtml(sources)}</small>
-      ${excerpts ? `<ul class="evidence-list">${excerpts}</ul>` : ""}<p>${escapeHtml(limitations)}</p></div>`;
+    return `<div class="finding finding-excluded"><span class="finding-status">系统建议：不采用</span><strong>${escapeHtml(guide.summary)}</strong>
+      <dl class="review-guide"><dt>原因</dt><dd>${escapeHtml(guide.prohibited)}</dd></dl><details><summary>查看原始机器结论</summary><p>${escapeHtml(item.claim || "未命名结论")}</p><small>${escapeHtml(sources)}</small></details></div>`;
   }).join("");
   return `<p class="lead">${summary}</p>${rows || `<p class="lead">研究未产生 finding，建议退回研究。</p>`}`;
+}
+
+function syncApprovalButton(kind) {
+  const select = document.getElementById(`${kind}Decision`);
+  const button = document.getElementById(`submit${kind === "research" ? "Research" : "Compliance"}Btn`);
+  const approved = select.value === "approved";
+  button.className = approved ? "primary" : "danger";
+  if (kind === "research") button.textContent = approved ? "提交审核并进入下一步" : "提交审核并退回研究";
+  else button.textContent = approved ? "提交审核并进入渲染" : "提交审核并退回改稿";
 }
 
 async function openJob(id) {
@@ -296,7 +343,9 @@ async function openJob(id) {
       state.reviewFiles.research = await readJsonArtifact(`/api/jobs/${id}/review-artifacts/research.json`);
       if (!researchPanel.hidden) {
         const findings = state.reviewFiles.research.data.findings || [];
-        document.getElementById("researchFindings").innerHTML = renderResearchFindings(findings);
+        document.getElementById("researchFindings").innerHTML = renderResearchFindings(findings, state.reviewFiles.research.data.strict_audit || null);
+        document.getElementById("researchDecision").value = findings.some(item => item.auto_review_status === "eligible") ? "approved" : "rejected";
+        syncApprovalButton("research");
       }
     } catch (_) { /* research may not exist before the first stage */ }
     try {
@@ -305,6 +354,8 @@ async function openJob(id) {
       state.reviewFiles.review = await readJsonArtifact(`/api/jobs/${id}/review-artifacts/review.json`);
       const review = state.reviewFiles.review.data;
       document.getElementById("complianceSummary").textContent = review.status === "blocked" ? `自动检查：阻断。${(review.warnings || []).map(item => item.message).join("；")}` : `自动检查：${review.status === "passed" ? "通过" : "需人工确认"}。即使自动通过，也必须由你亲自放行。`;
+      document.getElementById("complianceDecision").value = review.status === "passed" ? "approved" : "rejected";
+      syncApprovalButton("compliance");
     } catch (_) { /* content may not exist yet */ }
     document.getElementById("approvedScriptInput").value = script;
     document.getElementById("approvedScriptInput").disabled = job.legacy_read_only || !script;
@@ -325,8 +376,8 @@ async function submitResearch(decision) {
   if (!job || !state.reviewFiles.research) return;
   const findings = [...document.querySelectorAll("#researchFindings .finding[data-finding-id]")].map(row => ({
     finding_id: row.dataset.findingId,
-    decision: row.querySelector('[data-field="decision"]').value,
-    evidence_type: row.querySelector('[data-field="evidence_type"]').value,
+    decision: row.querySelector('[data-field="decision"]')?.value || row.dataset.decision || "rejected",
+    evidence_type: row.dataset.evidenceType || "paraphrase",
   }));
   await api(`/api/jobs/${job.id}/approvals/research`, { method: "POST", body: JSON.stringify({
     decision, reviewer: document.getElementById("researchReviewer").value.trim(), note: document.getElementById("researchNote").value.trim(),
@@ -386,10 +437,10 @@ document.getElementById("saveScriptBtn").addEventListener("click", async () => {
   catch (error) { toast(error.message, true); }
 });
 document.getElementById("rerunJobBtn").addEventListener("click", () => state.selectedJob && runJob(state.selectedJob.id));
-document.getElementById("approveResearchBtn").addEventListener("click", () => submitResearch("approved").catch(error => toast(error.message, true)));
-document.getElementById("rejectResearchBtn").addEventListener("click", () => submitResearch("rejected").catch(error => toast(error.message, true)));
-document.getElementById("approveComplianceBtn").addEventListener("click", () => submitCompliance("approved").catch(error => toast(error.message, true)));
-document.getElementById("rejectComplianceBtn").addEventListener("click", () => submitCompliance("rejected").catch(error => toast(error.message, true)));
+document.getElementById("researchDecision").addEventListener("change", () => syncApprovalButton("research"));
+document.getElementById("complianceDecision").addEventListener("change", () => syncApprovalButton("compliance"));
+document.getElementById("submitResearchBtn").addEventListener("click", () => submitResearch(document.getElementById("researchDecision").value).catch(error => toast(error.message, true)));
+document.getElementById("submitComplianceBtn").addEventListener("click", () => submitCompliance(document.getElementById("complianceDecision").value).catch(error => toast(error.message, true)));
 
 document.getElementById("scanBtn").addEventListener("click", async () => {
   const button = document.getElementById("scanBtn"); setBusy(button, true, "扫描中…");

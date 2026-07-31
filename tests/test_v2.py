@@ -85,6 +85,22 @@ class SlowResearchRunner(FakeStageRunner):
         return super().run_research_stage(output, production_input)
 
 
+class StrictRejectRunner(FakeStageRunner):
+    def run_research_stage(self, output, production_input):
+        super().run_research_stage(output, production_input)
+        research_path = output / "research.json"
+        research = json.loads(research_path.read_text(encoding="utf-8"))
+        research["strict_audit"] = {
+            "policy": "assume_all_claims_false_until_independently_proven",
+            "model_review_required": True,
+            "model_review_status": "complete",
+            "passed_count": 0,
+            "rejected_count": 1,
+        }
+        research["findings"][0]["script_eligible"] = False
+        research_path.write_text(json.dumps(research, ensure_ascii=False), encoding="utf-8")
+
+
 def advance_to_content_gate(jobs, job, runner):
     job = jobs.approve(job["id"])
     job = jobs.advance(job["id"], runner, "research-0001")
@@ -138,6 +154,26 @@ class V2WorkflowTests(unittest.TestCase):
             self.assertTrue(manifest["approval_hashes"]["research"])
             self.assertTrue(manifest["approval_hashes"]["compliance"])
             self.assertEqual(jobs.resolve_artifact(job["id"], "final.mp4").read_bytes(), b"fake:final.mp4")
+
+    def test_strict_agent_auto_rejects_zero_proof_without_human_signature(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            jobs.approve(job["id"])
+            job = jobs.advance(job["id"], StrictRejectRunner(), "strict-reject-01")
+            self.assertEqual(job["status"], "awaiting_research_revision")
+            self.assertEqual(job["approvals"]["research"]["status"], "pending")
+            self.assertEqual(job["automatic_research_gate"]["decision"], "rejected")
+            self.assertNotIn("reviewer", job["automatic_research_gate"])
+
+    def test_successful_research_rerun_clears_previous_automatic_rejection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            jobs.approve(job["id"])
+            job = jobs.advance(job["id"], StrictRejectRunner(), "strict-reject-02")
+            self.assertIn("automatic_research_gate", job)
+            job = jobs.advance(job["id"], FakeStageRunner(), "strict-pass-0001")
+            self.assertEqual(job["status"], "awaiting_research_approval")
+            self.assertNotIn("automatic_research_gate", job)
 
     def test_approval_hash_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:

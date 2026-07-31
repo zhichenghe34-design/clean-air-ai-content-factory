@@ -132,15 +132,23 @@ label.check input { width: auto; height: auto; margin: 0; }
 .job-summary strong { margin-top: 5px; font-size: 12px; word-break: break-word; }
 .approval-panel { margin: 16px 0; padding: 18px; border: 1px solid #d7c786; border-radius: 15px; background: #fffcf1; }
 .approval-panel h3, .subhead { margin: 0 0 8px; font-size: 15px; }
-.approval-fields { display: grid; grid-template-columns: 1fr 1.4fr; gap: 10px; }
+.approval-fields { display: grid; grid-template-columns: .8fr 1.25fr 1.5fr; gap: 10px; }
 .finding-list { display: grid; gap: 9px; }
 .finding { padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: white; }
 .finding strong, .finding small { display: block; }
 .finding small { margin-top: 5px; color: var(--muted); word-break: break-all; }
-.finding > div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.finding > strong { margin-top: 7px; font-size: 14px; line-height: 1.65; }
+.finding-control { max-width: 340px; }
 .finding-excluded { border-color: #e3b6ae; background: #fff7f5; }
 .finding-excluded p { margin: 8px 0 0; color: var(--danger); font-size: 11px; }
 .finding-status { display: inline-block; margin-top: 7px; color: var(--danger); font-size: 10px; font-weight: 700; }
+.review-recommendation { display: inline-block; padding: 4px 7px; border-radius: 7px; color: #20513f; background: #e4f1e8; font-size: 10px; font-weight: 700; }
+.review-guide { display: grid; grid-template-columns: 104px 1fr; gap: 7px 10px; margin: 12px 0; padding: 11px; border-radius: 10px; background: #f5f4ee; font-size: 11px; line-height: 1.55; }
+.review-guide dt { color: var(--muted); font-weight: 700; }
+.review-guide dd { margin: 0; }
+.finding details { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.finding summary { color: var(--green); cursor: pointer; font-size: 11px; font-weight: 700; }
+.finding details p { color: var(--muted); font-size: 11px; }
 .evidence-list { margin: 9px 0; padding-left: 18px; color: var(--ink); font-size: 11px; }
 .evidence-list li + li { margin-top: 7px; }
 .evidence-list q { display: block; line-height: 1.55; }

@@ -31,7 +31,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_search_calls": 3,
         "max_results_per_search": 5,
         "max_pages": 5,
-        "max_model_turns": 4,
+        "max_model_turns": 2,
         "max_provider_calls_per_job": 7,
         "max_chars_per_page": 6000,
         "media_parser_root": "",

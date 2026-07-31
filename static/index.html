@@ -157,15 +157,15 @@
           <div class="panel-head"><div><p class="eyebrow">V2 HUMAN GATES</p><h2>人工审定、脚本精修与产物</h2></div><span id="jobDetailBadge" class="pill"></span></div>
           <div id="jobSummary" class="job-summary"></div>
           <section id="researchApprovalPanel" class="approval-panel" hidden>
-            <h3>研究证据逐项审定</h3><p class="lead">自动系统只做预警。请亲自核对来源后，对每条 finding 决定是否可进入脚本，并选择逐字证据或转述证据。</p>
+            <h3>研究证据审核</h3><p class="lead">系统先把证据翻译成人话并说明安全边界。你只需确认“可以怎么说、不能怎么说”；原文和网址默认折叠。</p>
             <div id="researchFindings" class="finding-list"></div>
-            <div class="approval-fields"><label>审批人<input id="researchReviewer" autocomplete="off"></label><label>审批备注<input id="researchNote" autocomplete="off"></label></div>
-            <div class="action-row"><button id="approveResearchBtn" class="primary">批准研究证据</button><button id="rejectResearchBtn" class="danger">退回研究</button></div>
+            <div class="approval-fields"><label>审批人<input id="researchReviewer" autocomplete="off"></label><label>审核结论<select id="researchDecision"><option value="approved">批准可用证据并进入下一步</option><option value="rejected">退回研究并要求返工</option></select></label><label>审批备注<input id="researchNote" autocomplete="off"></label></div>
+            <div class="action-row"><button id="submitResearchBtn" class="primary">提交审核并进入下一步</button></div>
           </section>
           <section id="complianceApprovalPanel" class="approval-panel" hidden>
             <h3>最终脚本合规门禁</h3><p id="complianceSummary" class="lead"></p>
-            <div class="approval-fields"><label>审批人<input id="complianceReviewer" autocomplete="off"></label><label>审批备注<input id="complianceNote" autocomplete="off"></label></div>
-            <div class="action-row"><button id="approveComplianceBtn" class="primary">批准脚本并允许渲染</button><button id="rejectComplianceBtn" class="danger">退回改稿</button></div>
+            <div class="approval-fields"><label>审批人<input id="complianceReviewer" autocomplete="off"></label><label>审核结论<select id="complianceDecision"><option value="approved">批准脚本并进入渲染</option><option value="rejected">退回脚本并要求改稿</option></select></label><label>审批备注<input id="complianceNote" autocomplete="off"></label></div>
+            <div class="action-row"><button id="submitComplianceBtn" class="primary">提交审核并进入渲染</button></div>
           </section>
           <label>当前待审脚本<textarea id="approvedScriptInput" rows="9" placeholder="内容阶段完成后在此显示待审脚本"></textarea></label>
           <div id="durationEstimate" class="hint"></div>

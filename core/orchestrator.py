@@ -227,6 +227,7 @@ class JobStore:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
+        self._reconcile_strict_rejections()
 
     def create(self, plan: dict[str, Any], production_input: dict[str, Any] | None = None) -> dict[str, Any]:
         safe_plan = validate_plan(plan)
@@ -364,7 +365,9 @@ class JobStore:
                     self._publish_draft(staging, folder / "draft", ["research.json", "insight.json"])
                     job["approvals"]["research"] = {"status": "pending"}
                     job["approvals"]["compliance"] = {"status": "pending"}
-                    job["status"] = "awaiting_research_approval"
+                    job.pop("automatic_research_gate", None)
+                    if not self._apply_strict_rejection(job, folder, folder / "draft" / "research.json"):
+                        job["status"] = "awaiting_research_approval"
                 elif stage == "content":
                     runner.run_content_stage(staging, job["production_input"], job["approvals"]["research"])
                     self._publish_draft(staging, folder / "draft", ["research.json", "insight.json", "script_variants.json", "approved_script.json", "review.json"])
@@ -605,6 +608,61 @@ class JobStore:
             provenance.pop("reviewer", None)
             provenance.pop("reviewed_at", None)
         self._write(path, data)
+
+    def _apply_strict_rejection(self, job: dict[str, Any], folder: Path, research_path: Path) -> bool:
+        if not research_path.is_file():
+            return False
+        research = json.loads(research_path.read_text(encoding="utf-8"))
+        audit = research.get("strict_audit") if isinstance(research.get("strict_audit"), dict) else {}
+        if not (
+            audit.get("model_review_required") is True
+            and audit.get("model_review_status") == "complete"
+            and int(audit.get("passed_count", -1)) == 0
+        ):
+            return False
+        digest = file_sha256(research_path)
+        job["automatic_research_gate"] = {
+            "engine": "strict_adversarial_audit",
+            "decision": "rejected",
+            "evaluated_at": now_iso(),
+            "artifact_sha256": digest,
+            "policy": str(audit.get("policy", "assume_all_claims_false")),
+            "reason": "没有任何finding完成反向举证，自动退回研究；未生成或冒充人工审批。",
+        }
+        job["status"] = "awaiting_research_revision"
+        self._event(folder, "research_auto_rejected", {"artifact_sha256": digest, "engine": "strict_adversarial_audit"})
+        return True
+
+    def _reconcile_strict_rejections(self) -> None:
+        for path in self.jobs_dir.glob("*/job.json"):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+                if job.get("schema_version") != 2 or job.get("status") != "awaiting_research_approval":
+                    continue
+                folder = path.parent
+                research_path = folder / "draft" / "research.json"
+                research = json.loads(research_path.read_text(encoding="utf-8"))
+                audit = research.get("strict_audit") if isinstance(research.get("strict_audit"), dict) else {}
+                audit_rows = audit.get("findings", []) if isinstance(audit.get("findings"), list) else []
+                reviewed = {"supported_limited", "insufficient", "contradicted"}
+                research_changed = False
+                if audit.get("model_review_required") is True and audit_rows and all(
+                    isinstance(row, dict) and row.get("model_verdict") in reviewed for row in audit_rows
+                ) and audit.get("model_review_status") != "complete":
+                    audit["model_provider_reported_status"] = audit.get("model_review_status", "unknown")
+                    audit["model_review_status"] = "complete"
+                    self._write(research_path, research)
+                    research_changed = True
+                previous_gate = job.get("automatic_research_gate")
+                if int(audit.get("passed_count", 0)) > 0:
+                    job.pop("automatic_research_gate", None)
+                rejected = self._apply_strict_rejection(job, folder, research_path)
+                if rejected or research_changed or previous_gate != job.get("automatic_research_gate"):
+                    job["updated_at"] = now_iso()
+                    self._sync_steps(job)
+                    self._write(path, job)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
 
     @classmethod
     def _scrub_automatic_human_labels(cls, value: Any) -> Any:
