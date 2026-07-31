@@ -448,6 +448,15 @@ class ProductionRunner:
         variants = [item for item in variants_payload.get("variants", []) if isinstance(item, dict)]
         provider_report = dict(variants_payload.get("provider", {}))
         provider_report["budget"] = self.budget.snapshot()
+        research = json.loads((folder / "research.json").read_text(encoding="utf-8"))
+        approved_ids = {
+            str(item.get("finding_id"))
+            for item in approvals.get("research", {}).get("findings", [])
+            if item.get("decision") == "approved"
+        }
+        approved_findings = [
+            item for item in research.get("findings", []) if str(item.get("finding_id")) in approved_ids
+        ]
         report = {
             "status": "complete",
             "topic": config["topic"],
@@ -460,8 +469,12 @@ class ProductionRunner:
             "compliance": review,
             "adoption_proxy": {
                 "candidate_count": len(variants),
-                "provisionally_usable_count": sum(not review_script(item["script"])["blocked"] for item in variants),
-                "definition": "未命中阻断项且结构完整；尚未经过企业运营团队验证",
+                "provisionally_usable_count": sum(
+                    not review_script(str(item.get("script", "")), approved_findings)["blocked"]
+                    for item in variants
+                ),
+                "evidence_binding": "approved_research_findings",
+                "definition": "匹配已批准证据且未命中阻断项；尚未经过企业运营团队验证",
             },
             "artifacts": [
                 "research.json", "insight.json", "script_variants.json", "approved_script.json", "review.json",
@@ -469,6 +482,34 @@ class ProductionRunner:
             ],
         }
         atomic_json(folder / "run_report.json", report)
+        return report
+
+    def rebuild_run_report(self, folder: Path, approvals: dict[str, Any]) -> dict[str, Any]:
+        """Recalculate report-only fields from an already verified successful artifact set."""
+        report_path = folder / "run_report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        research = json.loads((folder / "research.json").read_text(encoding="utf-8"))
+        variants_payload = json.loads((folder / "script_variants.json").read_text(encoding="utf-8"))
+        variants = [item for item in variants_payload.get("variants", []) if isinstance(item, dict)]
+        approved_ids = {
+            str(item.get("finding_id"))
+            for item in approvals.get("research", {}).get("findings", [])
+            if item.get("decision") == "approved"
+        }
+        approved_findings = [
+            item for item in research.get("findings", []) if str(item.get("finding_id")) in approved_ids
+        ]
+        report["adoption_proxy"] = {
+            "candidate_count": len(variants),
+            "provisionally_usable_count": sum(
+                not review_script(str(item.get("script", "")), approved_findings)["blocked"]
+                for item in variants
+            ),
+            "evidence_binding": "approved_research_findings",
+            "definition": "匹配已批准证据且未命中阻断项；尚未经过企业运营团队验证",
+        }
+        report["report_rebuilt_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        atomic_json(report_path, report)
         return report
 
     def _run_research(self, folder: Path, config: dict[str, Any]) -> dict[str, Any]:

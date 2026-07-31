@@ -534,6 +534,171 @@ class JobStore:
         })
         return self._public(job)
 
+    def prepare_render_retry(self, job_id: str, reason: str) -> dict[str, Any]:
+        """Schedule a new isolated render from an already approved completed job."""
+        job, folder = self._load_v2(job_id)
+        if job.get("status") != "complete" or not job.get("current_run_id"):
+            raise ConflictError("只有已有成功产物的完成任务可以重新渲染")
+        current_run_id = str(job["current_run_id"])
+        manifest_path = folder / "runs" / current_run_id / "artifacts" / "manifest.json"
+        if not manifest_path.is_file():
+            raise ConflictError("当前成功运行缺少manifest，不能作为重渲染基线")
+        job["automatic_render_retry"] = {
+            "engine": "delivery_validation",
+            "decision": "retry",
+            "evaluated_at": now_iso(),
+            "source_run_id": current_run_id,
+            "source_manifest_sha256": file_sha256(manifest_path),
+            "reason": str(reason).strip()[:1000],
+        }
+        job["status"] = "compliance_approved"
+        job["last_error"] = None
+        job["last_failed_stage"] = None
+        job["updated_at"] = now_iso()
+        self._sync_steps(job)
+        self._write(folder / "job.json", job)
+        self._event(folder, "render_retry_scheduled", {
+            "source_run_id": current_run_id,
+            "source_manifest_sha256": job["automatic_render_retry"]["source_manifest_sha256"],
+        })
+        return self._public(job)
+
+    def rebuild_successful_delivery(
+        self,
+        job_id: str,
+        runner: Any,
+        idempotency_key: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Publish a new immutable run by reusing verified media and rebuilding metadata only."""
+        if not IDEMPOTENCY_RE.fullmatch(str(idempotency_key or "")):
+            raise UnprocessableError("Idempotency-Key必须为8到128位安全字符")
+        lock = self._job_lock(job_id)
+        if not lock.acquire(blocking=False):
+            raise ConflictError("同一任务正在运行")
+        lock_path: Path | None = None
+        try:
+            job, folder = self._load_v2(job_id)
+            self._recover_stale_lock(job, folder)
+            replayed = next((run for run in job.get("runs", []) if run.get("idempotency_key") == idempotency_key), None)
+            if replayed:
+                result = self._public(job)
+                result["replayed"] = True
+                return result
+            source_run_id = str(job.get("current_run_id") or "")
+            source_dir = folder / "runs" / source_run_id / "artifacts"
+            source_manifest_path = source_dir / "manifest.json"
+            if not source_run_id or not source_manifest_path.is_file():
+                raise ConflictError("没有可用于报告重建的成功运行")
+            source_run = next(
+                (
+                    item for item in job.get("runs", [])
+                    if item.get("run_id") == source_run_id
+                    and item.get("status") == "complete"
+                    and item.get("stage") in {"render", "report_rebuild"}
+                ),
+                None,
+            )
+            if not source_run:
+                raise ConflictError("报告重建来源不是成功发布的正式运行")
+            source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+            if (
+                source_manifest.get("schema_version") != 2
+                or source_manifest.get("job_id") != job_id
+                or source_manifest.get("run_id") != source_run_id
+                or source_manifest.get("status") != "complete"
+                or source_manifest.get("stage") not in {"render", "report_rebuild"}
+            ):
+                raise ConflictError("成功运行manifest身份或状态无效")
+            source_items = source_manifest.get("artifacts", [])
+            if not isinstance(source_items, list) or not source_items:
+                raise ConflictError("成功运行manifest没有可复用产物")
+            allowed_names = set(CANONICAL_ARTIFACTS) | {"approvals.json"}
+            seen_names: set[str] = set()
+            for item in source_items:
+                if not isinstance(item, dict):
+                    raise ConflictError("成功运行manifest格式无效")
+                name = str(item.get("name", ""))
+                if name not in allowed_names or name in seen_names:
+                    raise ConflictError(f"成功运行manifest含非正式或重复产物: {name}")
+                seen_names.add(name)
+                source_path = source_dir / name
+                if (
+                    not source_path.is_file()
+                    or source_path.stat().st_size != int(item.get("size", -1))
+                    or file_sha256(source_path) != item.get("sha256")
+                ):
+                    raise ConflictError(f"成功运行产物校验失败: {item.get('name', '')}")
+            if seen_names != allowed_names:
+                raise ConflictError("成功运行manifest正式产物集合不完整")
+
+            lock_path = self._acquire_disk_lock(folder, idempotency_key)
+            run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}"
+            run_dir = folder / "runs" / run_id
+            staging = run_dir / "staging"
+            staging.mkdir(parents=True, exist_ok=False)
+            run = {
+                "run_id": run_id,
+                "stage": "report_rebuild",
+                "status": "running",
+                "idempotency_key": idempotency_key,
+                "started_at": now_iso(),
+                "finished_at": None,
+                "error": None,
+                "artifacts": [],
+                "source_run_id": source_run_id,
+                "reason": str(reason).strip()[:1000],
+            }
+            job["runs"].append(run)
+            job["active_run_id"] = run_id
+            job["status"] = "rendering"
+            job["last_error"] = None
+            job["updated_at"] = now_iso()
+            self._write(folder / "job.json", job)
+            self._event(folder, "stage_started", {"run_id": run_id, "stage": "report_rebuild", "source_run_id": source_run_id})
+            try:
+                for item in source_items:
+                    shutil.copy2(source_dir / str(item["name"]), staging / str(item["name"]))
+                runner.rebuild_run_report(staging, job["approvals"])
+                self._write(staging / "approvals.json", job["approvals"])
+                manifest = self._build_manifest(job, run, staging, runner)
+                self._write(staging / "manifest.json", manifest)
+                published = run_dir / "artifacts"
+                staging.replace(published)
+                run["artifacts"] = [item["name"] for item in manifest["artifacts"]]
+                run["manifest_sha256"] = file_sha256(published / "manifest.json")
+                run["status"] = "complete"
+                run["finished_at"] = now_iso()
+                job["current_run_id"] = run_id
+                job["artifacts"] = [name for name in CANONICAL_ARTIFACTS if (published / name).is_file()]
+                job["status"] = "complete"
+                job["last_failed_stage"] = None
+                job.pop("automatic_render_retry", None)
+                self._event(folder, "stage_completed", {"run_id": run_id, "stage": "report_rebuild", "source_run_id": source_run_id})
+            except Exception as exc:
+                run["status"] = "failed"
+                run["finished_at"] = now_iso()
+                run["error"] = str(exc)
+                if staging.exists():
+                    staging.replace(run_dir / "failed")
+                job["status"] = "failed"
+                job["last_error"] = str(exc)
+                job["last_failed_stage"] = "report_rebuild"
+                self._event(folder, "stage_failed", {"run_id": run_id, "stage": "report_rebuild", "error": str(exc)})
+                raise
+            finally:
+                job["active_run_id"] = None
+                if getattr(runner, "budget", None) is not None:
+                    job["budget"] = runner.budget.snapshot()
+                job["updated_at"] = now_iso()
+                self._sync_steps(job)
+                self._write(folder / "job.json", job)
+            return self._public(job)
+        finally:
+            if lock_path is not None and lock_path.exists():
+                lock_path.unlink()
+            lock.release()
+
     def update_script(self, job_id: str, script: str, review: dict[str, Any], estimate: dict[str, Any]) -> dict[str, Any]:
         job, folder = self._load_v2(job_id)
         if job["status"] not in {"awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision", "compliance_approved", "complete", "failed"}:
@@ -581,7 +746,7 @@ class JobStore:
         if not selected:
             raise FileNotFoundError("尚无成功运行产物")
         run = next((item for item in job.get("runs", []) if item.get("run_id") == selected and item.get("status") == "complete"), None)
-        if not run or run.get("stage") != "render":
+        if not run or run.get("stage") not in {"render", "report_rebuild"}:
             raise FileNotFoundError("运行不存在或尚未成功发布")
         root = (folder / "runs" / selected / "artifacts").resolve()
         manifest_path = root / "manifest.json"

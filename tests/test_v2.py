@@ -101,6 +101,18 @@ class StrictRejectRunner(FakeStageRunner):
         research_path.write_text(json.dumps(research, ensure_ascii=False), encoding="utf-8")
 
 
+class ReportRebuildRunner:
+    def __init__(self):
+        self.budget = BudgetLedger(limit=7)
+
+    @staticmethod
+    def rebuild_run_report(output, approvals):
+        (output / "run_report.json").write_text(
+            json.dumps({"corrected": True, "approvals_preserved": approvals}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
 def advance_to_content_gate(jobs, job, runner):
     job = jobs.approve(job["id"])
     job = jobs.advance(job["id"], runner, "research-0001")
@@ -187,6 +199,61 @@ class V2WorkflowTests(unittest.TestCase):
             job = jobs.advance(job["id"], FakeStageRunner(), "content-after-auto-reject")
             self.assertEqual(job["status"], "awaiting_compliance_approval")
             self.assertNotIn("automatic_content_gate", job)
+
+    def test_completed_job_can_schedule_isolated_render_retry_without_changing_approvals(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            job = advance_to_content_gate(jobs, job, FakeStageRunner())
+            job = approve_compliance(jobs, job)
+            job = jobs.advance(job["id"], FakeStageRunner(), "first-render-complete")
+            previous_run = job["current_run_id"]
+            previous_approvals = json.dumps(job["approvals"], ensure_ascii=False, sort_keys=True)
+            job = jobs.prepare_render_retry(job["id"], "交付报告统计需要重算")
+            self.assertEqual(job["status"], "compliance_approved")
+            self.assertEqual(job["current_run_id"], previous_run)
+            self.assertEqual(json.dumps(job["approvals"], ensure_ascii=False, sort_keys=True), previous_approvals)
+            self.assertEqual(job["automatic_render_retry"]["source_run_id"], previous_run)
+            self.assertNotIn("reviewer", job["automatic_render_retry"])
+
+    def test_report_rebuild_reuses_verified_media_and_publishes_new_manifest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            job = advance_to_content_gate(jobs, job, FakeStageRunner())
+            job = approve_compliance(jobs, job)
+            job = jobs.advance(job["id"], FakeStageRunner(), "source-render-complete")
+            source_run = job["current_run_id"]
+            source_video = jobs.resolve_artifact(job["id"], "final.mp4").read_bytes()
+            job = jobs.rebuild_successful_delivery(
+                job["id"], ReportRebuildRunner(), "report-rebuild-0001", "修正报告统计"
+            )
+            self.assertEqual(job["status"], "complete")
+            self.assertNotEqual(job["current_run_id"], source_run)
+            self.assertEqual(jobs.resolve_artifact(job["id"], "final.mp4").read_bytes(), source_video)
+            report = json.loads(jobs.resolve_artifact(job["id"], "run_report.json").read_text(encoding="utf-8"))
+            self.assertTrue(report["corrected"])
+            manifest = json.loads(jobs.resolve_artifact(job["id"], "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["run_id"], job["current_run_id"])
+            self.assertEqual(job["runs"][-1]["source_run_id"], source_run)
+
+            current_run = job["current_run_id"]
+            run_root = Path(folder) / "jobs" / job["id"] / "runs" / current_run
+            outside = run_root / "outside.txt"
+            outside.write_text("must not enter a formal delivery", encoding="utf-8")
+            manifest_path = run_root / "artifacts" / "manifest.json"
+            tampered = json.loads(manifest_path.read_text(encoding="utf-8"))
+            tampered["artifacts"].append({
+                "name": "../outside.txt",
+                "stage": "report_rebuild",
+                "mime": "text/plain",
+                "size": outside.stat().st_size,
+                "sha256": file_sha256(outside),
+            })
+            manifest_path.write_text(json.dumps(tampered, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaises(ConflictError):
+                jobs.rebuild_successful_delivery(
+                    job["id"], ReportRebuildRunner(), "report-rebuild-unsafe", "拒绝清单路径穿越"
+                )
+            self.assertEqual(jobs.get(job["id"])["current_run_id"], current_run)
 
     def test_approval_hash_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -447,6 +514,8 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
             report = runner.run_render_stage(root, {"topic": VALID_TOPIC, "audience": "新房家庭"}, {"research": {"status": "approved"}, "compliance": {"status": "approved"}})
             self.assertEqual(report["status"], "complete")
             self.assertEqual(report["render"]["mode"], "fake_ci")
+            self.assertEqual(report["adoption_proxy"]["provisionally_usable_count"], 1)
+            self.assertEqual(report["adoption_proxy"]["evidence_binding"], "approved_research_findings")
 
 
 if __name__ == "__main__":
