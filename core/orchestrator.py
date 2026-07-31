@@ -228,6 +228,7 @@ class JobStore:
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
         self._reconcile_strict_rejections()
+        self._reconcile_content_rejections()
 
     def create(self, plan: dict[str, Any], production_input: dict[str, Any] | None = None) -> dict[str, Any]:
         safe_plan = validate_plan(plan)
@@ -373,6 +374,7 @@ class JobStore:
                     self._publish_draft(staging, folder / "draft", ["research.json", "insight.json", "script_variants.json", "approved_script.json", "review.json"])
                     review = json.loads((staging / "review.json").read_text(encoding="utf-8"))
                     job["approvals"]["compliance"] = {"status": "pending"}
+                    job.pop("automatic_content_gate", None)
                     job["status"] = "blocked_compliance" if review.get("status") == "blocked" else "awaiting_compliance_approval"
                 else:
                     runner.run_render_stage(staging, job["production_input"], job["approvals"])
@@ -504,6 +506,32 @@ class JobStore:
         job["updated_at"] = now_iso()
         self._write(folder / "job.json", job)
         self._event(folder, "compliance_reviewed", {"decision": decision, "reviewer": reviewer, "artifact_sha256": review_digest})
+        return self._public(job)
+
+    def invalidate_pending_content(self, job_id: str, reason: str) -> dict[str, Any]:
+        """Reject an unapproved generated script without manufacturing a human decision."""
+        job, folder = self._load_v2(job_id)
+        if job["status"] not in {"awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision"}:
+            raise ConflictError("当前任务没有可由自动审核撤销的待审脚本")
+        if job.get("approvals", {}).get("compliance", {}).get("status") == "approved":
+            raise ConflictError("已有人工作出合规批准，自动审核不能覆盖")
+        script_path = folder / "draft" / "approved_script.json"
+        job["automatic_content_gate"] = {
+            "engine": "evidence_binding_validator",
+            "decision": "rejected",
+            "evaluated_at": now_iso(),
+            "artifact_sha256": file_sha256(script_path) if script_path.is_file() else None,
+            "reason": str(reason).strip()[:1000],
+        }
+        job["approvals"]["compliance"] = {"status": "pending"}
+        job["status"] = "research_approved"
+        job["updated_at"] = now_iso()
+        self._sync_steps(job)
+        self._write(folder / "job.json", job)
+        self._event(folder, "content_auto_rejected", {
+            "engine": "evidence_binding_validator",
+            "artifact_sha256": job["automatic_content_gate"]["artifact_sha256"],
+        })
         return self._public(job)
 
     def update_script(self, job_id: str, script: str, review: dict[str, Any], estimate: dict[str, Any]) -> dict[str, Any]:
@@ -660,6 +688,23 @@ class JobStore:
                 if rejected or research_changed or previous_gate != job.get("automatic_research_gate"):
                     job["updated_at"] = now_iso()
                     self._sync_steps(job)
+                    self._write(path, job)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+
+    def _reconcile_content_rejections(self) -> None:
+        for path in self.jobs_dir.glob("*/job.json"):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+                gate = job.get("automatic_content_gate")
+                if job.get("schema_version") != 2 or not isinstance(gate, dict):
+                    continue
+                if job.get("status") not in {"awaiting_compliance_approval", "blocked_compliance"}:
+                    continue
+                script_path = path.parent / "draft" / "approved_script.json"
+                if script_path.is_file() and file_sha256(script_path) != gate.get("artifact_sha256"):
+                    job.pop("automatic_content_gate", None)
+                    job["updated_at"] = now_iso()
                     self._write(path, job)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue

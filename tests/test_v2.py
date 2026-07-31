@@ -175,6 +175,19 @@ class V2WorkflowTests(unittest.TestCase):
             self.assertEqual(job["status"], "awaiting_research_approval")
             self.assertNotIn("automatic_research_gate", job)
 
+    def test_automatic_content_rejection_never_creates_human_signature(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            job = advance_to_content_gate(jobs, job, FakeStageRunner())
+            job = jobs.invalidate_pending_content(job["id"], "脚本没有绑定已批准证据")
+            self.assertEqual(job["status"], "research_approved")
+            self.assertEqual(job["approvals"]["compliance"]["status"], "pending")
+            self.assertEqual(job["automatic_content_gate"]["decision"], "rejected")
+            self.assertNotIn("reviewer", job["automatic_content_gate"])
+            job = jobs.advance(job["id"], FakeStageRunner(), "content-after-auto-reject")
+            self.assertEqual(job["status"], "awaiting_compliance_approval")
+            self.assertNotIn("automatic_content_gate", job)
+
     def test_approval_hash_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             jobs, job = self.make_job(folder)
@@ -368,6 +381,40 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
         variants = build_local_variants("99%除醛率为什么必须看检测条件？", "新房家庭")
         self.assertTrue(all("99%" not in item["script"] for item in variants))
         self.assertTrue(all("高比例除醛率" in item["script"] for item in variants))
+
+    def test_budget_fallback_script_is_bound_to_approved_strict_findings(self):
+        findings = [
+            {
+                "finding_id": "media-1",
+                "review_summary": "新京报文章举出的99.93%，对应的是1罐产品、1立方米试验舱、24小时，不等于普通家庭里的实际效果。",
+                "evidence": [{"source_type": "media_original", "excerpt": "1罐产品在1m3试验舱内24小时除醛率为99.93%。"}],
+            },
+            {
+                "finding_id": "law-1",
+                "review_summary": "广告里引用检测数字时，不能只写一个好看的百分比，还要交代出处和适用条件。",
+                "evidence": [{"source_type": "government_law", "excerpt": "引证内容应当真实、准确，并表明出处。"}],
+            },
+            {
+                "finding_id": "standard-1",
+                "review_summary": "这只是确认国家标准的名称，不能证明具体产品功效。",
+                "evidence": [{"source_type": "government_standard_metadata", "excerpt": "GB/T 18883-2022"}],
+            },
+        ]
+        variants = build_local_variants("99%除醛率为什么必须看检测条件？", "新房家庭", findings)
+        for item in variants:
+            self.assertEqual(item["source"], "local_evidence_bound")
+            self.assertEqual(item["evidence_finding_ids"], ["media-1", "law-1", "standard-1"])
+            self.assertIn("99.93%", item["script"])
+            self.assertIn("1罐产品", item["script"])
+            self.assertNotIn("气味、颜色变化", item["script"])
+            self.assertNotIn("条件？，", item["script"])
+            estimate = estimate_narration_duration(item["script"])
+            self.assertGreaterEqual(estimate["estimated_seconds"], 45)
+            self.assertLessEqual(estimate["estimated_seconds"], 60)
+            review = review_script(item["script"], findings)
+            self.assertNotEqual(review["status"], "blocked")
+            self.assertTrue(any(warning["type"] == "evidence_bound_measurement" for warning in review["warnings"]))
+            self.assertFalse(any(warning["type"] == "unsupported_measurement" for warning in review["warnings"]))
 
     def test_duration_estimate_marks_short_copy(self):
         self.assertLess(estimate_narration_duration("记得通风。") ["estimated_seconds"], 35)

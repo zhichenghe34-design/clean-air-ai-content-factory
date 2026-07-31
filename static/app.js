@@ -353,8 +353,8 @@ async function openJob(id) {
       script = state.reviewFiles.script.data.script || "";
       state.reviewFiles.review = await readJsonArtifact(`/api/jobs/${id}/review-artifacts/review.json`);
       const review = state.reviewFiles.review.data;
-      document.getElementById("complianceSummary").textContent = review.status === "blocked" ? `自动检查：阻断。${(review.warnings || []).map(item => item.message).join("；")}` : `自动检查：${review.status === "passed" ? "通过" : "需人工确认"}。即使自动通过，也必须由你亲自放行。`;
-      document.getElementById("complianceDecision").value = review.status === "passed" ? "approved" : "rejected";
+      document.getElementById("complianceSummary").textContent = review.status === "blocked" ? `自动检查：阻断。${(review.warnings || []).map(item => item.message).join("；")}` : `严格检查未发现阻断项，系统建议放行；最终仍由你亲自确认。`;
+      document.getElementById("complianceDecision").value = review.status === "blocked" || review.blocked ? "rejected" : "approved";
       syncApprovalButton("compliance");
     } catch (_) { /* content may not exist yet */ }
     document.getElementById("approvedScriptInput").value = script;

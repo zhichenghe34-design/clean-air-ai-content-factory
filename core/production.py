@@ -151,11 +151,45 @@ def estimate_narration_duration(script: str) -> dict[str, Any]:
     }
 
 
-def build_local_variants(topic: str, audience: str) -> list[dict[str, Any]]:
+def build_local_variants(
+    topic: str,
+    audience: str,
+    approved_findings: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     topic = str(topic).strip()
     audience = str(audience).strip()
     safe_topic = re.sub(r"\d+(?:\.\d+)?\s*%|百分之[零一二三四五六七八九十百]+", "高比例", topic)
     safe_topic = re.sub(r"\d+(?:\.\d+)?\s*(?:m[³3]|立方米|平方米|mg(?:/m[³3])?|毫克(?:每立方米)?|罐|倍|小时|分钟|年)", "具体条件", safe_topic, flags=re.IGNORECASE)
+    evidence_rows = [dict(item) for item in (approved_findings or []) if isinstance(item, dict)]
+    if evidence_rows:
+        source_priority = {"media_original": 0, "government_law": 1, "government_standard_metadata": 2}
+        evidence_rows.sort(key=lambda item: source_priority.get(
+            str((item.get("evidence") or [{}])[0].get("source_type", "")), 9
+        ))
+        summaries = [str(item.get("review_summary", "")).strip() for item in evidence_rows]
+        summaries = [value for value in summaries if value][:2]
+        core = "".join(summaries) + (
+            "所以看除醛率，不只看百分比，还要核对剂量、空间体积、作用时间、初始浓度、检测方法和报告来源。"
+            "实验条件与真实房间不同，结果就不能直接照搬。数字不是不能看，而是必须连同来源、条件和适用范围一起看。"
+        )
+        openings = [
+            ("A", "证据反查", "看到一条高比例除醛率宣传，先问一句：这个数字是在什么条件下得到的？"),
+            ("B", "条件对照", "同样是一个百分比，换了测试条件，含义可能完全不同。"),
+            ("C", "风险提醒", "先别急着记住漂亮数字，先看它后面的测试条件。"),
+            ("D", "三步检查", "判断除醛率，可以按来源、条件、适用范围三步检查。"),
+        ]
+        finding_ids = [str(item.get("finding_id", "")) for item in evidence_rows if item.get("finding_id")]
+        return [
+            {
+                "id": item_id,
+                "hook_type": hook,
+                "script": opening + core,
+                "reason": "只组合人工批准且通过严格反证审核的限定说法。",
+                "source": "local_evidence_bound",
+                "evidence_finding_ids": finding_ids,
+            }
+            for item_id, hook, opening in openings
+        ]
     core = (
         f"你问的是“{safe_topic}”。先把肉眼或鼻子感受到的现象，和能够证明室内甲醛水平的证据分开。"
         "气味、颜色变化和短时间体感都只能提供线索，不能单独替代规范检测。"
@@ -209,10 +243,14 @@ def review_script(script: str, approved_findings: list[dict[str, Any]] | None = 
             "matches": percentages,
         })
     if measurements:
+        evidence_bound = approved_findings is not None
         warnings.append({
-            "type": "unsupported_measurement",
-            "level": "block" if approved_findings is None else "review",
-            "message": "通用科普稿包含具体测量数字，必须匹配已批准证据并接受人工复核。",
+            "type": "evidence_bound_measurement" if evidence_bound else "unsupported_measurement",
+            "level": "review" if evidence_bound else "block",
+            "message": (
+                "具体测量数字已在批准证据中找到，仍需人工确认没有扩大适用范围。"
+                if evidence_bound else "通用科普稿包含没有批准证据的具体测量数字。"
+            ),
             "matches": measurements,
         })
     if approved_findings is not None and (percentages or measurements):
@@ -304,7 +342,7 @@ class ProductionRunner:
         approved_findings = list(research["script_eligible_findings"])
         insight = self._build_insight(config, research)
         atomic_json(folder / "insight.json", insight)
-        variants, provider_report = self._generate_variants(config, insight)
+        variants, provider_report = self._generate_variants(config, insight, approved_findings)
         provider_report["budget"] = self.budget.snapshot()
         provider_report["tool_calls"] = len(research.get("tool_trace", []))
         atomic_json(folder / "script_variants.json", {"variants": variants, "provider": provider_report})
@@ -341,7 +379,9 @@ class ProductionRunner:
                 review["model_review_error"] = str(exc)
         if review["blocked"]:
             unsafe_script = str(approved.get("script", ""))
-            safe_template = build_local_variants(str(config["topic"]), str(config["audience"]))[0]
+            safe_template = build_local_variants(
+                str(config["topic"]), str(config["audience"]), approved_findings
+            )[0]
             approved.update({
                 "script": safe_template["script"],
                 "selected_by": "trusted_topic_aware_safety_template",
@@ -482,10 +522,17 @@ class ProductionRunner:
             "web_research": research_for_script,
         }
 
-    def _generate_variants(self, config: dict[str, Any], insight: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def _generate_variants(
+        self,
+        config: dict[str, Any],
+        insight: dict[str, Any],
+        approved_findings: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         report: dict[str, Any] = {"source": "local_deterministic", "fallback_used": False}
         if self.provider is None or not getattr(self.provider, "api_key", ""):
-            return build_local_variants(str(config["topic"]), str(config["audience"])), report
+            return build_local_variants(
+                str(config["topic"]), str(config["audience"]), approved_findings
+            ), report
         try:
             variants = self.provider.generate_content_scripts(config, insight)
             if not isinstance(variants, list) or len(variants) != 4:
@@ -494,7 +541,9 @@ class ProductionRunner:
             return variants, report
         except ProviderError as exc:
             report.update({"fallback_used": True, "fallback_reason": str(exc)})
-            return build_local_variants(str(config["topic"]), str(config["audience"])), report
+            return build_local_variants(
+                str(config["topic"]), str(config["audience"]), approved_findings
+            ), report
 
     @staticmethod
     def _synthesize_voice(folder: Path, script: str, config: dict[str, Any]) -> dict[str, Any]:
