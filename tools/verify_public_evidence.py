@@ -29,6 +29,9 @@ SECRET_PATTERNS = {
     "email": re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
     "mainland phone": re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
 }
+SENSITIVE_FIELDS = re.compile(
+    r'(?i)"(?:api_?key|token|secret|password|cookie|authorization)"\s*:\s*"(?!\s*")[^"]+"'
+)
 
 
 def sha256(path: Path) -> str:
@@ -39,18 +42,20 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def scan_text(path: Path) -> list[str]:
-    if path.suffix.lower() not in TEXT_SUFFIXES:
-        return []
-    text = path.read_text(encoding="utf-8", errors="replace")
+def scan_content(name: str, text: str) -> list[str]:
     findings = []
     for label, pattern in SECRET_PATTERNS.items():
         if pattern.search(text):
-            findings.append(f"{path.name}: {label}")
-    sensitive_fields = re.compile(r'(?i)"(?:api_?key|token|secret|password|cookie|authorization)"\s*:\s*"(?!\s*")[^"]+"')
-    if sensitive_fields.search(text):
-        findings.append(f"{path.name}: sensitive configuration field")
+            findings.append(f"{name}: {label}")
+    if SENSITIVE_FIELDS.search(text):
+        findings.append(f"{name}: sensitive configuration field")
     return findings
+
+
+def scan_text(path: Path) -> list[str]:
+    if path.suffix.lower() not in TEXT_SUFFIXES:
+        return []
+    return scan_content(path.name, path.read_text(encoding="utf-8", errors="replace"))
 
 
 def find_ffprobe() -> str | None:

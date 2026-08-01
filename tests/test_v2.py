@@ -14,7 +14,7 @@ from core.orchestrator import (
     file_sha256,
     local_fallback_plan,
 )
-from core.provider import BudgetLedger, ProviderError, validate_provider_base_url
+from core.provider import BudgetLedger, ProviderError, validate_provider_base_url, validate_provider_response_url
 from core.production import build_local_variants, estimate_narration_duration, review_script
 from core.secrets import protect_secret, unprotect_secret
 
@@ -83,6 +83,18 @@ class SlowResearchRunner(FakeStageRunner):
         if not self.release.wait(timeout=5):
             raise RuntimeError("test release timeout")
         return super().run_research_stage(output, production_input)
+
+
+class BudgetPersistenceProbeRunner(FakeStageRunner):
+    def __init__(self):
+        super().__init__()
+        self.persisted_at_dispatch = None
+
+    def run_research_stage(self, output, production_input):
+        self.budget.begin("research_dispatch")
+        job_path = output.parents[2] / "job.json"
+        self.persisted_at_dispatch = json.loads(job_path.read_text(encoding="utf-8"))["budget"]
+        raise RuntimeError("simulate process loss after provider dispatch")
 
 
 class StrictRejectRunner(FakeStageRunner):
@@ -336,6 +348,19 @@ class V2WorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             jobs, job = self.make_job(folder)
             job_folder = Path(folder) / "jobs" / job["id"]
+            jobs.approve(job["id"])
+            probe = BudgetPersistenceProbeRunner()
+            with self.assertRaisesRegex(RuntimeError, "process loss"):
+                jobs.advance(job["id"], probe, "durable-budget-01")
+            self.assertEqual(probe.persisted_at_dispatch["attempted"], 1)
+            durable_budget = json.loads((job_folder / "job.json").read_text(encoding="utf-8"))["budget"]
+            self.assertEqual(durable_budget["attempted"], 1)
+            recovered_ledger = BudgetLedger(snapshot=durable_budget)
+            for index in range(6):
+                recovered_ledger.begin(f"retry-{index}")
+            with self.assertRaises(ProviderError):
+                recovered_ledger.begin("would-exceed-hard-limit")
+
             raw = json.loads((job_folder / "job.json").read_text(encoding="utf-8"))
             raw["status"] = "research_running"
             raw["active_run_id"] = "stale-run"
@@ -345,6 +370,11 @@ class V2WorkflowTests(unittest.TestCase):
             recovered = jobs.get(job["id"])
             self.assertEqual(recovered["status"], "failed")
             self.assertEqual(recovered["runs"][-1]["status"], "interrupted")
+            self.assertEqual(recovered["budget"]["attempted"], 1)
+            self.assertEqual(recovered["budget"]["succeeded"], 0)
+            self.assertEqual(recovered["budget"]["failed"], 1)
+            self.assertEqual(recovered["budget"]["events"][-1]["status"], "failed")
+            self.assertEqual(recovered["budget"]["events"][-1]["error_type"], "process_interrupted")
             self.assertFalse((job_folder / "run.lock").exists())
 
     def test_legacy_job_is_read_only_and_not_rewritten(self):
@@ -364,7 +394,14 @@ class V2WorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             jobs = JobStore(Path(folder))
             plan = local_fallback_plan("生成赛题视频", [])
-            for topic in ("demo", "今天吃什么比较好", "甲醛"):
+            for topic in (
+                "demo",
+                "今天吃什么比较好",
+                "甲醛",
+                "帮我做一条香水气味测评视频",
+                "解读我的血液检测报告",
+                "空气炸锅气味测评",
+            ):
                 with self.assertRaises(UnprocessableError):
                     jobs.create(plan, {"topic": topic, "audience": "家庭"})
             with self.assertRaises(UnprocessableError):
@@ -409,6 +446,19 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
         for value in ("http://api.deepseek.com", "https://evil.test", "https://user:pass@api.deepseek.com", "https://api.deepseek.com?x=1"):
             with self.assertRaises(ValueError):
                 validate_provider_base_url(value)
+        self.assertEqual(
+            validate_provider_response_url("https://api.deepseek.com/v1/chat/completions"),
+            "https://api.deepseek.com/v1/chat/completions",
+        )
+        for value in (
+            "https://api.deepseek.com/redirect-anywhere",
+            "https://api.deepseek.com/v1/unknown",
+            "https://api.deepseek.com/models?next=https://evil.test",
+            "https://api.deepseek.com/chat/completions#fragment",
+            "https://user@api.deepseek.com/models",
+        ):
+            with self.assertRaises(ValueError):
+                validate_provider_response_url(value)
 
     def test_loopback_provider_needs_explicit_test_switch(self):
         with patch.dict(os.environ, {}, clear=False):
