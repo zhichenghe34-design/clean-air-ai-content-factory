@@ -104,6 +104,11 @@ def fit_image(path: Path, max_width: float, max_height: float) -> Image:
 
 def build(output: Path = OUTPUT) -> Path:
     rl_config.invariant = True
+    # Python 3.14 on GitHub Actions ships zlib-ng while 3.12 ships zlib.
+    # Their Flate streams are semantically identical but not byte-identical.
+    # Keep the release PDF reproducible across both supported runtimes by
+    # disabling ReportLab stream compression and embedding committed JPEGs.
+    rl_config.pageCompression = 0
     register_fonts()
     test_count, package_count = discover_release_facts()
     if test_count != 74:
@@ -189,11 +194,11 @@ def build(output: Path = OUTPUT) -> Path:
 
         section_tag("03 Agent 工作台"), Spacer(1, 4 * mm), paragraph("三选一，把复杂流程收进 Agent", h1),
         paragraph("首页只要求用户描述目标、从三个经领域与安全筛选的角度中选择一个，或换一批。选定即完成执行授权；Agent 自动推进研究、脚本和合规，只在研究证据与最终脚本两处暂停。详细记录、预算、当前成功 run 和失败尝试仍可按需追溯。", body),
-        fit_image(ASSETS / "agent-workbench.png", 174 * mm, 112 * mm), Spacer(1, 5 * mm),
+        fit_image(ASSETS / "agent-workbench-pdf.jpg", 174 * mm, 112 * mm), Spacer(1, 5 * mm),
         metric_table([(str(package_count), "当前能力包"), ("7", "任务硬预算"), (str(test_count), "Python 测试"), ("2", "人工暂停")]), PageBreak(),
 
         section_tag("04 现有作品"), Spacer(1, 4 * mm), paragraph("保留三支现有视频；v2 联调另留审计成片", h1),
-        Table([[fit_image(ASSETS / "sample-frame.png", 64 * mm, 96 * mm), paragraph("现有样片用于证明媒体链路和视觉方案，不自动成为 v2 合规证据。2026-08-01 的 v2 真实联调实际使用 7/7 次硬预算；严格反证审核通过 3 条 finding，用户亲自完成研究逐项审定和最终合规放行。新旧媒体与 legacy 证据分开保存。", body)]], colWidths=[72 * mm, 100 * mm], style=TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5)])),
+        Table([[fit_image(ASSETS / "sample-frame-pdf.jpg", 64 * mm, 96 * mm), paragraph("现有样片用于证明媒体链路和视觉方案，不自动成为 v2 合规证据。2026-08-01 的 v2 真实联调实际使用 7/7 次硬预算；严格反证审核通过 3 条 finding，用户亲自完成研究逐项审定和最终合规放行。新旧媒体与 legacy 证据分开保存。", body)]], colWidths=[72 * mm, 100 * mm], style=TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5)])),
         Spacer(1, 4 * mm), metric_table([("52.00 秒", "v2 审计成片"), ("1080x1920", "竖屏"), ("H.264", "视频编码"), ("AAC", "音频编码")]),
         paragraph("v2 真实运行：13 项脱敏证据包已逐项复算 SHA-256、审批哈希、字幕连续性和媒体规格；自动流程没有代签。", style("Success", fontName="NotoSansSC-Bold", fontSize=9.2, leading=14, textColor=GREEN_2)), PageBreak(),
 
