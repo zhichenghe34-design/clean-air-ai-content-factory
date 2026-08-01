@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 
 class ProviderError(RuntimeError):
@@ -27,6 +27,22 @@ class BudgetLedger:
         self.failed = int(source.get("failed", 0))
         self.events = [dict(item) for item in source.get("events", []) if isinstance(item, dict)]
         self._lock = threading.Lock()
+        self._persistence_callback: Callable[[dict[str, Any]], None] | None = None
+
+    def set_persistence_callback(self, callback: Callable[[dict[str, Any]], None] | None) -> None:
+        """Persist each reservation before its Provider request can be sent."""
+        with self._lock:
+            self._persistence_callback = callback
+
+    def _snapshot_unlocked(self) -> dict[str, Any]:
+        return {
+            "limit": self.limit,
+            "attempted": self.attempted,
+            "succeeded": self.succeeded,
+            "failed": self.failed,
+            "remaining": max(0, self.limit - self.attempted),
+            "events": [{key: value for key, value in item.items() if key != "token"} for item in self.events],
+        }
 
     def begin(self, stage: str) -> str:
         with self._lock:
@@ -40,9 +56,15 @@ class BudgetLedger:
                 "status": "attempted",
                 "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             })
-            return token
+            snapshot = self._snapshot_unlocked()
+            callback = self._persistence_callback
+        if callback is not None:
+            callback(snapshot)
+        return token
 
     def finish(self, token: str, *, ok: bool, error_type: str | None = None) -> None:
+        callback = None
+        snapshot = None
         with self._lock:
             event = next((item for item in reversed(self.events) if item.get("token") == token), None)
             if event is None or event.get("status") != "attempted":
@@ -55,17 +77,32 @@ class BudgetLedger:
                 self.succeeded += 1
             else:
                 self.failed += 1
+            snapshot = self._snapshot_unlocked()
+            callback = self._persistence_callback
+        if callback is not None:
+            callback(snapshot)
+
+    def correct_semantic_failure(self, token: str, error_type: str) -> None:
+        """Reclassify an HTTP-success event when its payload fails validation."""
+        callback = None
+        snapshot = None
+        with self._lock:
+            event = next((item for item in reversed(self.events) if item.get("token") == token), None)
+            if event is None or event.get("status") != "succeeded":
+                return
+            event["status"] = "failed"
+            event["error_type"] = str(error_type)[:120]
+            event["semantic_failed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+            self.succeeded = max(0, self.succeeded - 1)
+            self.failed += 1
+            snapshot = self._snapshot_unlocked()
+            callback = self._persistence_callback
+        if callback is not None:
+            callback(snapshot)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            return {
-                "limit": self.limit,
-                "attempted": self.attempted,
-                "succeeded": self.succeeded,
-                "failed": self.failed,
-                "remaining": max(0, self.limit - self.attempted),
-                "events": [{key: value for key, value in item.items() if key != "token"} for item in self.events],
-            }
+            return self._snapshot_unlocked()
 
 
 def validate_provider_base_url(value: Any) -> str:
@@ -85,6 +122,22 @@ def validate_provider_base_url(value: Any) -> str:
     raise ValueError("正式模式只允许DeepSeek官方API地址")
 
 
+ALLOWED_PROVIDER_ENDPOINT_PATHS = {"/models", "/chat/completions", "/v1/models", "/v1/chat/completions"}
+
+
+def validate_provider_response_url(value: Any) -> str:
+    """Validate the complete final/redirect URL without collapsing its path."""
+    raw = str(value or "").strip()
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Provider响应地址不能包含凭据、查询参数或片段")
+    if parsed.path not in ALLOWED_PROVIDER_ENDPOINT_PATHS:
+        raise ValueError("Provider响应地址路径不在白名单")
+    base_path = "/v1" if parsed.path.startswith("/v1/") else ""
+    validate_provider_base_url(urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, base_path, "", "")))
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
 class OpenAICompatibleProvider:
     def __init__(self, config: dict[str, Any], api_key: str, budget: BudgetLedger | None = None):
         self.config = config
@@ -98,6 +151,7 @@ class OpenAICompatibleProvider:
         self.budget = budget
         self._request_stage = "provider"
         self._count_budget = True
+        self._last_budget_token: str | None = None
 
     def test_connection(self) -> dict[str, Any]:
         if not self.api_key:
@@ -153,12 +207,57 @@ class OpenAICompatibleProvider:
             },
             method="POST",
         )
-        data = self._send_for(request, "planner", count_budget=False)
+        data = self._send_for(request, "planner", count_budget=True)
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
+            self._mark_semantic_failure("missing_message")
             raise ProviderError("接口返回中没有可读取的消息内容") from exc
-        return self.parse_json_content(content)
+        try:
+            plan = self.parse_json_content(content)
+        except ProviderError:
+            self._mark_semantic_failure("invalid_structured_output")
+            raise
+        required = {"goal", "summary", "steps", "missing", "estimated_cost_level"}
+        if not required.issubset(plan) or not isinstance(plan.get("steps"), list) or not isinstance(plan.get("missing"), list):
+            self._mark_semantic_failure("invalid_plan_schema")
+            raise ProviderError("计划接口返回的结构不完整")
+        return plan
+
+    def suggest_topics(self, goal: str, excluded_topics: list[str] | None = None) -> list[dict[str, Any]]:
+        """Return three conservative topic angles before a production job exists.
+
+        Topic exploration uses the server's separate pre-job session ledger. It
+        never consumes the later job's seven-call production ledger, while every
+        real topic Provider attempt is still counted before the request is sent.
+        """
+        system = (
+            "你是除甲醛品类短视频的选题Agent。用户只给宽泛目标，你负责先收窄成三个彼此不同、值得制作的角度。"
+            "选题只能围绕甲醛、除醛、测醛、室内空气、装修污染、通风、检测报告或气味。"
+            "把所有功效、健康和数字说法都视为尚未证实：不得承诺安全、去除率、立即入住、母婴无风险或产品效果。"
+            "优先使用问题式、报告解读式或常见误区式角度，让后续研究能公开反向举证。"
+            "不要重复excluded_topics中的角度。只输出JSON对象，唯一字段candidates，必须恰好三项；"
+            "每项字段为title,reason,audience。title为4到80个中文字符，reason用一句人话说明看点。"
+        )
+        data = self._chat_json(
+            system,
+            {"goal": goal, "excluded_topics": list(excluded_topics or [])[:24]},
+            stage="topic_suggestion",
+            count_budget=True,
+        )
+        candidates = data.get("candidates")
+        if (
+            not isinstance(candidates, list)
+            or len(candidates) != 3
+            or not all(
+                isinstance(item, dict)
+                and all(isinstance(item.get(field), str) and item[field].strip() for field in ("title", "reason", "audience"))
+                for item in candidates
+            )
+        ):
+            self._mark_semantic_failure("invalid_topic_schema")
+            raise ProviderError("选题接口没有返回candidates数组")
+        return candidates
 
     def generate_content_scripts(self, production_input: dict[str, Any], insight: dict[str, Any]) -> list[dict[str, Any]]:
         """Generate exactly four script variants in one paid request."""
@@ -171,7 +270,19 @@ class OpenAICompatibleProvider:
         )
         data = self._chat_json(system, {"production_input": production_input, "insight": insight}, stage="script_generation")
         variants = data.get("variants")
-        if not isinstance(variants, list):
+        if (
+            not isinstance(variants, list)
+            or len(variants) != 4
+            or not all(
+                isinstance(item, dict)
+                and all(
+                    isinstance(item.get(field), str) and item[field].strip()
+                    for field in ("id", "hook_type", "script", "reason")
+                )
+                for item in variants
+            )
+        ):
+            self._mark_semantic_failure("invalid_script_schema")
             raise ProviderError("脚本接口没有返回variants数组")
         return variants
 
@@ -183,7 +294,16 @@ class OpenAICompatibleProvider:
             "只输出JSON对象，字段status,risks,suggested_script,human_confirmation_required。"
             "status只能是pass_with_human_review或blocked。"
         )
-        return self._chat_json(system, {"script": script, "local_review": local_review}, stage="compliance_review")
+        result = self._chat_json(system, {"script": script, "local_review": local_review}, stage="compliance_review")
+        if (
+            result.get("status") not in {"pass_with_human_review", "blocked"}
+            or not isinstance(result.get("risks"), list)
+            or not isinstance(result.get("suggested_script"), str)
+            or not isinstance(result.get("human_confirmation_required"), bool)
+        ):
+            self._mark_semantic_failure("invalid_compliance_schema")
+            raise ProviderError("合规审核接口返回的结构不完整")
+        return result
 
     def repair_content_script(self, script: str, local_review: dict[str, Any], insight: dict[str, Any]) -> dict[str, Any]:
         system = (
@@ -194,7 +314,15 @@ class OpenAICompatibleProvider:
             "禁止绝对安全、完全去除、零风险、立即入住、母婴安全保证。"
             "只输出JSON对象，字段为script和changes。script必须是45至60秒中文口播，只做通用科普。"
         )
-        return self._chat_json(system, {"script": script, "local_review": local_review, "insight": insight}, stage="script_repair")
+        result = self._chat_json(
+            system,
+            {"script": script, "local_review": local_review, "insight": insight},
+            stage="script_repair",
+        )
+        if not isinstance(result.get("script"), str) or not result["script"].strip() or not isinstance(result.get("changes"), list):
+            self._mark_semantic_failure("invalid_repair_schema")
+            raise ProviderError("脚本修订接口返回的结构不完整")
+        return result
 
     def chat_with_tools(
         self,
@@ -233,8 +361,17 @@ class OpenAICompatibleProvider:
         try:
             message = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
+            self._mark_semantic_failure("missing_message")
             raise ProviderError("接口返回中没有可读取的消息") from exc
-        if not isinstance(message, dict):
+        has_content = isinstance(message, dict) and isinstance(message.get("content"), str) and bool(message["content"].strip())
+        tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
+        has_tool_calls = (
+            isinstance(tool_calls, list)
+            and bool(tool_calls)
+            and all(isinstance(item, dict) and item for item in tool_calls)
+        )
+        if not isinstance(message, dict) or not (has_content or has_tool_calls):
+            self._mark_semantic_failure("invalid_message_schema")
             raise ProviderError("接口返回的消息格式无效")
         return message
 
@@ -248,7 +385,20 @@ class OpenAICompatibleProvider:
             "evidence每项包含url,excerpt,source_type,retrieved_at；sources每项包含url,title,publisher,source_type,retrieved_at。"
             "高置信发现必须绑定工具实际返回页面中的短摘录；没有摘录的判断必须降级并写入evidence_gaps。"
         )
-        return self._chat_json(system, {"topic": topic, "audience": audience, "tool_trace": tool_trace}, stage="research_summary")
+        result = self._chat_json(
+            system,
+            {"topic": topic, "audience": audience, "tool_trace": tool_trace},
+            stage="research_summary",
+        )
+        required_lists = ("findings", "content_patterns", "evidence_gaps", "sources")
+        if (
+            result.get("status") not in {"complete", "partial"}
+            or not isinstance(result.get("summary"), str)
+            or any(not isinstance(result.get(field), list) for field in required_lists)
+        ):
+            self._mark_semantic_failure("invalid_research_schema")
+            raise ProviderError("研究整理接口返回的结构不完整")
+        return result
 
     def adversarial_review_research(self, findings: list[dict[str, Any]]) -> dict[str, Any]:
         """Challenge evidence-bound claims; this reviewer may veto but never create evidence."""
@@ -259,9 +409,39 @@ class OpenAICompatibleProvider:
             "只有现有摘录直接支持有限范围表述时，verdict才可为supported_limited；否则只能是insufficient或contradicted。"
             "只输出JSON对象：status和findings。findings必须逐项原样返回audit_id和claim，并包含verdict、reasons、safe_scope。"
         )
-        return self._chat_json(system, {"findings": findings}, stage="research_adversarial_review")
+        result = self._chat_json(system, {"findings": findings}, stage="research_adversarial_review")
+        reviewed = result.get("findings")
+        if (
+            result.get("status") not in {"complete", "partial"}
+            or not isinstance(reviewed, list)
+            or len(reviewed) != len(findings)
+            or not all(
+                isinstance(item, dict)
+                and isinstance(item.get("audit_id"), str)
+                and isinstance(item.get("claim"), str)
+                and item.get("verdict") in {"supported_limited", "insufficient", "contradicted"}
+                and isinstance(item.get("reasons"), list)
+                and isinstance(item.get("safe_scope"), str)
+                for item in reviewed
+            )
+            or [
+                (item.get("audit_id"), item.get("claim")) for item in reviewed
+            ] != [
+                (item.get("audit_id"), item.get("claim")) for item in findings
+            ]
+        ):
+            self._mark_semantic_failure("invalid_adversarial_schema")
+            raise ProviderError("反向举证审核接口返回的结构不完整")
+        return result
 
-    def _chat_json(self, system: str, user_data: dict[str, Any], *, stage: str = "provider") -> dict[str, Any]:
+    def _chat_json(
+        self,
+        system: str,
+        user_data: dict[str, Any],
+        *,
+        stage: str = "provider",
+        count_budget: bool = True,
+    ) -> dict[str, Any]:
         if not self.api_key:
             raise ProviderError("缺少 API Key")
         payload: dict[str, Any] = {
@@ -286,12 +466,17 @@ class OpenAICompatibleProvider:
             },
             method="POST",
         )
-        data = self._send_for(request, stage)
+        data = self._send_for(request, stage, count_budget=count_budget)
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
+            self._mark_semantic_failure("missing_message")
             raise ProviderError("接口返回中没有可读取的消息内容") from exc
-        return self.parse_json_content(content)
+        try:
+            return self.parse_json_content(content)
+        except ProviderError:
+            self._mark_semantic_failure("invalid_structured_output")
+            raise
 
     def _send_for(self, request: urllib.request.Request, stage: str, *, count_budget: bool = True) -> dict[str, Any]:
         previous_stage, previous_count = self._request_stage, self._count_budget
@@ -305,10 +490,11 @@ class OpenAICompatibleProvider:
         token = None
         if self.budget is not None and self._count_budget:
             token = self.budget.begin(self._request_stage)
+        self._last_budget_token = token
         try:
             opener = urllib.request.build_opener(_SafeRedirectHandler())
             with opener.open(request, timeout=self.timeout) as response:
-                validate_provider_base_url(_response_base_url(response.geturl()))
+                validate_provider_response_url(response.geturl())
                 result = json.loads(response.read().decode("utf-8"))
             if token:
                 self.budget.finish(token, ok=True)
@@ -332,6 +518,11 @@ class OpenAICompatibleProvider:
             if isinstance(exc, ProviderError):
                 raise
             raise ProviderError(f"Provider请求失败: {exc}") from exc
+
+    def _mark_semantic_failure(self, error_type: str) -> None:
+        token, self._last_budget_token = self._last_budget_token, None
+        if token and self.budget is not None:
+            self.budget.correct_semantic_failure(token, error_type)
 
     def _sanitize_error_detail(self, value: str) -> str:
         text = str(value)
@@ -361,16 +552,10 @@ class OpenAICompatibleProvider:
         return parsed
 
 
-def _response_base_url(url: str) -> str:
-    parsed = urllib.parse.urlsplit(url)
-    path = "/v1" if parsed.path == "/v1" or parsed.path.startswith("/v1/") else ""
-    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
-
-
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
         try:
-            validate_provider_base_url(_response_base_url(newurl))
+            validate_provider_response_url(newurl)
         except ValueError as exc:
             raise ProviderError("Provider重定向越过地址白名单") from exc
         return super().redirect_request(req, fp, code, msg, headers, newurl)

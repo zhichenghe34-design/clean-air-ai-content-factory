@@ -36,7 +36,15 @@ CANONICAL_ARTIFACTS = [
     "run_report.json",
 ]
 REVIEW_ARTIFACTS = {"research.json", "approved_script.json", "review.json"}
-TOPIC_MARKERS = ("甲醛", "除醛", "测醛", "室内空气", "装修污染", "通风", "检测报告", "气味")
+TOPIC_STRONG_MARKERS = ("甲醛", "除醛", "测醛", "室内空气", "装修污染")
+TOPIC_CONTEXTUAL_MARKERS = ("通风", "检测报告", "气味")
+TOPIC_CONTEXT_MARKERS = (
+    "室内", "新房", "装修", "入住", "房间", "家居", "居家", "新居", "住宅",
+    "甲醛", "除醛", "测醛",
+)
+# Kept as the complete public vocabulary for callers that display the supported
+# field. Validation deliberately does not accept the contextual terms alone.
+TOPIC_MARKERS = TOPIC_STRONG_MARKERS + TOPIC_CONTEXTUAL_MARKERS
 RUNNING_STATES = {"research_running", "content_running", "rendering"}
 IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 PRODUCTION_INPUT_FIELDS = {
@@ -84,6 +92,17 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def topic_in_scope(value: object) -> bool:
+    """Return whether text is unambiguously inside the competition domain."""
+    text = str(value).strip()
+    if any(marker in text for marker in TOPIC_STRONG_MARKERS):
+        return True
+    return (
+        any(marker in text for marker in TOPIC_CONTEXTUAL_MARKERS)
+        and any(marker in text for marker in TOPIC_CONTEXT_MARKERS)
+    )
+
+
 def validate_topic_input(production_input: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(production_input, dict):
         raise UnprocessableError("production_input必须是JSON对象")
@@ -91,7 +110,7 @@ def validate_topic_input(production_input: dict[str, Any]) -> dict[str, Any]:
     audience = str(production_input.get("audience", "新房家庭")).strip()
     if not 4 <= len(topic) <= 80:
         raise UnprocessableError("选题长度必须在4到80字之间")
-    if not any(marker in topic for marker in TOPIC_MARKERS):
+    if not topic_in_scope(topic):
         raise UnprocessableError("当前原型只支持甲醛、除醛与室内空气相关选题")
     if not 2 <= len(audience) <= 80:
         raise UnprocessableError("受众长度必须在2到80字之间")
@@ -326,6 +345,7 @@ class JobStore:
                 return replay
             raise ConflictError("同一任务正在运行")
         lock_path: Path | None = None
+        bound_budget = None
         try:
             job, folder = self._load_v2(job_id)
             self._recover_stale_lock(job, folder)
@@ -358,6 +378,17 @@ class JobStore:
             self._sync_steps(job)
             self._write(folder / "job.json", job)
             self._event(folder, "stage_started", {"run_id": run_id, "stage": stage})
+            bound_budget = getattr(runner, "budget", None)
+            if bound_budget is not None:
+                def persist_budget(snapshot: dict[str, Any]) -> None:
+                    # Budget reservation must reach disk before the Provider
+                    # request is allowed to leave the process. This preserves
+                    # attempted calls even if the process dies mid-request.
+                    job["budget"] = snapshot
+                    job["updated_at"] = now_iso()
+                    self._write(folder / "job.json", job)
+
+                bound_budget.set_persistence_callback(persist_budget)
             try:
                 self._copy_draft(folder / "draft", staging)
                 if stage == "research":
@@ -423,6 +454,8 @@ class JobStore:
                 self._write(folder / "job.json", job)
             return self._public(job)
         finally:
+            if bound_budget is not None:
+                bound_budget.set_persistence_callback(None)
             if lock_path is not None and lock_path.exists():
                 lock_path.unlink()
             lock.release()
@@ -1000,6 +1033,8 @@ class JobStore:
         try:
             with path.open("x", encoding="utf-8") as handle:
                 json.dump({"pid": os.getpid(), "idempotency_key": key, "created_at": now_iso()}, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
         except FileExistsError as exc:
             raise ConflictError("任务被另一个进程占用") from exc
         return path
@@ -1018,16 +1053,31 @@ class JobStore:
         path.unlink(missing_ok=True)
         if job.get("status") in RUNNING_STATES:
             stage = {"research_running": "research", "content_running": "content", "rendering": "render"}[job["status"]]
+            interrupted_at = now_iso()
             job["status"] = "failed"
             job["last_error"] = "上次运行进程中断"
             job["last_failed_stage"] = stage
             job["active_run_id"] = None
             for run in reversed(job.get("runs", [])):
                 if run.get("status") == "running":
-                    run.update({"status": "interrupted", "finished_at": now_iso(), "error": "process_interrupted"})
+                    run.update({"status": "interrupted", "finished_at": interrupted_at, "error": "process_interrupted"})
                     break
+            budget = job.get("budget")
+            interrupted_attempts = 0
+            if isinstance(budget, dict) and isinstance(budget.get("events"), list):
+                for event in budget["events"]:
+                    if isinstance(event, dict) and event.get("status") == "attempted":
+                        event.update({
+                            "status": "failed",
+                            "error_type": "process_interrupted",
+                            "finished_at": interrupted_at,
+                        })
+                        interrupted_attempts += 1
+                if interrupted_attempts:
+                    budget["failed"] = int(budget.get("failed", 0)) + interrupted_attempts
+                    budget["remaining"] = max(0, int(budget.get("limit", 7)) - int(budget.get("attempted", 0)))
             self._write(folder / "job.json", job)
-            self._event(folder, "run_interrupted", {"stage": stage})
+            self._event(folder, "run_interrupted", {"stage": stage, "budget_attempts_failed": interrupted_attempts})
 
     @staticmethod
     def _pid_alive(pid: int) -> bool:
@@ -1043,7 +1093,10 @@ class JobStore:
     def _write(path: Path, data: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
         temp.replace(path)
 
     @staticmethod

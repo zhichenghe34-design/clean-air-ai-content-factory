@@ -5,10 +5,13 @@
   "description": "Pinned frontend and HyperFrames test dependencies for the v2 competition prototype.",
   "devDependencies": {
     "@playwright/test": "1.62.1",
-    "hyperframes": "0.7.86"
+    "hyperframes": "0.7.86",
+    "lucide-static": "1.28.0"
   },
   "scripts": {
-    "check:js": "node --check static/app.js && node --check tests/smoke_ui.js",
-    "test:smoke": "node tests/smoke_ui.js"
+    "check:js": "node --check static/app.js && node --check tests/smoke_ui.js && node --check tests/smoke_agent_flow.js && node --check tools/record_agent_demo.js",
+    "test:smoke": "node tests/smoke_ui.js",
+    "test:flow": "node tests/smoke_agent_flow.js",
+    "demo:record": "node tools/record_agent_demo.js"
   }
 }
