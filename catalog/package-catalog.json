@@ -23,7 +23,7 @@
     "reject_unsigned_catalog_updates": true,
     "silent_admin_elevation": false,
     "default_install_scope": "application_managed_directory",
-    "default_install_root": "D:\\时宜AIGC内容工厂",
+    "default_install_root": "%LOCALAPPDATA%\\ShiyiAIGC",
     "managed_subdirectories": ["tools", "models", "downloads", "cache", "temp", "logs", "projects"],
     "minimum_free_space_headroom_ratio": 1.8,
     "blocked_install_drives_when_free_gb_below": 20

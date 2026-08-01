@@ -1,0 +1,154 @@
+{
+  "schema_version": 2,
+  "job_id": "20260801-013534-00230a",
+  "run_id": "20260801-022153-e7d5757d",
+  "stage": "report_rebuild",
+  "status": "complete",
+  "input_sha256": "4e3817c0a3000291bf775787515fbff874f184b1f0249be4ca3f3988c783a254",
+  "approval_hashes": {
+    "research": "ef3dd1af292eab9e35bfc00fd23204c6f824cf5792b42343a21d5cd13346b11b",
+    "compliance": "b8e5531489f0c13e5b995ab78fa63364c5e51560cbbcd2e731d0a295a4ca1eab"
+  },
+  "started_at": "2026-08-01T02:21:53+08:00",
+  "finished_at": "2026-08-01T02:21:53+08:00",
+  "budget": {
+    "limit": 7,
+    "attempted": 7,
+    "succeeded": 7,
+    "failed": 0,
+    "remaining": 0,
+    "events": [
+      {
+        "stage": "research",
+        "status": "succeeded",
+        "started_at": "2026-08-01T01:35:43+08:00",
+        "finished_at": "2026-08-01T01:35:45+08:00"
+      },
+      {
+        "stage": "research",
+        "status": "succeeded",
+        "started_at": "2026-08-01T01:35:56+08:00",
+        "finished_at": "2026-08-01T01:35:58+08:00"
+      },
+      {
+        "stage": "research_summary",
+        "status": "succeeded",
+        "started_at": "2026-08-01T01:35:58+08:00",
+        "finished_at": "2026-08-01T01:36:15+08:00"
+      },
+      {
+        "stage": "research_adversarial_review",
+        "status": "succeeded",
+        "started_at": "2026-08-01T01:36:15+08:00",
+        "finished_at": "2026-08-01T01:36:19+08:00"
+      },
+      {
+        "stage": "research",
+        "status": "succeeded",
+        "started_at": "2026-08-01T01:39:33+08:00",
+        "finished_at": "2026-08-01T01:39:34+08:00"
+      },
+      {
+        "stage": "research",
+        "status": "succeeded",
+        "started_at": "2026-08-01T01:39:44+08:00",
+        "finished_at": "2026-08-01T01:39:45+08:00"
+      },
+      {
+        "stage": "research_adversarial_review",
+        "status": "succeeded",
+        "started_at": "2026-08-01T01:39:46+08:00",
+        "finished_at": "2026-08-01T01:39:51+08:00"
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "name": "VALIDATION.md",
+      "stage": "validation",
+      "mime": "text/markdown",
+      "size": 889,
+      "sha256": "3fe4f76bdb1d9fbab8716f0e632a9111fdc5562f214694cbda1a60ba250a1b3c"
+    },
+    {
+      "name": "approvals.json",
+      "stage": "report_rebuild",
+      "mime": "application/json",
+      "size": 1414,
+      "sha256": "6182c8a25ce999845a399d95227594da4b16e6f65b3efd2a0e74c7e0ccb2a80d"
+    },
+    {
+      "name": "approved_script.json",
+      "stage": "report_rebuild",
+      "mime": "application/json",
+      "size": 1018,
+      "sha256": "b9dee87df2b3b57e67035b8694f2c2bdf2542a4107910fba658781ef498f2e6d"
+    },
+    {
+      "name": "captions.srt",
+      "stage": "report_rebuild",
+      "mime": "text/plain",
+      "size": 836,
+      "sha256": "9e9a246ba5597380c118fa83a0150df2cd4ed226654849b6b46e95ae3b9de880"
+    },
+    {
+      "name": "final.mp4",
+      "stage": "report_rebuild",
+      "mime": "video/mp4",
+      "size": 7837293,
+      "sha256": "2ee8a80e9de7c3bb821bfa50d8abc46e20e72dda999c18ec11a5975a967b4403"
+    },
+    {
+      "name": "insight.json",
+      "stage": "report_rebuild",
+      "mime": "application/json",
+      "size": 14341,
+      "sha256": "b82ceff7c26946a7885d6b425ac5863ff7f1ad4ba7a7ce14e5dbf995d0e1f6c4"
+    },
+    {
+      "name": "motion_plan.json",
+      "stage": "report_rebuild",
+      "mime": "application/json",
+      "size": 4131,
+      "sha256": "6677a9b1f400fb5e7f160fbc26c6cbf73892818ef786993e8f9c177a15eb2082"
+    },
+    {
+      "name": "research.json",
+      "stage": "report_rebuild",
+      "mime": "application/json",
+      "size": 50528,
+      "sha256": "b8314ba709ea784803f8633c6f5516739660e2045bcb231e46e11ae4ce1248c7"
+    },
+    {
+      "name": "review.json",
+      "stage": "report_rebuild",
+      "mime": "application/json",
+      "size": 894,
+      "sha256": "b8e5531489f0c13e5b995ab78fa63364c5e51560cbbcd2e731d0a295a4ca1eab"
+    },
+    {
+      "name": "run_report.json",
+      "stage": "report_rebuild",
+      "mime": "application/json",
+      "size": 5670,
+      "sha256": "24499ad06482d14a8738206c141bf243659665df05aa0be32e4bd9f75712a8f5"
+    },
+    {
+      "name": "script_variants.json",
+      "stage": "report_rebuild",
+      "mime": "application/json",
+      "size": 5593,
+      "sha256": "7537702d827ed4572062b9ae55f2b9712090e4c3c2da1862763094b7dceea810"
+    },
+    {
+      "name": "voice.wav",
+      "stage": "report_rebuild",
+      "mime": "audio/wav",
+      "size": 4989462,
+      "sha256": "c8481f2827b5ee4a0f8dd0b57a073a8b8b3d43e9db7885a741b2b664766f7b9b"
+    }
+  ],
+  "public_package": true,
+  "source_manifest_sha256": "7c77cb5dda2e832f8d04550af13ccfbce81d7ff6e9fe033a2a9580402b07a1e2",
+  "packaged_at": "2026-07-31T18:24:41+00:00"
+}

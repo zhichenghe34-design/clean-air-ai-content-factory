@@ -1,181 +1,127 @@
-# 净界AI内容工厂 / CleanAir Content Factory
+# 净界 AI 内容工厂 v2
 
-> 给它一个选题，它会先查资料，再写4版脚本、拦住没有依据的功效表述、完成配音和动态竖屏视频。Flash负责判断，真正的搜索、审核和剪辑由受控工具完成；每一步都有记录，运营人员随时可以修改和重跑。
+面向除甲醛赛题的可运行、可审核、可复现短视频生产原型。DeepSeek 负责研究调度与脚本候选，搜索、网页提取、配音、动画和 FFmpeg 由登记的本地适配器执行；研究证据与最终脚本必须分别由人审批。
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.14-3776AB)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
 [![CI](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/actions/workflows/ci.yml)
-[![Safety](https://img.shields.io/badge/agent-trusted%20adapters-0E5A47)](docs/SAFETY.md)
 
-![控制台](docs/assets/console.png)
+![v2 控制台](docs/assets/console.png)
 
-## 为什么做
+## v2 解决了什么
 
-做除甲醛短视频有一个很现实的矛盾：运营需要日更，消费者却不能只看到一个醒目的“99%”。这个数字是在多大空间测的、用了多少产品、测了多久、由谁出具报告，都可能改变它的意义。传统流程既慢，又很依赖某个运营人员的经验。
+- 状态严格分为执行授权、研究、研究人工审定、内容生成、合规阻断/人工放行、渲染和完成；自动系统不再伪装成人工审核。
+- 每次推进使用独立 `run_id` 和 staging。失败尝试不会替换上一份成功成片，正式产物只从成功 manifest 解析。
+- 每条研究 finding 必须逐项批准或拒绝，并选择 `verbatim` 或 `paraphrase`。文件哈希变化后审批立即失效。
+- 医疗因果、健康保证、绝对化表达及没有已批准证据支持的功效数字由本地规则阻断；自动通过后仍须最终人工放行。
+- 同任务有进程锁和 PID 磁盘锁；`Idempotency-Key` 可安全重放。网络尝试在发出前计入每任务共享的 7 次硬预算。
+- 服务只监听 `127.0.0.1`。写接口要求随机会话 Cookie、CSRF、JSON Content-Type 和当前端口同源 Origin。
+- Provider 正式模式只接受 `https://api.deepseek.com` 或 `/v1`；localhost 仅在 `SHIYI_ALLOW_TEST_PROVIDER=1` 时开放。
+- Windows 持久化 Key 使用当前用户 DPAPI；非 Windows 只使用环境变量或当前进程会话。
 
-所以我们没有再做一个“爆款评分器”，也不想只交一个会吐脚本的聊天框。这个项目把样片分析、联网查证、四稿脚本、广告风险预审、本地配音和动态视频合成接成一个任务；如果资料不足，系统宁可换成安全科普脚本，也不会硬编产品功效。
-
-首个验证选题：**“99%除醛率为什么必须看检测条件？”**
-
-- 真实选题到成片：**208.36秒**
-- Flash：**10次真实工具调用**，原始整理**7条研究发现和4个来源**；人工复核后5条可进入脚本事实层、2条降级，并补充2个官方依据
-- 真实联调成片：**52.01秒 / 1080×1920 / H.264 + AAC**
-- 设计基准样片：**46.1秒 / 7段连续MG动画 / 30fps**
-- 脚本：真实DeepSeek联调候选**0/4**，随后触发安全模板；设计基准确实为**2/4**
-- 测试：**32项单元测试**、真实DeepSeek Tool Calls和控制台烟雾测试通过
-- 降级：没有Key仍可走确定性脚本；本地语音不可用时可切换Windows SAPI
-
-> 真实联调0/4和设计基准2/4都只是原型内部结果，企业采用率尚未验证；具体产品功效必须由品牌检测材料支持。
-
-## 可查看成果
-
-- [首条动态测试成片](media/sample.mp4)
-- [可复现动画工程（HyperFrames + GSAP）](video-compositions/formaldehyde-conditions/)
-- [Agent动态视频导演Skill](agent-skills/produce-dynamic-health-video/)
-- [Agent联网与平台内容提取Skill](agent-skills/extract-web-platform-content/)
-- [真实DeepSeek端到端验证记录](docs/REAL_E2E_VALIDATION.md)
-- [真实联调人工审定研究记录](examples/real-e2e/research.json)
-- [真实联调结构化运行报告](examples/real-e2e/run_report.json)
-- [第二选题复现工程：气味小就代表甲醛少吗？](video-compositions/forward-test-smell-vs-formaldehyde/)
-- [控制台演示](media/console-demo.mp4)
-- [8页初赛方案PDF](docs/competition-proposal.pdf)
-- [初赛开题报告文本](docs/SUBMISSION_TEXT.md)
-- [初赛交付摘要](docs/COMPETITION.md)
-- [结构化运行报告](examples/demo-output/run_report.json)
-- [合规预审结果](examples/demo-output/review.json)
-- [四个脚本候选](examples/demo-output/script_variants.json)
-
-![样片关键帧](docs/assets/sample-frame.png)
-
-## Flash是大脑，工具才是手脚
-
-DeepSeek V4 Flash并不会凭空获得搜索、ASR、OCR或剪辑能力。它只理解目标、选择工具、整理证据和生成脚本。联网调研的状态由LangGraph保存，Flash通过[官方Tool Calls协议](https://api-docs.deepseek.com/guides/tool_calls/)调用两个受控工具：
-
-- `web_search`：DDGS免费搜索适配器，可替换成其他实现；
-- `extract_url`：普通公开网页使用内置HTTP提取；动态网页和视频平台可接入Playwright、受信浏览器或一站式音视频解析等可选适配器。
-
-只有用户输入或搜索工具返回的URL才能交给提取器，模型临时编造的地址会被拒绝。网页正文始终按不可信数据处理，不能借网页文字改变系统规则、执行命令或读取密钥。每个任务最多7次模型请求，其中联网调研最多5轮；无论模型是否完成，本地合规硬规则都会兜底，运行报告记录实际用量。真实DeepSeek Tool Calls和无Key降级路线均纳入测试。
-
-## 端到端架构
-
-```mermaid
-flowchart LR
-    A["用户选题"] --> F0["Flash调度"]
-    F0 --> T1["免费搜索工具"]
-    F0 --> T2["网页/平台提取Skill"]
-    T1 --> F0
-    T2 --> F0
-    F0 --> B["内容洞察"]
-    P["样片与范式卡"] --> B
-    B --> C["四稿脚本"]
-    C --> D["证据与合规预审"]
-    D --> E["本地/云端配音"]
-    E --> F["HyperFrames动态场景 + 字幕 + FFmpeg"]
-    F --> G["人工精修与局部重跑"]
-```
-
-每个任务都会留下十类可审计产物：
-
-```text
-research.json
-insight.json
-script_variants.json
-approved_script.json
-review.json
-voice.wav
-captions.srt
-motion_plan.json
-final.mp4
-run_report.json
-```
-
-### 动画如何量产
-
-`ProductionRunner` 默认先生成 `motion_plan.json`，再调用项目内受信模板生成HyperFrames工程。动态导演Skill把本次人工精修经验固化为约束：每场双层运动、至少三种视觉语法、转场遮罩离开前主体入场、字幕两行上限、结尾条件汇聚，并要求逐转场抽帧检查。HyperFrames不可用时才退回静态FFmpeg卡片，同时在运行报告中明确标记 `static_fallback`，不会把降级结果冒充动态成片。
-
-### 复杂网页的真实能力边界
-
-`extract-web-platform-content` Skill把普通网页、动态网页和公开视频平台分开路由。普通公开网页可直接提取；动态网页和视频平台通过可插拔的Playwright、受信浏览器或一站式音视频解析适配器增强。这些适配器不属于默认依赖。未安装适配器时返回 `adapter_missing`，需要登录、验证码或账号权限时返回 `auth_required`；已有部分内容时返回 `partial`。系统记录真实尝试路径和下一步，不伪造内容，也不绕过访问控制。
+旧任务不会重写，GET 时统一显示为 `legacy_read_only`，也不能通过 v2 正式产物接口访问旧报告。2026-07-18 的旧真实联调材料保留在 `examples/real-e2e/` 并明确标记为 legacy；2026-08-01 的 v2 联调由用户亲自完成两道人工作业门禁，公开证据包位于 `evidence/v2-real-deepseek-20260801-022153/`。
 
 ## 快速开始
 
-要求：Python 3.10+、FFmpeg与FFprobe。Windows用户可直接运行：
-
-```powershell
-.\run.ps1
-```
-
-或手动启动：
+需要 Python 3.12 或 3.14、Node.js、FFmpeg/FFprobe。HyperFrames 使用锁定依赖，运行时不会通过 `npx --yes` 临时下载。
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe app.py --open
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt
+npm.cmd ci
+.\.venv\Scripts\python.exe app.py --host 127.0.0.1 --port 8765 --open
 ```
 
-默认访问 `http://127.0.0.1:8765`，点击“创建样片任务”即可生成固定演示任务。
+默认地址是 `http://127.0.0.1:8765`。如果 8765 被占用，程序只在 127.0.0.1 上顺延寻找端口，控制台会显示实际端口。
 
-### DeepSeek与本地工具
+API Key 推荐放在环境变量：
 
-- 不配置Key：使用确定性四稿和本地规则审核，仍能演示完整流程。
-- 配置DeepSeek：将Key放在环境变量 `DEEPSEEK_API_KEY`，不要写进代码。Flash只做大脑，真实操作由登记工具完成。
-- 免费联网搜索：默认使用DDGS，无需搜索API Key；可通过实现`SearchProvider`迁移到其他免费或企业搜索后端。
-- FFmpeg不在PATH：设置 `FFMPEG_PATH` 和 `FFPROBE_PATH`。
-- 本地语音工作台：设置 `VOICE_WORKBENCH` 与 `VOICE_REFERENCE`；不可用时Windows会降级到SAPI。
+```powershell
+$env:DEEPSEEK_API_KEY = "你的Key"
+```
 
-完整变量见 [.env.example](.env.example)。
+也可以在控制台只用于当前会话；勾选本机保存时，Windows 使用 DPAPI 加密。Key 不进入代码、任务产物、公开证据或日志。
 
-## API
+## v2 状态机
+
+```mermaid
+flowchart LR
+    P["planned"] --> A["authorized"]
+    A --> R["research_running"]
+    R --> HR["awaiting_research_approval"]
+    HR -->|人工批准| C["content_running"]
+    HR -->|退回| RR["awaiting_research_revision"]
+    C --> B["blocked_compliance"]
+    C --> HC["awaiting_compliance_approval"]
+    B --> SR["awaiting_script_revision"]
+    HC -->|人工批准| V["rendering"]
+    HC -->|退回| SR
+    SR --> HC
+    V --> D["complete"]
+```
+
+失败记录保留实际阶段、错误与失败目录；重跑创建新的 `run_id`。研究和内容阶段的成功运行属于审计历史，只有成功 render 运行能成为 `current_run_id`。
+
+## 产物与证据
+
+每次最终成功运行包含原十项产物，并增加审批与清单；公开证据包再增加一份机器复算的验证说明，共 13 项：
+
+```text
+research.json             insight.json
+script_variants.json      approved_script.json
+review.json               voice.wav
+captions.srt              motion_plan.json
+final.mp4                 run_report.json
+approvals.json            manifest.json
+VALIDATION.md（仅公开包）
+```
+
+`manifest.json` 记录输入哈希、两道审批哈希、开始/结束时间、预算，以及每个文件的 MIME、字节数和 SHA-256。历史成功产物使用带 `run_id` 的只读地址；失败 staging 和未入清单文件不对外提供。
+
+## 主要 API
+
+所有 POST/PATCH 先访问 `GET /api/session` 取得 CSRF，并携带会话 Cookie、`X-Shiyi-CSRF`、`Content-Type: application/json` 与当前端口同源 Origin。
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| POST | `/api/demo-job` | 创建固定演示任务 |
-| GET | `/api/jobs/{id}` | 查询阶段、日志和产物 |
-| POST | `/api/jobs/{id}/run` | 运行受信生产适配器 |
-| PATCH | `/api/jobs/{id}/script` | 保存人工修改脚本 |
-| GET | `/api/jobs/{id}/artifacts/{name}` | 预览或下载产物 |
-| GET | `/api/catalog` | 只读能力目录 |
-| GET | `/api/hardware` | 只读硬件探测 |
+| POST | `/api/demo-job` | 创建领域内 v2 任务 |
+| POST | `/api/jobs/{id}/approve` | 首次执行授权 |
+| POST | `/api/jobs/{id}/run` | 只推进到下一道人工作业门禁，要求 `Idempotency-Key` |
+| POST | `/api/jobs/{id}/approvals/research` | 研究逐 finding 审定 |
+| POST | `/api/jobs/{id}/approvals/compliance` | 最终脚本合规放行 |
+| PATCH | `/api/jobs/{id}/script` | 人工改稿并重算本地合规/时长 |
+| GET | `/api/jobs/{id}/review-artifacts/{name}` | 读取当前待审文件 |
+| GET | `/api/jobs/{id}/artifacts/{name}` | 读取当前成功 manifest 产物 |
+| GET | `/api/jobs/{id}/runs/{run_id}/artifacts/{name}` | 读取历史成功运行产物 |
 
-## 安全与合规设计
+## 联网与本地能力边界
 
-- Agent只调用代码中登记的受信适配器，不能提交任意网址或命令。
-- 自动下载安装默认关闭；外部能力必须固定来源、版本、哈希和许可。
-- 拦截“绝对安全、完全去除、母婴零风险”等无证据表述。
-- 百分比功效必须检查测量对象、空间体积、作用时间、初始浓度、检测方法和报告来源。
-- 没有品牌检测报告时只做通用科普，不输出具体产品功效承诺。
+DeepSeek 只能调用代码登记的 `web_search` 与 `extract_url`，不能执行网页指令或生成下载命令。普通公开网页走受限 HTTP；已安装的 Playwright 或一站式音视频解析器是可选适配器。登录、验证码或账号权限场景不会自动接管账号，当前实现返回明确的适配器状态与人工下一步，不承诺未实现的登录态浏览器。
 
-详见 [安全边界](docs/SAFETY.md)。依据包括 [GB/T 18883-2022《室内空气质量标准》](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436)、[《中华人民共和国广告法》](https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html)及[广告绝对化用语执法指南](https://www.samr.gov.cn/ggjgs/tzgg/art/2023/art_183b5cb48d9e4f0dba67f9f912a913ba.html)。
+解析器使用字段白名单生成一次性配置，`key/token/secret/password/cookie/authorization` 不会复制到任务目录。HyperFrames 版本锁定在 `package-lock.json`；缺失时返回适配器未安装，不在运行时自动下载。
 
-## 验证结果
+## 验证
 
 ```powershell
-python -m unittest discover -s tests -v
-node --check static/app.js
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+npm.cmd run check:js
+npm.cmd audit --audit-level=high
+npm.cmd run test:smoke
+.\.venv\Scripts\python.exe tools\check_submission_consistency.py
 ```
 
-当前基线：32项单元测试全部通过；浏览器烟雾测试无控制台错误；第二选题的自动生成动画工程通过HyperFrames运行时、布局、运动与44/44文字对比度检查。
+当前本地基线为 72 项 Python 测试，覆盖原有 32 项能力及新增状态、审批、预算、并发、密钥、严格反证审核、报告重建和 API 安全回归；浏览器烟雾测试验证 7 个生产节点、13 个能力包、动态端口与零前端错误。CI 在 Python 3.12/3.14 上全新安装，并使用可注入的假配音/渲染适配器完成快速确定性 E2E。
 
-## 项目结构
+## 现有可查看材料
 
-```text
-core/                 任务、Provider、生产适配器与安全目录
-agent-skills/         Agent可调用的动态视频导演Skill与受信模板
-static/               无框架可视化控制台
-catalog/              受信能力包目录
-examples/             范式卡与一次真实运行的结构化产物
-media/                首条成片与控制台Demo
-video-compositions/   可编辑、可复现的动态成片工程
-docs/                 架构、安全说明、截图与初赛方案
-tests/                 单元测试与浏览器烟雾测试
-app.py                 本地HTTP入口
-```
+- [动态测试成片](media/sample.mp4)
+- [控制台演示](media/console-demo.mp4)
+- [可复现动画工程](video-compositions/formaldehyde-conditions/)
+- [第二选题工程](video-compositions/forward-test-smell-vs-formaldehyde/)
+- [v2 架构](docs/ARCHITECTURE.md)
+- [安全边界](docs/SAFETY.md)
+- [v2 真实联调与 legacy 对照记录](docs/REAL_E2E_VALIDATION.md)
+- [v2 完整脱敏证据包](evidence/v2-real-deepseek-20260801-022153/)
+- [初赛方案 PDF](docs/competition-proposal.pdf)
 
-## 下一阶段
-
-1. 接入品牌事实库、检测报告、允许宣称与禁用宣称。
-2. 在企业真实账号中验证采用率、修改量、合规命中和多账号产能。
-3. 增加素材授权台账、人工审批流和可插拔视频/语音适配器。
-4. 将“小时级”目标从单机原型扩展到稳定批量生产。
-
-本仓库是比赛原型，不构成医学建议、检测结论或具体产品功效证明。
+本仓库是比赛原型，不构成医学建议、检测结论、法律意见或具体产品功效证明。真实品牌宣称必须由企业检测材料及相应负责人确认。

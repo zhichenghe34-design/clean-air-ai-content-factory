@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +13,7 @@ from core.motion_director import MotionPlanError, build_motion_plan, build_motio
 from core.orchestrator import JobStore, local_fallback_plan
 from core.provider import OpenAICompatibleProvider, ProviderError
 from core.production import DEFAULT_SCRIPT, ProductionRunner, review_script
-from core.web_agent import WebResearchAgent, normalize_research_result
+from core.web_agent import WebResearchAgent, bind_exact_evidence_candidates, normalize_research_result
 from core.web_tools import TrustedWebToolRegistry
 
 
@@ -20,6 +22,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             store = ConfigStore(Path(folder))
             self.assertEqual(store.load()["provider"]["model"], "deepseek-v4-flash")
+            self.assertEqual(store.load()["research"]["max_model_turns"], 2)
             public = store.save({"provider": {"model": "custom-model", "api_key": "secret", "persist_api_key": False}})
             self.assertEqual(public["provider"]["model"], "custom-model")
             self.assertTrue(public["provider"]["has_api_key"])
@@ -122,6 +125,7 @@ class MockFlashProvider:
 
     def __init__(self):
         self.calls = 0
+        self.audit_calls = 0
 
     def chat_with_tools(self, messages, tools, tool_choice="auto"):
         self.calls += 1
@@ -143,16 +147,17 @@ class MockFlashProvider:
                 "status": "complete",
                 "summary": "检测结果必须结合条件理解",
                 "findings": [{
-                    "claim": "需看检测条件",
+                    "claim": "检测结果应结合剂量、空间、时间与方法。",
                     "source_urls": ["https://example.com/report"],
                     "evidence": [{
                         "url": "https://example.com/report",
                         "excerpt": "检测结果应结合剂量、空间、时间与方法。",
-                        "source_type": "institutional",
+                        "source_type": "institutional_primary",
                         "retrieved_at": "2026-07-18T16:10:32+08:00",
                     }],
                     "confidence": "high",
-                    "limitations": [],
+                    "limitations": ["仅适用于示例检测条件"],
+                    "binding_method": "exact_tool_excerpt",
                 }],
                 "content_patterns": ["主张→条件→建议"],
                 "evidence_gaps": [],
@@ -160,7 +165,7 @@ class MockFlashProvider:
                     "url": "https://example.com/report",
                     "title": "权威资料",
                     "publisher": "示例机构",
-                    "source_type": "institutional",
+                    "source_type": "institutional_primary",
                     "retrieved_at": "2026-07-18T16:10:32+08:00",
                 }],
             }, ensure_ascii=False),
@@ -169,6 +174,27 @@ class MockFlashProvider:
     @staticmethod
     def parse_json_content(content):
         return json.loads(content)
+
+    def adversarial_review_research(self, findings):
+        self.audit_calls += 1
+        return {
+            "status": "complete",
+            "findings": [{
+                "audit_id": item["audit_id"],
+                "claim": item["claim"],
+                "verdict": "supported_limited",
+                "reasons": ["逐字摘录和限定范围一致"],
+                "safe_scope": "仅限检测条件说明",
+            } for item in findings],
+        }
+
+
+class ExhaustedProvider:
+    api_key = "mock-only"
+
+    @staticmethod
+    def chat_with_tools(messages, tools, tool_choice="auto"):
+        raise ProviderError("API调用预算已耗尽（7/7）")
 
 
 class WebAgentTests(unittest.TestCase):
@@ -194,9 +220,11 @@ class WebAgentTests(unittest.TestCase):
             result = WebResearchAgent(provider, registry).run("检测条件", "新房家庭")
             self.assertEqual(result["status"], "complete")
             self.assertEqual(provider.calls, 3)
+            self.assertEqual(provider.audit_calls, 1)
             self.assertEqual([item["tool"] for item in result["tool_trace"]], ["web_search", "extract_url"])
             self.assertTrue(result["tool_trace"][1]["result"]["ok"])
             self.assertEqual(result["evidence_review"]["script_eligible_count"], 1)
+            self.assertTrue(result["strict_audit"]["model_review_required"])
 
     def test_high_confidence_finding_without_excerpt_is_downgraded(self):
         result = normalize_research_result({
@@ -205,6 +233,7 @@ class WebAgentTests(unittest.TestCase):
                 "claim": "没有摘录的判断",
                 "source_urls": ["https://example.com/report"],
                 "confidence": "high",
+                "limitations": "仅有模型判断，未取得页面摘录",
             }],
             "sources": [{"url": "https://example.com/report", "title": "来源"}],
             "evidence_gaps": [],
@@ -212,7 +241,23 @@ class WebAgentTests(unittest.TestCase):
         self.assertEqual(result["status"], "partial")
         self.assertEqual(result["findings"][0]["confidence"], "low")
         self.assertFalse(result["findings"][0]["script_eligible"])
+        self.assertEqual(
+            result["findings"][0]["limitations"],
+            ["仅有模型判断，未取得页面摘录", "缺少可回溯的页面证据摘录"],
+        )
         self.assertEqual(result["script_eligible_findings"], [])
+
+    def test_repo_tools_can_run_directly(self):
+        repo = Path(__file__).resolve().parents[1]
+        for name in ("review_research_artifact.py", "run_real_media_smoke.py"):
+            completed = subprocess.run(
+                [sys.executable, str(repo / "tools" / name), "--help"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_unknown_evidence_url_cannot_enter_script_fact_layer(self):
         result = normalize_research_result({
@@ -235,6 +280,85 @@ class WebAgentTests(unittest.TestCase):
             result = registry.execute("extract_url", {"url": "https://invented.example/claim"})
             self.assertFalse(result["ok"])
             self.assertIn("拒绝访问", result["error"])
+
+    def test_extractor_failure_reason_is_preserved_in_trace(self):
+        def blocked_extract(url, output_dir):
+            return {
+                "status": "blocked",
+                "error": "private or non-global target is blocked",
+                "source": {"final_url": url},
+                "content": {"text": ""},
+                "attempts": [],
+                "warnings": [],
+            }
+
+        with tempfile.TemporaryDirectory() as folder:
+            registry = TrustedWebToolRegistry(
+                Path(folder),
+                extractor=blocked_extract,
+                seed_urls=["https://example.com/report"],
+            )
+            result = registry.execute("extract_url", {"url": "https://example.com/report"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("private or non-global", result["error"])
+
+    def test_exact_tool_excerpt_creates_candidate_without_human_label(self):
+        excerpt = "广告使用数据、统计资料、调查结果、文摘、引用语等引证内容的，应当真实、准确，并表明出处。引证内容有适用范围和有效期限的，应当明确表示。"
+        trace = [{
+            "tool": "extract_url",
+            "arguments": {"url": "https://www.samr.gov.cn/law"},
+            "result": {
+                "ok": True,
+                "status": "complete",
+                "url": "https://www.samr.gov.cn/law",
+                "final_url": "https://www.samr.gov.cn/law",
+                "title": "中华人民共和国广告法",
+                "text": f"第十一条 {excerpt} 第十二条",
+            },
+        }]
+        bound = bind_exact_evidence_candidates(
+            {"status": "partial", "findings": [], "sources": []},
+            trace,
+            retrieved_at="2026-08-01T01:00:00+08:00",
+        )
+        normalized = normalize_research_result(bound)
+        self.assertEqual(normalized["local_evidence_binding"]["added_count"], 1)
+        self.assertEqual(normalized["evidence_review"]["script_eligible_count"], 1)
+        candidate = normalized["findings"][0]
+        self.assertEqual(candidate["evidence"][0]["excerpt"], excerpt)
+        self.assertEqual(candidate["binding_method"], "exact_tool_excerpt")
+        self.assertIn("不能只写一个好看的百分比", candidate["review_summary"])
+        self.assertIn("不能仅凭", candidate["prohibited_use"])
+        self.assertNotIn("human_verified", json.dumps(candidate, ensure_ascii=False))
+        self.assertNotIn("reviewer", candidate)
+
+    def test_seed_source_prefetch_preserves_exact_evidence_when_budget_is_exhausted(self):
+        excerpt = "广告使用数据、统计资料、调查结果、文摘、引用语等引证内容的，应当真实、准确，并表明出处。引证内容有适用范围和有效期限的，应当明确表示。"
+
+        def law_extract(url, output_dir):
+            return {
+                "status": "complete",
+                "source": {"final_url": url, "title": "中华人民共和国广告法"},
+                "content": {"text": f"第十一条 {excerpt} 第十二条", "text_chars": len(excerpt) + 12},
+                "attempts": [{"route": "fake", "status": "complete"}],
+                "warnings": [],
+            }
+
+        with tempfile.TemporaryDirectory() as folder:
+            registry = TrustedWebToolRegistry(
+                Path(folder),
+                extractor=law_extract,
+                seed_urls=["https://www.samr.gov.cn/law"],
+            )
+            result = WebResearchAgent(ExhaustedProvider(), registry).run(
+                "除醛数据为什么要看检测条件",
+                "新房家庭",
+                ["https://www.samr.gov.cn/law"],
+            )
+        self.assertEqual(result["tool_trace"][0]["tool"], "extract_url")
+        self.assertEqual(result["evidence_review"]["script_eligible_count"], 1)
+        self.assertIn("预算已耗尽", result["evidence_gaps"][0])
 
     def test_off_topic_search_is_reanchored_to_the_selected_topic(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -271,7 +395,7 @@ class OrchestratorTests(unittest.TestCase):
             job = jobs.create(plan)
             self.assertEqual(job["status"], "planned")
             job = jobs.approve(job["id"])
-            self.assertEqual(job["status"], "approved")
+            self.assertEqual(job["status"], "authorized")
             job = jobs.run_safe(job["id"])
             self.assertEqual(job["status"], "needs_attention")
             event_file = Path(folder) / "jobs" / job["id"] / "events.jsonl"
@@ -281,19 +405,17 @@ class OrchestratorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             plan = local_fallback_plan("做一条视频", [])
             jobs = JobStore(Path(folder))
-            job = jobs.create(plan, production_input={"topic": "demo"})
+            job = jobs.create(plan, production_input={"topic": "气味小就代表甲醛少吗？"})
             jobs.approve(job["id"])
-            updated = jobs.update_script(job["id"], DEFAULT_SCRIPT)
-            self.assertEqual(updated["status"], "approved")
-            script_path = Path(folder) / "jobs" / job["id"] / "approved_script.json"
-            self.assertEqual(json.loads(script_path.read_text(encoding="utf-8"))["script"], DEFAULT_SCRIPT)
+            with self.assertRaises(Exception):
+                jobs.update_script(job["id"], DEFAULT_SCRIPT, review_script(DEFAULT_SCRIPT), {"estimated_seconds": 50})
 
 
 class ProductionTests(unittest.TestCase):
     def test_default_script_requires_human_review_but_is_not_blocked(self):
         result = review_script(DEFAULT_SCRIPT)
         self.assertFalse(result["blocked"])
-        self.assertEqual(result["status"], "human_review_required")
+        self.assertEqual(result["status"], "needs_human")
         self.assertEqual(len(result["conditions_present"]), 6)
 
     def test_dangerous_claim_is_blocked(self):

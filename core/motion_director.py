@@ -232,9 +232,10 @@ def build_motion_project(project_dir: Path, plan: dict[str, Any], voice_path: Pa
                 "private": True,
                 "type": "module",
                 "scripts": {
-                    "check": "npx --yes hyperframes@0.7.62 check",
-                    "render": "npx --yes hyperframes@0.7.62 render",
+                    "check": "hyperframes check",
+                    "render": "hyperframes render",
                 },
+                "devDependencies": {"hyperframes": "0.7.86"},
             },
             ensure_ascii=False,
             indent=2,

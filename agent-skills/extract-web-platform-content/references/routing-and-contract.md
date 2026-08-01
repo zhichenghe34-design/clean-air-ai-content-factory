@@ -5,7 +5,7 @@
 - `complete`: requested body, transcript or platform record was extracted.
 - `partial`: useful metadata or text exists, but media/transcript coverage is incomplete.
 - `adapter_missing`: the requested safe route exists, but its optional Playwright or media-parser adapter is not installed/configured.
-- `auth_required`: a user-approved logged-in read-only browser is required.
+- Login/CAPTCHA/account-permission pages are outside the current adapter; return a manual next action without claiming a dedicated status implementation.
 - `blocked`: the target is private, unsafe, forbidden or outside the allowed policy.
 - `failed`: all installed safe routes failed and their actual errors are recorded.
 - `planned`: dry-run result; no network or local parser was called.

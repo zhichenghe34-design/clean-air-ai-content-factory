@@ -17,6 +17,25 @@ SPEC.loader.exec_module(EXTRACT)
 
 
 class ExtractionSkillTests(unittest.TestCase):
+    def test_parser_config_is_allowlisted_and_secret_free(self) -> None:
+        config = EXTRACT.build_isolated_parser_config(
+            {
+                "enable_asr": True,
+                "whisper_model": "tiny",
+                "api_key": "should-never-leave-source-config",
+                "cookie": "private-cookie",
+                "authorization": "Bearer private",
+                "unknown_field": "ignored",
+            },
+            Path("input"),
+            Path("output"),
+        )
+        rendered = str(config).lower()
+        self.assertTrue(config["enable_asr"])
+        self.assertEqual(config["whisper_model"], "tiny")
+        for marker in ("api_key", "cookie", "authorization", "private"):
+            self.assertNotIn(marker, rendered)
+
     def test_platform_routes_upgrade_instead_of_stopping(self) -> None:
         routes = EXTRACT.planned_routes("https://www.douyin.com/video/123")
         self.assertEqual(routes[0], "one_stop_media_parser")
@@ -28,7 +47,10 @@ class ExtractionSkillTests(unittest.TestCase):
             EXTRACT.validate_public_url("http://127.0.0.1/private", resolve_dns=False)
 
     def test_proxy_fake_ip_is_allowed_only_for_domain_with_proxy(self) -> None:
-        answer = [(2, 1, 6, "", ("198.18.4.13", 443))]
+        answer = [
+            (2, 1, 6, "", ("198.18.4.13", 443)),
+            (23, 1, 6, "", ("fdfe:dcba:9876::2d2", 443, 0, 0)),
+        ]
         with patch.object(EXTRACT.socket, "getaddrinfo", return_value=answer), patch.object(
             EXTRACT.urllib.request, "getproxies", return_value={"https": "http://127.0.0.1:7890"}
         ):

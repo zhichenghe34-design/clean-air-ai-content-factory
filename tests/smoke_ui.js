@@ -11,7 +11,7 @@ const { chromium } = require('playwright');
   await page.goto(baseUrl, { waitUntil: 'networkidle' });
   const demoTopic = await page.locator('#demoTopic').inputValue();
   const demoButton = await page.locator('#createDemoBtn').innerText();
-  await page.screenshot({ path: 'runtime/ui-smoke.png', fullPage: true });
+  await page.screenshot({ path: process.env.UI_SMOKE_OUTPUT || 'runtime/ui-smoke.png', fullPage: true });
   await page.locator('[data-view="catalog"]').click();
   await page.locator('#view-catalog.active').waitFor();
   await page.screenshot({ path: 'runtime/catalog-smoke.png', fullPage: true });

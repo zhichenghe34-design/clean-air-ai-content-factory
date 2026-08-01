@@ -10,6 +10,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -29,6 +30,13 @@ PLATFORM_HOSTS = {
     "x": ("x.com", "twitter.com"),
     "tiktok": ("tiktok.com",),
 }
+PARSER_CONFIG_ALLOWLIST = {
+    "ffmpeg_path", "ffprobe_path", "frame_sample_fps", "enable_ocr", "enable_asr",
+    "ocr_engine", "asr_engine", "whisper_model", "whisper_device", "allow_cpu_fallback",
+    "cuda_dll_dirs", "audio_language", "save_frames", "delete_temp_audio",
+    "dedupe_similarity", "min_text_length", "video_extensions", "audio_extensions", "image_extensions",
+}
+SENSITIVE_CONFIG_MARKERS = ("key", "token", "secret", "password", "cookie", "authorization")
 
 
 class ExtractionError(RuntimeError):
@@ -102,11 +110,18 @@ def validate_public_url(url: str, *, resolve_dns: bool = True) -> urllib.parse.S
                 addresses.update(item[4][0] for item in socket.getaddrinfo(host, parsed.port or default_port))
             except OSError as exc:
                 raise ExtractionError(f"DNS resolution failed: {exc}") from exc
-    proxy_fake_network = ipaddress.ip_network("198.18.0.0/15")
+    proxy_fake_networks = (
+        ipaddress.ip_network("198.18.0.0/15"),
+        ipaddress.ip_network("fdfe:dcba:9876::/48"),
+    )
     proxy_is_configured = bool(urllib.request.getproxies())
     for value in addresses:
         ip = ipaddress.ip_address(value)
-        if not host_is_literal and proxy_is_configured and ip in proxy_fake_network:
+        if (
+            not host_is_literal
+            and proxy_is_configured
+            and any(ip.version == network.version and ip in network for network in proxy_fake_networks)
+        ):
             continue
         if not ip.is_global:
             raise ExtractionError(f"private or non-global target is blocked: {ip}")
@@ -199,6 +214,17 @@ def parser_python(root: Path) -> Path:
     return candidate if candidate.is_file() else Path(sys.executable)
 
 
+def build_isolated_parser_config(source: dict[str, Any], input_dir: Path, output_dir: Path) -> dict[str, Any]:
+    if not isinstance(source, dict):
+        raise ExtractionError("media parser config must be a JSON object")
+    safe: dict[str, Any] = {}
+    for key in PARSER_CONFIG_ALLOWLIST:
+        if key in source and not any(marker in key.lower() for marker in SENSITIVE_CONFIG_MARKERS):
+            safe[key] = source[key]
+    safe.update({"input_dir": str(input_dir), "output_dir": str(output_dir)})
+    return safe
+
+
 def run_media_parser(url: str, output: Path, root: Path, analyze_media: bool) -> dict[str, Any]:
     media_dir = output / "media"
     media_dir.mkdir(parents=True, exist_ok=True)
@@ -221,19 +247,24 @@ def run_media_parser(url: str, output: Path, root: Path, analyze_media: bool) ->
         base_config_path = root / "config.json"
         if not base_config_path.is_file():
             base_config_path = root / "config.example.json"
-        config = json.loads(base_config_path.read_text(encoding="utf-8"))
+        source_config = json.loads(base_config_path.read_text(encoding="utf-8"))
         analysis_root = output / "analysis"
-        config.update({"input_dir": str(media_dir), "output_dir": str(analysis_root)})
-        isolated_config = output / "parser-config.json"
-        isolated_config.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-        analysis = subprocess.run(
-            [str(parser_python(root)), str(root / "src" / "main.py"), "--config", str(isolated_config)],
-            cwd=root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=3600,
-        )
+        config = build_isolated_parser_config(source_config, media_dir, analysis_root)
+        handle, isolated_name = tempfile.mkstemp(prefix="shiyi-parser-", suffix=".json")
+        os.close(handle)
+        isolated_config = Path(isolated_name)
+        try:
+            isolated_config.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+            analysis = subprocess.run(
+                [str(parser_python(root)), str(root / "src" / "main.py"), "--config", str(isolated_config)],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
+        finally:
+            isolated_config.unlink(missing_ok=True)
         if analysis.returncode:
             analysis_error = (analysis.stderr or analysis.stdout or "media analysis failed")[-1200:]
         else:
@@ -358,7 +389,7 @@ def main() -> int:
         destination = output / "extraction.json"
         destination.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(destination)
-        return 0 if result["status"] in {"complete", "partial", "planned", "auth_required", "adapter_missing"} else 2
+        return 0 if result["status"] in {"complete", "partial", "planned", "adapter_missing"} else 2
     except Exception as exc:
         output.mkdir(parents=True, exist_ok=True)
         failure = {"schema_version": SCHEMA_VERSION, "status": "blocked", "error": str(exc), "source": {"url": args.url}, "attempts": []}
