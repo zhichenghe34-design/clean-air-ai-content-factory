@@ -15,4 +15,6 @@
 *.pdf binary
 *.mp4 binary
 *.wav binary
+*.ttf binary
+*.otf binary
 evidence/** binary
