@@ -6,6 +6,7 @@ import json
 import sys
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 
 from reportlab import rl_config
@@ -95,7 +96,10 @@ def bullet(text: str, body: ParagraphStyle) -> Paragraph:
 
 
 def fit_image(path: Path, max_width: float, max_height: float) -> Image:
-    image = Image(str(path))
+    # A filename becomes part of ReportLab's XObject identifier.  Supplying a
+    # byte stream makes that identifier content-based, so the same checkout
+    # builds the same PDF from an ASCII or non-ASCII workspace path.
+    image = Image(BytesIO(path.read_bytes()))
     scale = min(max_width / image.imageWidth, max_height / image.imageHeight)
     image.drawWidth = image.imageWidth * scale
     image.drawHeight = image.imageHeight * scale
