@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from verify_release_bundle import (
@@ -13,6 +14,11 @@ from verify_release_bundle import (
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     repo = Path(__file__).resolve().parents[1]
     errors: list[str] = []
     old_demo = repo / "media" / "console-demo.mp4"
