@@ -42,12 +42,12 @@ jobs:
       - name: Check frontend JavaScript and dependency audit
         run: |
           npm run check:js
-          npm audit --audit-level=high
+          npm audit --audit-level=low
 
       - name: Validate release text and proposal consistency
         run: |
           python tools/scan_release.py
-          python tools/check_submission_consistency.py
+          python tools/check_submission_consistency.py --check-rebuild
 
       - name: Start local console and run Playwright smoke
         shell: pwsh
@@ -58,6 +58,7 @@ jobs:
               try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/status | Out-Null; break } catch { Start-Sleep -Milliseconds 500 }
             }
             npm run test:smoke
+            npm run test:flow
           } finally {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
           }
@@ -67,7 +68,5 @@ jobs:
         shell: pwsh
         run: |
           choco install ffmpeg -y --no-progress
-          $videos = Get-ChildItem media -Filter *.mp4
-          foreach ($video in $videos) {
-            ffprobe -v error -show_entries stream=codec_name,width,height -show_entries format=duration -of json $video.FullName | ConvertFrom-Json | Out-Null
-          }
+          python tools/verify_public_evidence.py evidence/v2-real-deepseek-20260801-022153
+          python tools/verify_committed_media.py

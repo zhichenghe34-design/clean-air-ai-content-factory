@@ -11,7 +11,7 @@ from core.catalog import CatalogError, PackageCatalog
 from core.discovery import ProjectDiscovery
 from core.motion_director import MotionPlanError, build_motion_plan, build_motion_project, derive_motion_segments, validate_motion_plan
 from core.orchestrator import JobStore, local_fallback_plan
-from core.provider import OpenAICompatibleProvider, ProviderError
+from core.provider import BudgetLedger, OpenAICompatibleProvider, ProviderError
 from core.production import DEFAULT_SCRIPT, ProductionRunner, review_script
 from core.web_agent import WebResearchAgent, bind_exact_evidence_candidates, normalize_research_result
 from core.web_tools import TrustedWebToolRegistry
@@ -106,13 +106,130 @@ class ProviderTests(unittest.TestCase):
 
         def fake_send(request):
             captured.update(json.loads(request.data.decode("utf-8")))
-            return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": []}}]}
+            return {"choices": [{"message": {"role": "assistant", "content": "研究完成", "tool_calls": []}}]}
 
         provider._send = fake_send
         result = provider.chat_with_tools([{"role": "user", "content": "test"}], [])
         self.assertEqual(result["role"], "assistant")
         self.assertEqual(captured["tool_choice"], "auto")
         self.assertNotIn("response_format", captured)
+
+    def test_topic_suggestions_are_planning_and_do_not_consume_job_budget(self):
+        ledger = BudgetLedger(limit=7)
+        provider = OpenAICompatibleProvider(
+            {"base_url": "https://api.deepseek.com", "model": "deepseek-v4-flash"},
+            "test-only-key",
+            budget=ledger,
+        )
+        observed = {"stages": []}
+
+        def fake_send(request):
+            observed["count_budget"] = provider._count_budget
+            observed["stages"].append((provider._request_stage, provider._count_budget))
+            if provider._request_stage == "planner":
+                return {"choices": [{"message": {"content": json.dumps({
+                    "goal": "甲醛科普视频",
+                    "summary": "安全测试计划",
+                    "steps": [],
+                    "missing": [],
+                    "estimated_cost_level": "low",
+                }, ensure_ascii=False)}}]}
+            return {"choices": [{"message": {"content": json.dumps({"candidates": [
+                {"title": "通风后没有气味，甲醛就安全了吗？", "reason": "误区切入。", "audience": "新房家庭"},
+                {"title": "除醛率为什么要看检测条件？", "reason": "证据切入。", "audience": "新房家庭"},
+                {"title": "检测报告应该先看哪些信息？", "reason": "报告切入。", "audience": "新房家庭"},
+            ]}, ensure_ascii=False)}}]}
+
+        provider._send = fake_send
+        result = provider.suggest_topics("做一条新房除甲醛科普视频")
+        self.assertEqual(len(result), 3)
+        provider.plan("规划一条甲醛科普视频", [])
+        self.assertTrue(observed["count_budget"])
+        self.assertEqual(observed["stages"], [("topic_suggestion", True), ("planner", True)])
+        # This ledger is independent from every future production job. The
+        # fake transport bypasses _send's begin/finish accounting here; the API
+        # regression covers the real session-ledger lifecycle.
+        self.assertEqual(ledger.snapshot()["attempted"], 0)
+
+        semantic_ledger = BudgetLedger(limit=3)
+        provider.budget = semantic_ledger
+        malformed_responses = iter([
+            {"choices": []},
+            {"choices": [{"message": {"content": "not json"}}]},
+            {"choices": [{"message": {"content": "{}"}}]},
+        ])
+
+        def fake_semantic_send(request):
+            token = semantic_ledger.begin(provider._request_stage)
+            provider._last_budget_token = token
+            semantic_ledger.finish(token, ok=True)
+            return next(malformed_responses)
+
+        provider._send = fake_semantic_send
+        for _ in range(3):
+            with self.assertRaises(ProviderError):
+                provider.suggest_topics("做一条新房除甲醛科普视频")
+        semantic = semantic_ledger.snapshot()
+        self.assertEqual(semantic["attempted"], 3)
+        self.assertEqual(semantic["succeeded"], 0)
+        self.assertEqual(semantic["failed"], 3)
+        self.assertEqual(
+            [item["error_type"] for item in semantic["events"]],
+            ["missing_message", "invalid_structured_output", "invalid_topic_schema"],
+        )
+
+        structured_ledger = BudgetLedger(limit=7)
+        provider.budget = structured_ledger
+
+        def fake_incomplete_schema(request):
+            token = structured_ledger.begin(provider._request_stage)
+            provider._last_budget_token = token
+            structured_ledger.finish(token, ok=True)
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+        provider._send = fake_incomplete_schema
+        structured_calls = (
+            lambda: provider.generate_content_scripts({}, {}),
+            lambda: provider.review_content_script("测试脚本", {}),
+            lambda: provider.repair_content_script("测试脚本", {}, {}),
+            lambda: provider.summarize_research("甲醛", "新房家庭", []),
+            lambda: provider.adversarial_review_research([
+                {"audit_id": "audit-1", "claim": "测试主张"},
+            ]),
+        )
+        for call in structured_calls:
+            with self.assertRaises(ProviderError):
+                call()
+        structured = structured_ledger.snapshot()
+        self.assertEqual(structured["attempted"], 5)
+        self.assertEqual(structured["succeeded"], 0)
+        self.assertEqual(structured["failed"], 5)
+        self.assertEqual(
+            [item["error_type"] for item in structured["events"]],
+            [
+                "invalid_script_schema",
+                "invalid_compliance_schema",
+                "invalid_repair_schema",
+                "invalid_research_schema",
+                "invalid_adversarial_schema",
+            ],
+        )
+
+        message_ledger = BudgetLedger(limit=1)
+        provider.budget = message_ledger
+
+        def fake_empty_message(request):
+            token = message_ledger.begin(provider._request_stage)
+            provider._last_budget_token = token
+            message_ledger.finish(token, ok=True)
+            return {"choices": [{"message": {}}]}
+
+        provider._send = fake_empty_message
+        with self.assertRaises(ProviderError):
+            provider.chat_with_tools([{"role": "user", "content": "测试"}], [])
+        message = message_ledger.snapshot()
+        self.assertEqual((message["attempted"], message["succeeded"], message["failed"]), (1, 0, 1))
+        self.assertEqual(message["events"][0]["error_type"], "invalid_message_schema")
 
 
 class FakeSearchProvider:

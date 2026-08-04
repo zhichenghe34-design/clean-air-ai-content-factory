@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .env
 runtime/
+tmp/
 *.log
 examples/**/voice.wav
 node_modules/

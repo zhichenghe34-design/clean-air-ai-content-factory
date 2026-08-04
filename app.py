@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import secrets
@@ -16,7 +17,15 @@ from urllib.parse import urlparse
 from core.catalog import HardwareProbe, PackageCatalog
 from core.config import ConfigStore
 from core.discovery import ProjectDiscovery
-from core.orchestrator import JobStore, UnprocessableError, WorkflowError, local_fallback_plan
+from core.orchestrator import (
+    IDEMPOTENCY_RE,
+    JobStore,
+    UnprocessableError,
+    WorkflowError,
+    local_fallback_plan,
+    topic_in_scope,
+    validate_topic_input,
+)
 from core.production import DEFAULT_INPUT, ProductionRunner, estimate_narration_duration, review_script
 from core.provider import BudgetLedger, OpenAICompatibleProvider, ProviderError
 
@@ -36,6 +45,152 @@ state_lock = threading.Lock()
 SESSION_COOKIE = "shiyi_session"
 SESSION_ID = secrets.token_urlsafe(32)
 CSRF_TOKEN = secrets.token_urlsafe(32)
+provider_session_state = {"verified_signature": None, "verified_at": None, "revision": 0}
+pretask_provider_budget = BudgetLedger(limit=3)
+agent_create_replays: dict[str, dict[str, str]] = {}
+
+SAFE_TOPIC_POOL = [
+    {
+        "title": "通风后没有气味，室内空气就安全了吗？",
+        "reason": "从常见误区切入，适合新房家庭。",
+        "audience": "新房家庭",
+    },
+    {
+        "title": "99%除醛率，到底应该看哪些检测条件？",
+        "reason": "数字有冲突感，也能自然引出证据核验。",
+        "audience": "关注除醛产品的家庭",
+    },
+    {
+        "title": "入住前看检测报告，最容易漏掉哪三项？",
+        "reason": "实用清单型，便于收藏和转发。",
+        "audience": "准备入住的新房家庭",
+    },
+    {
+        "title": "测醛前为什么要先确认封闭时间和检测方法？",
+        "reason": "从检测流程入手，避免只看一个数字。",
+        "audience": "准备做室内检测的家庭",
+    },
+    {
+        "title": "新房通风多久才够，为什么不能只凭气味判断？",
+        "reason": "把高频疑问拆成可以公开核验的问题。",
+        "audience": "装修后的新房家庭",
+    },
+    {
+        "title": "同一份除醛数据，为什么不能直接套到真实房间？",
+        "reason": "解释实验条件与真实使用场景的差异。",
+        "audience": "正在比较除醛方案的家庭",
+    },
+    {
+        "title": "室内空气检测报告里，哪些信息决定结论能不能用？",
+        "reason": "用报告阅读框架代替简单下结论。",
+        "audience": "看不懂检测报告的家庭",
+    },
+    {
+        "title": "治理完成就入住的说法，还缺哪些公开证据？",
+        "reason": "以反向举证检查高风险承诺。",
+        "audience": "急于入住的新房家庭",
+    },
+    {
+        "title": "装修污染只测甲醛够不够，检测范围应该怎么看？",
+        "reason": "从检测范围切入，避免把单项结果当成全部。",
+        "audience": "关注室内空气的新房家庭",
+    },
+    {
+        "title": "便携测醛仪的数字，为什么不能直接当检测结论？",
+        "reason": "区分日常观察工具与正式检测结论。",
+        "audience": "正在自行测醛的家庭",
+    },
+    {
+        "title": "开窗测和关窗测差很多，应该先核对什么？",
+        "reason": "用场景差异解释检测条件的重要性。",
+        "audience": "准备复测室内空气的家庭",
+    },
+    {
+        "title": "除醛产品写着高去除率，报告里还要找哪些前提？",
+        "reason": "帮助用户把宣传数字放回实验条件中理解。",
+        "audience": "正在选购除醛产品的家庭",
+    },
+    {
+        "title": "家具进场前后，为什么室内空气结果可能不同？",
+        "reason": "从污染源变化切入，避免一次检测代表全部阶段。",
+        "audience": "正在装修或添置家具的家庭",
+    },
+    {
+        "title": "检测报告有合格结论，就能忽略采样过程吗？",
+        "reason": "引导用户同时核对结论和采样条件。",
+        "audience": "收到检测报告的新房家庭",
+    },
+    {
+        "title": "闻不到装修味之后，为什么还要看检测依据？",
+        "reason": "把嗅觉判断与可核验检测分开。",
+        "audience": "准备入住的新房家庭",
+    },
+    {
+        "title": "治理前后对比数据，怎样判断比较条件是否一致？",
+        "reason": "聚焦前后对比最容易忽略的变量控制。",
+        "audience": "正在验收治理效果的家庭",
+    },
+    {
+        "title": "一张实验室报告，能不能证明整套房的实际效果？",
+        "reason": "解释样品测试与真实空间之间的证据边界。",
+        "audience": "正在比较治理服务的家庭",
+    },
+    {
+        "title": "甲醛检测数值接近限值时，应该怎样读结果？",
+        "reason": "从临界数值切入，提醒关注方法与不确定性。",
+        "audience": "拿到临界检测结果的家庭",
+    },
+    {
+        "title": "夏天和冬天测出的室内空气数据为什么会变化？",
+        "reason": "用环境条件说明单次结果的适用范围。",
+        "audience": "计划跨季节复测的家庭",
+    },
+    {
+        "title": "儿童房检测时，哪些采样信息值得单独记录？",
+        "reason": "给关注儿童房的家庭一份可核验的信息清单。",
+        "audience": "关注儿童房空气的家庭",
+    },
+    {
+        "title": "通风、净化和治理数据，为什么不能混成一个结论？",
+        "reason": "拆分不同措施的证据，避免把相关性当成功效。",
+        "audience": "正在组合改善方案的家庭",
+    },
+    {
+        "title": "检测机构和产品商家给出不同结果时先看什么？",
+        "reason": "提供核对方法、时间和条件的比较框架。",
+        "audience": "遇到检测争议的家庭",
+    },
+    {
+        "title": "新房复测为什么要保留时间、温度和通风记录？",
+        "reason": "把复测变成条件可比的过程，而不是只比数字。",
+        "audience": "准备多次检测的新房家庭",
+    },
+    {
+        "title": "检测报告里的检出限和单位，为什么不能跳过？",
+        "reason": "从基础字段入手，降低误读具体数值的风险。",
+        "audience": "第一次阅读检测报告的家庭",
+    },
+    {
+        "title": "网传除醛小妙招，怎样用公开证据逐条核对？",
+        "reason": "用反向举证框架审视高传播但来源不明的方法。",
+        "audience": "正在搜索除醛方法的家庭",
+    },
+    {
+        "title": "治理服务承诺多久见效，哪些条件必须先问清？",
+        "reason": "把时间承诺拆成可验证的服务条件。",
+        "audience": "准备购买治理服务的家庭",
+    },
+    {
+        "title": "入住计划很赶时，室内空气判断应该保留哪些底线？",
+        "reason": "用审慎决策框架替代未经证实的入住保证。",
+        "audience": "临近入住的新房家庭",
+    },
+]
+UNSAFE_TOPIC_PHRASES = ("绝对安全", "完全去除", "彻底去除", "零甲醛", "立即入住", "母婴零风险")
+BLOCKED_GOAL_PHRASES = (
+    "忽略前面", "忽略以上", "忽略之前", "忽略所有指令", "系统提示词", "开发者指令", "越狱提示",
+    "勒索软件", "恶意软件", "木马程序", "窃取密码", "钓鱼网站", "攻击服务器", "绕过安全限制",
+)
 
 
 def load_discovery_cache() -> dict:
@@ -54,6 +209,68 @@ def load_discovery_cache() -> dict:
 
 
 app_state = load_discovery_cache()
+
+
+def provider_snapshot_signature(provider: dict, api_key: str) -> str | None:
+    """Fingerprint an immutable provider snapshot without retaining its Key."""
+    if not api_key:
+        return None
+    payload = json.dumps(
+        {
+            "base_url": provider.get("base_url", ""),
+            "model": provider.get("model", ""),
+            "api_key_sha256": hashlib.sha256(api_key.encode("utf-8")).hexdigest(),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def provider_configuration_signature() -> str | None:
+    return provider_snapshot_signature(config_store.load()["provider"], config_store.get_api_key())
+
+
+def provider_test_snapshot() -> tuple[OpenAICompatibleProvider, str | None, int]:
+    with state_lock:
+        revision = int(provider_session_state["revision"])
+        provider_config = dict(config_store.load()["provider"])
+        api_key = config_store.get_api_key()
+    return (
+        OpenAICompatibleProvider(provider_config, api_key),
+        provider_snapshot_signature(provider_config, api_key),
+        revision,
+    )
+
+
+def mark_provider_connection_verified(signature: str | None, revision: int) -> str | None:
+    if not signature:
+        raise ProviderError("尚未填写 API Key，也未设置对应环境变量")
+    verified_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    with state_lock:
+        if (
+            int(provider_session_state["revision"]) != int(revision)
+            or provider_configuration_signature() != signature
+        ):
+            return None
+        provider_session_state["verified_signature"] = signature
+        provider_session_state["verified_at"] = verified_at
+    return verified_at
+
+
+def clear_provider_connection_verified() -> None:
+    with state_lock:
+        provider_session_state["verified_signature"] = None
+        provider_session_state["verified_at"] = None
+
+
+def invalidate_provider_configuration() -> None:
+    """Clear verification and advance the generation before any Provider save."""
+    with state_lock:
+        provider_session_state["revision"] = int(provider_session_state["revision"]) + 1
+        provider_session_state["verified_signature"] = None
+        provider_session_state["verified_at"] = None
 
 
 class AppHandler(BaseHTTPRequestHandler):
@@ -122,11 +339,27 @@ class AppHandler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             body = self.read_json()
             if path == "/api/config":
+                if "provider" in body:
+                    invalidate_provider_configuration()
                 self.json_response(config_store.save(body))
             elif path == "/api/discover":
                 self.json_response(self._discover(body))
             elif path == "/api/provider/test":
-                self.json_response(self._provider().test_connection())
+                clear_provider_connection_verified()
+                provider, tested_signature, tested_revision = provider_test_snapshot()
+                result = provider.test_connection()
+                if result.get("ok") is not True:
+                    raise ProviderError("Provider连通性测试没有返回成功状态")
+                verified_at = mark_provider_connection_verified(tested_signature, tested_revision)
+                if verified_at is None:
+                    error = WorkflowError("Provider配置在连接测试期间发生变化，请重新测试")
+                    error.status, error.code = 409, "provider_config_changed"
+                    raise error
+                result["connection_verified"] = True
+                result["verified_at"] = verified_at
+                self.json_response(result)
+            elif path == "/api/agent/topics":
+                self.json_response(self._suggest_topics(body))
             elif path == "/api/agent/plan":
                 self.json_response(self._plan(body))
             elif path == "/api/jobs":
@@ -135,18 +368,8 @@ class AppHandler(BaseHTTPRequestHandler):
                     raise UnprocessableError("缺少有效计划")
                 self.json_response(job_store.create(plan, production_input=body.get("production_input")), HTTPStatus.CREATED)
             elif path == "/api/demo-job":
-                supplied = body.get("production_input") or {}
-                if not isinstance(supplied, dict):
-                    raise UnprocessableError("production_input必须是JSON对象")
-                production_input = dict(DEFAULT_INPUT)
-                production_input.update(supplied)
-                plan = local_fallback_plan(f"制作样片：{production_input['topic']}", [])
-                for step in plan["steps"]:
-                    if step.get("capability") != "human_refinement":
-                        step["tool_id"] = "trusted-local-production-adapter"
-                        step["risk"] = "固定路径本地适配器，仍需人工批准"
-                plan["summary"] = "v2分阶段样片：研究、证据人工审定、脚本合规放行、配音与成片。"
-                self.json_response(job_store.create(plan, production_input=production_input), HTTPStatus.CREATED)
+                job, replayed = self._create_demo_job(body)
+                self.json_response(job, HTTPStatus.OK if replayed else HTTPStatus.CREATED)
             elif path.startswith("/api/jobs/") and path.endswith("/approve"):
                 self.json_response(job_store.approve(path.split("/")[3]))
             elif path.startswith("/api/jobs/") and path.endswith("/approvals/research"):
@@ -192,8 +415,15 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def _status(self) -> dict:
         config = config_store.public_config()
+        provider_configured = bool(config["provider"]["has_api_key"])
+        provider_signature = provider_configuration_signature()
         with state_lock:
             tools = list(app_state["tools"])
+            provider_connection_verified = bool(
+                provider_signature
+                and provider_session_state["verified_signature"] == provider_signature
+            )
+            provider_verified_at = provider_session_state["verified_at"] if provider_connection_verified else None
         catalog = package_catalog.load()
         discovered_capabilities = {cap for tool in tools for cap in tool.get("capabilities", [])}
         bundled_capabilities = {
@@ -209,7 +439,15 @@ class AppHandler(BaseHTTPRequestHandler):
             "time": datetime.now().astimezone().isoformat(timespec="seconds"),
             "provider": config["provider"]["name"],
             "model": config["provider"]["model"],
-            "provider_ready": config["provider"]["has_api_key"],
+            # provider_ready is retained for older clients and means that a Key
+            # is available, not that a network connection has been verified.
+            "provider_ready": provider_configured,
+            "provider_configured": provider_configured,
+            "provider_connection_verified": provider_connection_verified,
+            "provider_connection_verified_at": provider_verified_at,
+            "provider_state": (
+                "verified" if provider_connection_verified else "configured" if provider_configured else "unconfigured"
+            ),
             "tool_count": len(tools),
             "capabilities": sorted(discovered_capabilities | bundled_capabilities),
             "job_count": len(job_store.list()),
@@ -238,20 +476,190 @@ class AppHandler(BaseHTTPRequestHandler):
     def _provider(self, budget: BudgetLedger | None = None) -> OpenAICompatibleProvider:
         return OpenAICompatibleProvider(config_store.load()["provider"], config_store.get_api_key(), budget=budget)
 
+    def _create_demo_job(self, body: dict) -> tuple[dict, bool]:
+        supplied = {} if "production_input" not in body else body["production_input"]
+        if not isinstance(supplied, dict):
+            raise UnprocessableError("production_input必须是JSON对象")
+        production_input = dict(DEFAULT_INPUT)
+        production_input.update(supplied)
+        plan = local_fallback_plan(f"制作样片：{production_input['topic']}", [])
+        for step in plan["steps"]:
+            if step.get("capability") != "human_refinement":
+                step["tool_id"] = "trusted-local-production-adapter"
+                step["risk"] = "固定路径本地适配器，仍需人工批准"
+        plan["summary"] = "v2分阶段样片：研究、证据人工审定、脚本合规放行、配音与成片。"
+
+        request_key = self.headers.get("Idempotency-Key", "").strip()
+        if request_key and not IDEMPOTENCY_RE.fullmatch(request_key):
+            error = WorkflowError("Idempotency-Key格式无效")
+            error.status, error.code = 400, "invalid_idempotency_key"
+            raise error
+        fingerprint = hashlib.sha256(
+            json.dumps(production_input, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        with state_lock:
+            replay = agent_create_replays.get(request_key) if request_key else None
+            if replay:
+                if replay["fingerprint"] != fingerprint:
+                    error = WorkflowError("同一Idempotency-Key不能用于不同创建请求")
+                    error.status, error.code = 409, "idempotency_conflict"
+                    raise error
+                return job_store.get(replay["job_id"]), True
+            job = job_store.create(plan, production_input=production_input)
+            if request_key:
+                agent_create_replays[request_key] = {"fingerprint": fingerprint, "job_id": job["id"]}
+                while len(agent_create_replays) > 128:
+                    agent_create_replays.pop(next(iter(agent_create_replays)))
+            return job, False
+
+    @staticmethod
+    def _safe_topic_candidates(excluded: list[str], goal: str) -> list[dict]:
+        excluded_set = {item.strip() for item in excluded if isinstance(item, str) and item.strip()}
+        pool = [item for item in SAFE_TOPIC_POOL if item["title"] not in excluded_set]
+        # Keep the fallback deterministic for tests while changing the visible
+        # batch as the client accumulates exclusions.
+        offset = len(excluded_set) % len(pool)
+        ordered = pool[offset:] + pool[:offset]
+        return [dict(item) for item in ordered[:3]]
+
+    @staticmethod
+    def _validate_topic_goal(value: object) -> str:
+        if not isinstance(value, str):
+            raise UnprocessableError("goal必须是字符串")
+        goal = value.strip()
+        if not 4 <= len(goal) <= 200:
+            raise UnprocessableError("请用4到200字告诉Agent你想做什么")
+        if any(phrase in goal for phrase in BLOCKED_GOAL_PHRASES):
+            raise UnprocessableError("目标包含越域或指令注入内容，请只描述室内空气赛题需求")
+        if not topic_in_scope(goal):
+            raise UnprocessableError("当前Agent只处理甲醛、除醛与室内空气赛题")
+        return goal
+
+    @staticmethod
+    def _normalize_topic_candidates(raw: list[dict], excluded: list[str], goal: str) -> tuple[list[dict], bool]:
+        excluded_set = {item.strip() for item in excluded if isinstance(item, str) and item.strip()}
+        result: list[dict] = []
+        seen = set(excluded_set)
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "")).strip()
+            reason = str(item.get("reason", "")).strip()
+            audience = str(item.get("audience", "新房家庭")).strip() or "新房家庭"
+            if title in seen or any(phrase in title for phrase in UNSAFE_TOPIC_PHRASES):
+                continue
+            try:
+                validate_topic_input({"topic": title, "audience": audience, "target_duration_seconds": 52})
+            except UnprocessableError:
+                continue
+            if not 4 <= len(reason) <= 100:
+                continue
+            seen.add(title)
+            result.append({"title": title, "reason": reason, "audience": audience})
+            if len(result) == 3:
+                break
+        used_local_fallback = len(result) < 3
+        if used_local_fallback:
+            fallback = AppHandler._safe_topic_candidates(list(seen), goal)
+            for item in fallback:
+                if item["title"] in seen:
+                    continue
+                result.append(item)
+                seen.add(item["title"])
+                if len(result) == 3:
+                    break
+        return [dict(item, id=f"topic-{index + 1}") for index, item in enumerate(result)], used_local_fallback
+
+    def _suggest_topics(self, body: dict) -> dict:
+        goal = self._validate_topic_goal(body.get("goal"))
+        excluded = [] if "excluded_topics" not in body else body["excluded_topics"]
+        if not isinstance(excluded, list) or len(excluded) > 24:
+            raise UnprocessableError("excluded_topics必须是不超过24项的数组")
+        if any(not isinstance(item, str) for item in excluded):
+            raise UnprocessableError("excluded_topics每一项都必须是字符串")
+        excluded = [item.strip() for item in excluded if item.strip()]
+        if any(len(item) > 80 for item in excluded):
+            raise UnprocessableError("excluded_topics每一项最多80字")
+        raw: list[dict]
+        source = "deepseek"
+        notice = ""
+        if pretask_provider_budget.snapshot()["remaining"] <= 0:
+            raw = self._safe_topic_candidates(excluded, goal)
+            source = "local_safe_agent"
+            notice = "本机会话的预任务 Agent Provider 预算已耗尽，已只使用本地安全选题。"
+        else:
+            try:
+                raw = self._provider(pretask_provider_budget).suggest_topics(goal, excluded)
+            except ProviderError as exc:
+                raw = self._safe_topic_candidates(excluded, goal)
+                source = "local_safe_agent"
+                notice = f"DeepSeek本次未返回可用结果，已切换到本地安全选题：{exc}"
+        candidates, used_local_fallback = self._normalize_topic_candidates(raw, excluded, goal)
+        if source == "deepseek" and used_local_fallback:
+            source = "deepseek_filtered_with_local_fallback"
+            notice = "部分模型候选未通过安全校验，已用本地安全选题补足三个角度。"
+        if len(candidates) != 3:
+            raise WorkflowError("Agent暂时没有找到三个互不重复的安全角度，请稍后再试")
+        budget = pretask_provider_budget.snapshot()
+        source_label = {
+            "deepseek": "DeepSeek",
+            "deepseek_filtered_with_local_fallback": "DeepSeek与本地安全候选混合",
+            "local_safe_agent": "本地安全候选",
+        }[source]
+        budget_note = (
+            f"预任务 Agent Provider 请求 {budget['attempted']}/{budget['limit']}，"
+            f"剩余 {budget['remaining']}；来源：{source_label}"
+        )
+        notice = f"{notice.rstrip('。')}；{budget_note}。" if notice else f"{budget_note}。"
+        return {
+            "goal": goal,
+            "source": source,
+            "notice": notice,
+            "candidates": candidates,
+            "screening": f"已排除越域、夸大承诺和重复选题；公开依据将在研究阶段逐条核验；{budget_note}。",
+            # Keep the topic-specific public field used by the released UI and
+            # expose the shared name used by /api/agent/plan as well.
+            "topic_provider_budget": budget,
+            "pretask_provider_budget": budget,
+        }
+
     def _plan(self, body: dict) -> dict:
         goal = str(body.get("goal", "")).strip()
         if not goal:
             raise UnprocessableError("请先描述要完成的内容任务")
         with state_lock:
             tools = list(app_state["tools"])
-        try:
-            plan = self._provider().plan(goal, tools)
-            plan["planner"] = "api"
-            return {"plan": plan, "fallback": False}
-        except ProviderError as exc:
-            if config_store.get_api_key():
-                raise
-            return {"plan": local_fallback_plan(goal, tools), "fallback": True, "notice": str(exc)}
+        source = "deepseek"
+        fallback = False
+        notice = ""
+        if pretask_provider_budget.snapshot()["remaining"] <= 0:
+            plan = local_fallback_plan(goal, tools)
+            source = "local_safe_agent"
+            fallback = True
+            notice = "本机会话的预任务 Agent Provider 预算已耗尽，已只使用本地安全计划。"
+        else:
+            try:
+                plan = self._provider(pretask_provider_budget).plan(goal, tools)
+                plan["planner"] = "api"
+            except ProviderError as exc:
+                plan = local_fallback_plan(goal, tools)
+                source = "local_safe_agent"
+                fallback = True
+                notice = f"DeepSeek本次未返回可用计划，已切换到本地安全计划：{exc}"
+        budget = pretask_provider_budget.snapshot()
+        source_label = "DeepSeek" if source == "deepseek" else "本地安全计划"
+        budget_note = (
+            f"预任务 Agent Provider 请求 {budget['attempted']}/{budget['limit']}，"
+            f"剩余 {budget['remaining']}；来源：{source_label}"
+        )
+        notice = f"{notice.rstrip('。')}；{budget_note}。" if notice else f"{budget_note}。"
+        return {
+            "plan": plan,
+            "fallback": fallback,
+            "source": source,
+            "notice": notice,
+            "pretask_provider_budget": budget,
+        }
 
     def require_mutation_security(self) -> None:
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
