@@ -5,6 +5,22 @@
 [![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.14-3776AB)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
 [![CI](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/Release-v0.2.0-C8E35B)](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/releases/tag/v0.2.0)
+
+## Windows 一键体验
+
+不懂 Python、Node.js 或 FFmpeg，也可以直接使用已经封装并完成全新解压验证的 Windows 便携版：
+
+**[下载净界 AI 内容工厂 v0.2.0 Windows 便携版](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/releases/download/v0.2.0/%E5%87%80%E7%95%8CAI%E5%86%85%E5%AE%B9%E5%B7%A5%E5%8E%82_v2_Windows%E4%BE%BF%E6%90%BA%E7%89%88.zip)**
+
+下载后完整解压，双击 `启动净界AI内容工厂.bat`。软件只监听本机 `127.0.0.1`；包内不含 API Key、Cookie 或个人配置。
+
+- 版本：`v0.2.0`
+- ZIP 大小：475,324,040 字节（约 453.3 MiB）
+- SHA-256：`DB0F452831F6C9418B57B0BE99992D4120D3F79EEC37CB8F9DEE3B5754E97869`
+- 验收：74 项 Python 测试、npm audit 0 漏洞、封装 EXE HTTP、HyperFrames 运行时及 H.264/AAC 实编码均通过
+
+便携包中的 FFmpeg 为包含 `libx264` 的 GPLv3 构建，许可证和构建信息随包提供。仓库自身代码仍按 [MIT License](LICENSE) 发布；正式再分发便携包时请同时遵守其中第三方组件的许可证义务。
 
 ![Agent 三选一工作台](docs/assets/agent-workbench.png)
 
