@@ -11,7 +11,7 @@
 
 不懂 Python、Node.js 或 FFmpeg，也可以直接使用已经封装并完成全新解压验证的 Windows 便携版：
 
-**[下载净界 AI 内容工厂 v0.2.0 Windows 便携版](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/releases/download/v0.2.0/%E5%87%80%E7%95%8CAI%E5%86%85%E5%AE%B9%E5%B7%A5%E5%8E%82_v2_Windows%E4%BE%BF%E6%90%BA%E7%89%88.zip)**
+**[下载净界 AI 内容工厂 v0.2.0 Windows 便携版](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/releases/download/v0.2.0/ShiyiContentFactory-v0.2.0-Windows-x64.zip)**
 
 下载后完整解压，双击 `启动净界AI内容工厂.bat`。软件只监听本机 `127.0.0.1`；包内不含 API Key、Cookie 或个人配置。
 
