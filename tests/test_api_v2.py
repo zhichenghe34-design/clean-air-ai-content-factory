@@ -301,6 +301,170 @@ class ApiV2Tests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["rule"]["status"], "disabled")
 
+    def test_queued_explicit_kind_survives_restart_and_safe_boundary(self):
+        for correction_kind in ("evidence", "capability"):
+            with self.subTest(correction_kind=correction_kind):
+                pack = local_capability_pack("为本地餐饮门店制作一条新品介绍短视频")
+                status, _, body = self.request(
+                    "POST",
+                    "/api/demo-job",
+                    {"production_input": {"topic": "新品上市前先回答顾客最关心的三个问题", "audience": "到店顾客", "capability_pack": pack}},
+                    self.secure_headers(**{"Idempotency-Key": f"queued-kind-create-{correction_kind}"}),
+                )
+                self.assertEqual(status, 201)
+                job_id = json.loads(body)["id"]
+                raw, folder = app.job_store._load_v2(job_id)
+                raw["status"] = "research_running"
+                raw["approvals"] = {"research": {"status": "approved"}, "compliance": {"status": "approved"}}
+                app.job_store._write(folder / "job.json", raw)
+
+                status, _, body = self.request(
+                    "POST",
+                    "/api/agent/corrections",
+                    {
+                        "job_id": job_id,
+                        "message": "甲乙丙丁戊己",
+                        "kind": correction_kind,
+                        "scope": "project",
+                        "actor": "测试操作员",
+                        "mode": "interrupt",
+                    },
+                    self.secure_headers(**{"Idempotency-Key": f"queued-kind-record-{correction_kind}"}),
+                )
+                self.assertEqual(status, 201)
+                queued = json.loads(body)
+                if correction_kind == "evidence":
+                    self.assertTrue(queued["queued_for_next_stage"])
+                else:
+                    self.assertFalse(queued["queued_for_next_stage"])
+                    self.assertTrue(queued["requires_new_task"])
+                    self.assertIn("/api/agent/topics", queued["notice"])
+                self.assertEqual(queued["correction"]["kind"], correction_kind)
+
+                # Re-open the durable event log to cover a process exit after
+                # queueing and before the next safe boundary.
+                app.learning_store = LearningStore(app.RUNTIME_DIR)
+                raw, folder = app.job_store._load_v2(job_id)
+                raw["status"] = "awaiting_research_approval"
+                app.job_store._write(folder / "job.json", raw)
+                synced = app.AppHandler._sync_learning_rules(app.job_store.get(job_id))
+                if correction_kind == "evidence":
+                    self.assertEqual(synced["revision_required"]["kind"], correction_kind)
+                    self.assertEqual(synced["status"], "authorized")
+                    self.assertEqual(synced["approvals"], {"research": {"status": "pending"}, "compliance": {"status": "pending"}})
+                else:
+                    self.assertEqual(synced["status"], "awaiting_research_approval")
+                    self.assertNotIn("revision_required", synced)
+
+    def test_same_instruction_with_different_kinds_has_distinct_safe_boundary_rules(self):
+        pack = local_capability_pack("为本地餐饮门店制作一条新品介绍短视频")
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {"production_input": {"topic": "新品上市前先回答顾客最关心的三个问题", "audience": "到店顾客", "capability_pack": pack}},
+            self.secure_headers(**{"Idempotency-Key": "same-kind-identity-create"}),
+        )
+        self.assertEqual(status, 201)
+        job_id = json.loads(body)["id"]
+        message = "甲乙丙丁戊己"
+
+        status, _, body = self.request(
+            "POST",
+            "/api/agent/corrections",
+            {"job_id": job_id, "message": message, "kind": "content", "scope": "project", "actor": "测试操作员", "mode": "defer"},
+            self.secure_headers(**{"Idempotency-Key": "same-kind-content"}),
+        )
+        self.assertEqual(status, 201)
+        content = json.loads(body)["correction"]
+        self.assertEqual(app.job_store.get(job_id)["learning_rule_ids"], [content["rule_id"]])
+
+        raw, folder = app.job_store._load_v2(job_id)
+        raw["status"] = "research_running"
+        raw["approvals"] = {"research": {"status": "approved"}, "compliance": {"status": "approved"}}
+        app.job_store._write(folder / "job.json", raw)
+        status, _, body = self.request(
+            "POST",
+            "/api/agent/corrections",
+            {"job_id": job_id, "message": message, "kind": "evidence", "scope": "project", "actor": "测试操作员", "mode": "interrupt"},
+            self.secure_headers(**{"Idempotency-Key": "same-kind-evidence"}),
+        )
+        self.assertEqual(status, 201)
+        evidence = json.loads(body)["correction"]
+        self.assertTrue(json.loads(body)["queued_for_next_stage"])
+        self.assertNotEqual(content["rule_id"], evidence["rule_id"])
+
+        raw, folder = app.job_store._load_v2(job_id)
+        raw["status"] = "awaiting_research_approval"
+        app.job_store._write(folder / "job.json", raw)
+        synced = app.AppHandler._sync_learning_rules(app.job_store.get(job_id))
+        self.assertEqual(synced["revision_required"]["kind"], "evidence")
+        self.assertEqual(synced["approvals"], {"research": {"status": "pending"}, "compliance": {"status": "pending"}})
+
+        status, _, body = self.request(
+            "POST",
+            "/api/agent/corrections",
+            {"job_id": job_id, "message": message, "kind": "capability", "scope": "project", "actor": "测试操作员", "mode": "defer"},
+            self.secure_headers(**{"Idempotency-Key": "same-kind-capability"}),
+        )
+        self.assertEqual(status, 201)
+        capability = json.loads(body)["correction"]
+        self.assertNotIn(capability["rule_id"], {content["rule_id"], evidence["rule_id"]})
+        kinds = app.learning_store.correction_kinds_for_rules(app.learning_store.rules_for(pack["id"], job_id=job_id))
+        self.assertEqual(kinds[content["rule_id"]], ["content"])
+        self.assertEqual(kinds[evidence["rule_id"]], ["evidence"])
+        self.assertEqual(kinds[capability["rule_id"]], ["capability"])
+        self.assertEqual(
+            set(app.AppHandler._sync_learning_rules(app.job_store.get(job_id))["learning_rule_ids"]),
+            {content["rule_id"], evidence["rule_id"]},
+        )
+
+    def test_twenty_one_rule_sources_bind_without_rejection(self):
+        pack = local_capability_pack("为本地餐饮门店制作一条新品介绍短视频")
+        for _ in range(21):
+            app.learning_store.record_correction(
+                {"message": "以后不把促销口号写成事实结论", "scope": "project", "mode": "defer"},
+                pack,
+            )
+        rules = app.learning_store.rules_for(pack["id"])
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(len(rules[0]["source_event_ids"]), 21)
+
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {"production_input": {"topic": "新品上市前先回答顾客最关心的三个问题", "audience": "到店顾客", "capability_pack": pack}},
+            self.secure_headers(**{"Idempotency-Key": "twenty-one-source-create"}),
+        )
+        self.assertEqual(status, 201)
+        job = json.loads(body)
+        self.assertEqual(job["learning_rule_ids"], [rules[0]["rule_id"]])
+
+    def test_capability_correction_keeps_current_job_reachable_and_requires_new_topic(self):
+        pack = local_capability_pack("为本地餐饮门店制作一条新品介绍短视频")
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {"production_input": {"topic": "新品上市前先回答顾客最关心的三个问题", "audience": "到店顾客", "capability_pack": pack}},
+            self.secure_headers(**{"Idempotency-Key": "capability-revision-create"}),
+        )
+        self.assertEqual(status, 201)
+        job = json.loads(body)
+        status, _, body = self.request(
+            "POST",
+            "/api/agent/corrections",
+            {"job_id": job["id"], "message": "行业判断需要重新审查", "kind": "capability", "scope": "project", "actor": "测试操作员", "mode": "defer"},
+            self.secure_headers(**{"Idempotency-Key": "capability-boundary-record"}),
+        )
+        self.assertEqual(status, 201)
+        correction = json.loads(body)
+        self.assertFalse(correction["applied_to_current"])
+        self.assertTrue(correction["requires_new_task"])
+        self.assertIn("/api/agent/topics", correction["notice"])
+        self.assertEqual(app.job_store.get(job["id"])["status"], "planned")
+        status, _, body = self.request("POST", f"/api/jobs/{job['id']}/approve", {}, self.secure_headers())
+        self.assertEqual(status, 200)
+        self.assertEqual(app.job_store._next_stage(app.job_store.get(job["id"])), "research")
+
     def test_dynamic_pack_requires_a_separate_passed_counterevidence_review(self):
         goal = "为本地咖啡店制作新品介绍短视频"
         raw_pack = {

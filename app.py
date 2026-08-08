@@ -1072,25 +1072,36 @@ class AppHandler(BaseHTTPRequestHandler):
                 raise UnprocessableError("纠错关联的行业能力包与服务端版本不一致")
             pack = registered
         correction_kind = infer_correction_kind(str(body.get("message", "")), body.get("kind"))
-        learning_payload = {key: value for key, value in body.items() if key != "kind"}
+        learning_payload = dict(body)
+        learning_payload["kind"] = correction_kind
         correction = learning_store.record_correction(learning_payload, pack, job_id=job_id)
         rules = learning_store.rules_for(pack["id"], job_id=job_id)
         updated_job = None
         queued = False
+        requires_new_task = False
+        notice = None
         if job_id:
-            try:
-                updated_job = job_store.apply_learning_rules(
-                    job_id,
-                    rules,
-                    str(body.get("message", "")),
-                    correction_kind=correction_kind,
-                )
-            except ConflictError:
-                current = job_store.get(job_id)
-                if current.get("status") not in {"research_running", "content_running", "rendering"}:
-                    raise
-                # A blocking Provider call is not falsely reported as cancelled.
-                queued = True
+            if correction_kind == "capability":
+                # Packs are immutable and this v3 preview has no public rebind
+                # contract.  Persist the scoped rule for future topic creation,
+                # but never strand the current job in an unreachable revision
+                # state or pretend that its trusted snapshot changed.
+                requires_new_task = True
+                notice = "能力包不可变：本次纠错已安全记录为后续任务规则，当前任务继续使用原能力包；请通过 /api/agent/topics 重新生成候选并创建带新能力包的任务。"
+            else:
+                try:
+                    updated_job = job_store.apply_learning_rules(
+                        job_id,
+                        rules,
+                        str(body.get("message", "")),
+                        correction_kind=correction_kind,
+                    )
+                except ConflictError:
+                    current = job_store.get(job_id)
+                    if current.get("status") not in {"research_running", "content_running", "rendering"}:
+                        raise
+                    # A blocking Provider call is not falsely reported as cancelled.
+                    queued = True
         return {
             "correction": correction,
             "correction_kind": correction_kind,
@@ -1103,6 +1114,8 @@ class AppHandler(BaseHTTPRequestHandler):
             "queued_for_next_stage": queued,
             "interrupt_supported": False,
             "effective_mode": "defer" if queued else "applied_at_safe_boundary",
+            "requires_new_task": requires_new_task,
+            "notice": notice,
         }
 
     @staticmethod
@@ -1113,19 +1126,33 @@ class AppHandler(BaseHTTPRequestHandler):
         if not isinstance(pack, dict) or not pack.get("id"):
             return job
         rules = learning_store.rules_for(str(pack["id"]), job_id=str(job["id"]))
-        desired_ids = [str(item.get("rule_id", "")) for item in rules if item.get("rule_id")]
+        durable_kinds = learning_store.correction_kinds_for_rules(rules)
+        applicable_rules = [
+            item
+            for item in rules
+            if not (
+                "capability" in durable_kinds.get(str(item.get("rule_id", "")), [])
+                and "evidence" not in durable_kinds.get(str(item.get("rule_id", "")), [])
+            )
+        ]
+        desired_ids = [str(item.get("rule_id", "")) for item in applicable_rules if item.get("rule_id")]
         current_ids = [str(value) for value in job.get("learning_rule_ids", [])]
         if desired_ids == current_ids:
             return job
         current = set(current_ids)
-        new_kinds = [
-            infer_correction_kind(str(item.get("instruction", "")))
-            for item in rules
-            if str(item.get("rule_id", "")) not in current
-        ]
+        new_kinds: list[str] = []
+        for item in applicable_rules:
+            rule_id = str(item.get("rule_id", ""))
+            if rule_id in current:
+                continue
+            kinds = durable_kinds.get(rule_id, [])
+            # Only records created before kind persistence use the historical
+            # instruction heuristic.  New queued corrections never lose their
+            # explicit request between fsync and the next safe boundary.
+            new_kinds.extend(kinds or [infer_correction_kind(str(item.get("instruction", "")))])
         return job_store.apply_learning_rules(
             job["id"],
-            rules,
+            applicable_rules,
             "在阶段边界应用已记录的工作人员纠错",
             correction_kind=combine_correction_kinds(new_kinds),
         )

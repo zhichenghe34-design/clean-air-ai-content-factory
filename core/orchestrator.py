@@ -166,7 +166,8 @@ def validate_topic_input(
                 raise UnprocessableError("学习规则与当前行业能力包不匹配")
             if (
                 not isinstance(source_event_ids, list)
-                or not 1 <= len(source_event_ids) <= 20
+                or not 1 <= len(source_event_ids) <= 256
+                or len(source_event_ids) != len(set(source_event_ids))
                 or not all(isinstance(value, str) and re.fullmatch(r"correction-[0-9a-f]{32}", value) for value in source_event_ids)
             ):
                 raise UnprocessableError("学习规则来源事件无效")
@@ -863,6 +864,11 @@ class JobStore:
         """
         if correction_kind not in {"style", "content", "evidence", "capability", "process"}:
             raise UnprocessableError("纠错类型无效")
+        if correction_kind == "capability":
+            # A rule cannot rewrite an immutable capability-pack snapshot.  The
+            # HTTP correction path records this for a newly created task and
+            # deliberately never calls this mutating method for capability.
+            raise UnprocessableError("能力包纠错不能修改当前任务；请通过 /api/agent/topics 创建带新能力包的任务")
         job, folder = self._load_v2(job_id)
         self._ensure_capability_pack(job, folder)
         if job.get("status") in RUNNING_STATES:
@@ -886,16 +892,6 @@ class JobStore:
             job["status"] = "planned" if previous_status == "planned" else "authorized"
             job["revision_required"] = {
                 "kind": "evidence",
-                "reason": str(reason).strip()[:1000],
-                "recorded_at": now_iso(),
-            }
-        elif correction_kind == "capability":
-            # Capability packs are immutable.  Do not pretend a text rule has
-            # rewritten one; pause until a new pack is generated and reviewed.
-            job["approvals"]["research"] = {"status": "pending"}
-            job["status"] = "awaiting_capability_revision"
-            job["revision_required"] = {
-                "kind": "capability",
                 "reason": str(reason).strip()[:1000],
                 "recorded_at": now_iso(),
             }

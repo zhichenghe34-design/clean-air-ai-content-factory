@@ -17,7 +17,8 @@ from core.capability_pack import validate_capability_pack
 
 
 LEARNING_SCHEMA_VERSION = 1
-CORRECTION_FIELDS = {"message", "scope", "actor", "mode", "job_id", "capability_pack"}
+CORRECTION_KINDS = {"style", "content", "evidence", "capability", "process"}
+CORRECTION_FIELDS = {"message", "scope", "actor", "mode", "kind", "job_id", "capability_pack"}
 SCOPES = {"task", "project", "workspace"}
 RULE_FIELDS = {
     "id",
@@ -44,6 +45,7 @@ CORRECTION_RECORD_FIELDS = {
     "recorded_at",
     "message",
     "mode",
+    "kind",
     "scope",
     "requested_scope",
     "actor",
@@ -53,6 +55,7 @@ CORRECTION_RECORD_FIELDS = {
     "rule_id",
     "sha256",
 }
+LEGACY_CORRECTION_RECORD_FIELDS = CORRECTION_RECORD_FIELDS - {"kind"}
 SKILL_FILES = {"SKILL.md", "skill.json", "examples.json", "tests.json"}
 SKILL_METADATA_FIELDS = {
     "schema_version",
@@ -292,7 +295,10 @@ def _validate_rule(rule: Any) -> dict[str, Any]:
 
 
 def _validate_correction(correction: Any) -> dict[str, Any]:
-    if not isinstance(correction, dict) or set(correction) != CORRECTION_RECORD_FIELDS:
+    if not isinstance(correction, dict) or set(correction) not in (
+        CORRECTION_RECORD_FIELDS,
+        LEGACY_CORRECTION_RECORD_FIELDS,
+    ):
         raise LearningError("correction record does not match the immutable schema")
     _assert_safe_keys(correction, location="correction")
     if correction["schema_version"] != LEARNING_SCHEMA_VERSION:
@@ -303,6 +309,8 @@ def _validate_correction(correction: Any) -> dict[str, Any]:
     _safe_text(correction["message"], field="correction.message", minimum=4, maximum=1000)
     if correction["mode"] not in {"defer", "interrupt"}:
         raise LearningError("invalid correction mode")
+    if "kind" in correction and correction["kind"] not in CORRECTION_KINDS:
+        raise LearningError("invalid correction kind")
     if correction["scope"] not in SCOPES:
         raise LearningError("invalid correction scope")
     if correction["requested_scope"] is not None and correction["requested_scope"] not in SCOPES:
@@ -337,7 +345,10 @@ class SkillCompiler:
 
     @staticmethod
     def _skill_id(rule: dict[str, Any]) -> str:
-        identity = {"scope": rule["scope"], "pack_id": rule["pack_id"], "instruction": rule["instruction"]}
+        # Rule ids distinguish identical instructions that were recorded with
+        # different durable correction kinds.  Using the source rule prevents
+        # their later instruction-only Skills from colliding.
+        identity = {"source_rule_id": rule["id"]}
         return f"learned-{_sha256(identity)[:20]}"
 
     @staticmethod
@@ -587,6 +598,11 @@ class LearningStore:
             "job_id": target_job,
             "instruction": correction["message"],
         }
+        # Records created before v0.3.0's kind persistence retain their exact
+        # historical identity.  Every new record carries kind, making a later
+        # evidence/capability reclassification a separate, auditable rule.
+        if "kind" in correction:
+            identity["kind"] = correction["kind"]
         expected_rule_id = f"rule-{_sha256(identity)[:20]}"
         if correction["rule_id"] != expected_rule_id:
             raise LearningError("correction record rule identity mismatch")
@@ -706,11 +722,11 @@ class LearningStore:
 
     @staticmethod
     def _new_rule(
-        *, correction_id: str, message: str, scope: str, pack: dict[str, Any], job_id: str | None
+        *, correction_id: str, message: str, kind: str, scope: str, pack: dict[str, Any], job_id: str | None
     ) -> dict[str, Any]:
         target_pack = "*" if scope == "workspace" else pack["id"]
         target_job = job_id if scope == "task" else None
-        identity = {"scope": scope, "pack_id": target_pack, "job_id": target_job, "instruction": message}
+        identity = {"scope": scope, "pack_id": target_pack, "job_id": target_job, "instruction": message, "kind": kind}
         timestamp = _now()
         rule = {
             "id": f"rule-{_sha256(identity)[:20]}",
@@ -757,6 +773,9 @@ class LearningStore:
         mode = payload.get("mode", "defer")
         if mode not in {"defer", "interrupt"}:
             raise LearningError("mode must be defer or interrupt")
+        kind = payload.get("kind", "content")
+        if kind not in CORRECTION_KINDS:
+            raise LearningError("kind must be style, content, evidence, capability, or process")
         requested_scope = payload.get("scope")
         if requested_scope is not None and requested_scope not in SCOPES:
             raise LearningError("scope must be task, project, or workspace")
@@ -786,6 +805,7 @@ class LearningStore:
             provisional_rule = self._new_rule(
                 correction_id=correction_id,
                 message=message,
+                kind=kind,
                 scope=scope,
                 pack=validated_pack,
                 job_id=job_id,
@@ -809,6 +829,7 @@ class LearningStore:
                 "recorded_at": _now(),
                 "message": message,
                 "mode": mode,
+                "kind": kind,
                 "scope": scope,
                 "requested_scope": requested_scope,
                 "actor": actor,
@@ -861,6 +882,34 @@ class LearningStore:
                 }
                 for rule in ordered
             ]
+
+    def correction_kinds_for_rules(self, rules: list[dict[str, Any]]) -> dict[str, list[str]]:
+        """Return durable correction kinds for each derived rule.
+
+        Older ``corrections.jsonl`` rows predate the kind field.  They remain
+        valid and intentionally return no durable kind so the caller can retain
+        the historical instruction-based fallback only for those legacy rows.
+        """
+
+        if not isinstance(rules, list):
+            raise LearningError("rules must be a list")
+        with self._lock:
+            corrections = {item["id"]: item for item in self.list_memories()}
+            result: dict[str, list[str]] = {}
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                rule_id = str(rule.get("rule_id", ""))
+                if not _RULE_ID_RE.fullmatch(rule_id):
+                    continue
+                kinds: list[str] = []
+                for correction_id in rule.get("source_event_ids", []):
+                    correction = corrections.get(correction_id)
+                    kind = correction.get("kind") if correction else None
+                    if kind in CORRECTION_KINDS and kind not in kinds:
+                        kinds.append(kind)
+                result[rule_id] = kinds
+            return result
 
     def memory_snapshot(self, pack_id: str | None = None, job_id: str | None = None) -> dict[str, Any]:
         with self._lock:
