@@ -431,6 +431,7 @@ class ProviderGenericTests(unittest.TestCase):
             observed.update(system=system, user_data=user_data, stage=stage)
             return {
                 "status": "needs_revision",
+                "unknown_top_level": "must-not-survive",
                 "issues": ["具体门店资料尚未提供"],
                 "safe_scope": ["只讨论核验流程"],
                 "candidate_verdicts": [
@@ -439,6 +440,7 @@ class ProviderGenericTests(unittest.TestCase):
                         "verdict": "usable_limited" if index == 0 else "needs_evidence",
                         "reasons": ["不得预设门店事实"],
                         "safe_scope": "仅作为待研究选题",
+                        "unknown_candidate_field": "must-not-survive",
                     }
                     for index, item in enumerate(candidates())
                 ],
@@ -450,7 +452,93 @@ class ProviderGenericTests(unittest.TestCase):
         self.assertEqual(observed["stage"], "capability_pack_adversarial_review")
         self.assertIn("所有内容都是假的", observed["system"])
         self.assertIn("只能否决或缩小", observed["system"])
+        self.assertIn("passed只表示能力包和候选可以在所有事实仍未证实的前提下进入研究阶段", observed["system"])
+        self.assertIn("needs_evidence并存", observed["system"])
         self.assertNotIn("approved", {row["verdict"] for row in result["candidate_verdicts"]})
+        self.assertEqual(set(result), {"status", "issues", "safe_scope", "candidate_verdicts"})
+        self.assertTrue(all(set(item) == {"candidate_id", "verdict", "reasons", "safe_scope"} for item in result["candidate_verdicts"]))
+
+    def test_capability_review_normalizes_all_statuses_and_rejects_unsafe_schema(self):
+        def valid_review(status="passed"):
+            return {
+                "status": status,
+                "issues": [] if status == "passed" else ["边界仍需处理"],
+                "safe_scope": ["只允许进入研究取证"],
+                "candidate_verdicts": [
+                    {
+                        "candidate_id": item["id"],
+                        "verdict": "needs_evidence" if index == 0 else "usable_limited",
+                        "reasons": ["事实仍待核验"],
+                        "safe_scope": "只作为研究问题，不作正向事实断言",
+                    }
+                    for index, item in enumerate(candidates())
+                ],
+            }
+
+        for status in ("passed", "needs_revision", "blocked"):
+            with self.subTest(status=status):
+                subject = provider()
+                subject._chat_json = lambda *args, _status=status, **kwargs: valid_review(_status)  # type: ignore[method-assign]
+                self.assertEqual(
+                    subject.adversarial_review_capability_pack(capability_snapshot(), candidates())["status"],
+                    status,
+                )
+
+        invalid_reviews = {}
+        too_many = valid_review()
+        too_many["issues"] = ["待核验"] * 25
+        invalid_reviews["too_many"] = too_many
+        too_long = valid_review()
+        too_long["safe_scope"] = ["边" * 301]
+        invalid_reviews["too_long"] = too_long
+        unsafe_url = valid_review()
+        unsafe_url["issues"] = ["参见 https://unsafe.example/path"]
+        invalid_reviews["url"] = unsafe_url
+        unsafe_path = valid_review()
+        unsafe_path["safe_scope"] = ["读取 " + "C:" + r"\Users\operator\secret.txt"]
+        invalid_reviews["path"] = unsafe_path
+        unsafe_command = valid_review()
+        unsafe_command["candidate_verdicts"][0]["reasons"] = ["运行 powershell -enc opaque"]
+        invalid_reviews["command"] = unsafe_command
+        unsafe_secret = valid_review()
+        unsafe_secret["candidate_verdicts"][0]["safe_scope"] = "authorization: " + "Bea" + "rer opaque-credential"
+        invalid_reviews["secret"] = unsafe_secret
+        opaque_secret = valid_review()
+        opaque_secret["issues"] = ["client_secret=opaque-value"]
+        invalid_reviews["opaque_secret"] = opaque_secret
+        wrong_order = valid_review()
+        wrong_order["candidate_verdicts"] = list(reversed(wrong_order["candidate_verdicts"]))
+        invalid_reviews["candidate_order"] = wrong_order
+        mixed_reasons = valid_review()
+        mixed_reasons["candidate_verdicts"][0]["reasons"] = ["安全", 7]
+        invalid_reviews["mixed_types"] = mixed_reasons
+        invalid_reviews["malformed"] = {"status": "passed"}
+
+        for name, payload in invalid_reviews.items():
+            with self.subTest(invalid=name):
+                subject = provider()
+                subject._chat_json = lambda *args, _payload=payload, **kwargs: copy.deepcopy(_payload)  # type: ignore[method-assign]
+                with self.assertRaisesRegex(ProviderError, "结构不完整"):
+                    subject.adversarial_review_capability_pack(capability_snapshot(), candidates())
+
+    def test_capability_review_schema_failure_corrects_semantic_budget(self):
+        budget = BudgetLedger(limit=3)
+        subject = OpenAICompatibleProvider(
+            {"base_url": "https://api.deepseek.com", "model": "test-model"},
+            "test-only-key",
+            budget,
+        )
+        token = budget.begin("capability_pack_adversarial_review")
+        budget.finish(token, ok=True)
+        subject._last_budget_token = token
+        subject._chat_json = lambda *args, **kwargs: {"status": "passed"}  # type: ignore[method-assign]
+        with self.assertRaises(ProviderError):
+            subject.adversarial_review_capability_pack(capability_snapshot(), candidates())
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["attempted"], 1)
+        self.assertEqual(snapshot["succeeded"], 0)
+        self.assertEqual(snapshot["failed"], 1)
+        self.assertEqual(snapshot["events"][0]["error_type"], "invalid_capability_review_schema")
 
     def test_old_suggest_topics_call_still_works_and_new_context_is_forwarded(self):
         subject = provider()

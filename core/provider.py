@@ -173,6 +173,20 @@ _BOOTSTRAP_COMMAND_RE = re.compile(
 )
 _BOOTSTRAP_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+_CAPABILITY_REVIEW_STATUSES = {"passed", "needs_revision", "blocked"}
+_CAPABILITY_REVIEW_VERDICTS = {"usable_limited", "needs_evidence", "rejected"}
+_CAPABILITY_REVIEW_LIST_LIMITS = {
+    "issues": 24,
+    "safe_scope": 24,
+    "reasons": 12,
+}
+_CAPABILITY_REVIEW_TEXT_LIMIT = 300
+_CAPABILITY_REVIEW_SECRET_RE = re.compile(
+    r"(?i)(?:(?:api|access|refresh|client|consumer|webhook|signing)[_ -]?)?"
+    r"(?:key|token|secret|password|passwd|pwd|cookie|credential|authorization)\s*[:=]\s*\S+"
+    r"|\bbearer\s+\S+|\bsk-[A-Za-z0-9_-]{12,}\b"
+)
+
 
 def _bootstrap_value_type(value: Any) -> str:
     if value is None:
@@ -242,6 +256,77 @@ def _assert_bootstrap_safe_text(value: str, *, field: str, maximum: int) -> str:
     ):
         raise ProviderError(f"项目启动接口返回的{field}包含非声明式内容")
     return text
+
+
+def _normalize_capability_review_text_list(value: Any, *, field: str) -> list[str]:
+    if not isinstance(value, list) or len(value) > _CAPABILITY_REVIEW_LIST_LIMITS[field]:
+        raise ProviderError("行业能力包反证审核接口返回的文本列表无效")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ProviderError("行业能力包反证审核接口返回的文本列表无效")
+        normalized = _assert_bootstrap_safe_text(
+            item,
+            field=f"capability_review.{field}",
+            maximum=_CAPABILITY_REVIEW_TEXT_LIMIT,
+        )
+        if _CAPABILITY_REVIEW_SECRET_RE.search(unicodedata.normalize("NFKC", normalized)):
+            raise ProviderError("行业能力包反证审核接口返回的文本列表包含秘密样式内容")
+        result.append(normalized)
+    return result
+
+
+def normalize_capability_review(
+    value: Any,
+    candidate_ids: list[str],
+) -> dict[str, Any]:
+    """Return the strict, bounded review schema without retaining model extras."""
+
+    if not isinstance(value, dict) or value.get("status") not in _CAPABILITY_REVIEW_STATUSES:
+        raise ProviderError("行业能力包反证审核接口返回的结构不完整")
+    issues = _normalize_capability_review_text_list(value.get("issues"), field="issues")
+    safe_scope = _normalize_capability_review_text_list(value.get("safe_scope"), field="safe_scope")
+    raw_verdicts = value.get("candidate_verdicts")
+    if not isinstance(raw_verdicts, list) or len(raw_verdicts) != len(candidate_ids):
+        raise ProviderError("行业能力包反证审核接口返回的结构不完整")
+    verdicts: list[dict[str, Any]] = []
+    for item in raw_verdicts:
+        if not isinstance(item, dict):
+            raise ProviderError("行业能力包反证审核接口返回的结构不完整")
+        candidate_id = item.get("candidate_id")
+        verdict = item.get("verdict")
+        candidate_scope = item.get("safe_scope")
+        if (
+            not isinstance(candidate_id, str)
+            or verdict not in _CAPABILITY_REVIEW_VERDICTS
+            or not isinstance(candidate_scope, str)
+        ):
+            raise ProviderError("行业能力包反证审核接口返回的结构不完整")
+        normalized_scope = _assert_bootstrap_safe_text(
+            candidate_scope,
+            field="capability_review.candidate.safe_scope",
+            maximum=_CAPABILITY_REVIEW_TEXT_LIMIT,
+        )
+        if _CAPABILITY_REVIEW_SECRET_RE.search(unicodedata.normalize("NFKC", normalized_scope)):
+            raise ProviderError("行业能力包反证审核接口返回的候选范围包含秘密样式内容")
+        verdicts.append({
+            "candidate_id": _assert_bootstrap_safe_text(
+                candidate_id,
+                field="capability_review.candidate_id",
+                maximum=80,
+            ),
+            "verdict": verdict,
+            "reasons": _normalize_capability_review_text_list(item.get("reasons"), field="reasons"),
+            "safe_scope": normalized_scope,
+        })
+    if [item["candidate_id"] for item in verdicts] != candidate_ids:
+        raise ProviderError("行业能力包反证审核接口返回的候选顺序无效")
+    return {
+        "status": value["status"],
+        "issues": issues,
+        "safe_scope": safe_scope,
+        "candidate_verdicts": verdicts,
+    }
 
 
 def _normalize_bootstrap_scalar(value: Any, *, field: str, maximum: int) -> str:
@@ -661,6 +746,12 @@ class OpenAICompatibleProvider:
             "needs_revision或blocked；issues和safe_scope必须是字符串数组。candidate_verdicts必须与输入"
             "候选一一对应并保持原candidate_id，每项字段为candidate_id,verdict,reasons,safe_scope；"
             "verdict只能是usable_limited、needs_evidence或rejected，reasons为字符串数组，safe_scope为字符串。"
+            "裁决协议：passed只表示能力包和候选可以在所有事实仍未证实的前提下进入研究阶段，绝不表示企业事实"
+            "或候选结论已经证实。当未知内容已明确写入assumptions、evidence_requirements和prohibited_claims，"
+            "候选采用问题式、流程式或待核验角度且没有正向事实断言时，可以判passed。全局passed可以与单个候选"
+            "needs_evidence并存，因为研究阶段负责取证；但该候选必须给出非空safe_scope，且不得含正向事实断言。"
+            "needs_revision仅用于当前文本仍含未经证实断言或边界缺口、必须修改后才能进入研究。blocked用于无法通过"
+            "限定用途安全进入研究的高风险内容、虚构事实或把memory当作证据。不得自动把needs_revision或blocked升级为passed。"
         )
         result = self._chat_json(
             system,
@@ -668,29 +759,11 @@ class OpenAICompatibleProvider:
             stage="capability_pack_adversarial_review",
             count_budget=True,
         )
-        verdicts = result.get("candidate_verdicts")
-        if (
-            result.get("status") not in {"passed", "needs_revision", "blocked"}
-            or not isinstance(result.get("issues"), list)
-            or any(not isinstance(item, str) for item in result["issues"])
-            or not isinstance(result.get("safe_scope"), list)
-            or any(not isinstance(item, str) for item in result["safe_scope"])
-            or not isinstance(verdicts, list)
-            or len(verdicts) != len(candidates)
-            or not all(
-                isinstance(item, dict)
-                and isinstance(item.get("candidate_id"), str)
-                and item.get("verdict") in {"usable_limited", "needs_evidence", "rejected"}
-                and isinstance(item.get("reasons"), list)
-                and all(isinstance(reason, str) for reason in item["reasons"])
-                and isinstance(item.get("safe_scope"), str)
-                for item in verdicts
-            )
-            or [item.get("candidate_id") for item in verdicts] != candidate_ids
-        ):
+        try:
+            return normalize_capability_review(result, candidate_ids)
+        except ProviderError as exc:
             self._mark_semantic_failure("invalid_capability_review_schema")
-            raise ProviderError("行业能力包反证审核接口返回的结构不完整")
-        return result
+            raise ProviderError("行业能力包反证审核接口返回的结构不完整") from exc
 
     def suggest_topics(
         self,

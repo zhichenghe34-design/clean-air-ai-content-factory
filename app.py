@@ -40,7 +40,7 @@ from core.orchestrator import (
     validate_topic_input,
 )
 from core.production import DEFAULT_INPUT, ProductionRunner, estimate_narration_duration, review_script
-from core.provider import BudgetLedger, OpenAICompatibleProvider, ProviderError
+from core.provider import BudgetLedger, OpenAICompatibleProvider, ProviderError, normalize_capability_review
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -83,6 +83,26 @@ def pretask_budget_for(goal: str) -> BudgetLedger:
         else:
             pretask_provider_budgets.move_to_end(key)
         return ledger
+
+
+def capability_review_screening(review: dict | None, *, attempted: bool) -> str:
+    """Summarize only local enums and counts; never surface reviewer prose."""
+
+    if isinstance(review, dict):
+        counts = {"usable_limited": 0, "needs_evidence": 0, "rejected": 0}
+        for item in review.get("candidate_verdicts", []):
+            if isinstance(item, dict) and item.get("verdict") in counts:
+                counts[item["verdict"]] += 1
+        count_text = (
+            f"usable_limited {counts['usable_limited']}、"
+            f"needs_evidence {counts['needs_evidence']}、rejected {counts['rejected']}"
+        )
+        if review.get("status") == "passed":
+            return f"反证审核状态 passed；候选 {count_text}；仅允许进入研究，不代表事实已证实"
+        return f"反证审核状态 {review.get('status')}；候选 {count_text}；已安全降级，未允许动态能力包进入研究"
+    if attempted:
+        return "反证审核结构无效；已安全降级，未保存或展示模型原始审核内容"
+    return "未取得可用反证审核；已使用本地安全能力包，公开依据仍须在研究阶段逐条核验"
 
 
 def store_topic_selection_bundle(goal: str, pack: dict, candidates: list[dict]) -> str:
@@ -828,6 +848,7 @@ class AppHandler(BaseHTTPRequestHandler):
         raw: list[dict]
         pack = supplied_pack
         capability_review: dict | None = None
+        capability_review_attempted = False
         source = "deepseek_bootstrap"
         notice = ""
         remaining_before_call = pretask_budget.snapshot()["remaining"]
@@ -877,13 +898,18 @@ class AppHandler(BaseHTTPRequestHandler):
                         review_method = getattr(provider, "adversarial_review_capability_pack", None)
                         if pretask_budget.snapshot()["remaining"] <= 0 or not callable(review_method):
                             raise ProviderError("动态行业能力包缺少独立反证审核额度或审核器")
+                        capability_review_attempted = True
                         audit = review_method(pack, raw)
                         if not isinstance(audit, dict):
                             raise ProviderError("严格反证审核没有返回JSON对象")
-                        audit_status = str(audit.get("status", "needs_revision"))
+                        capability_review = normalize_capability_review(
+                            audit,
+                            [str(item.get("id", "")) for item in raw],
+                        )
+                        audit = capability_review
+                        audit_status = audit["status"]
                         if audit_status != "passed":
                             raise ProviderError("动态行业能力包未通过严格反证审核")
-                        capability_review = audit
                         normalized_audit = {
                             "status": "passed",
                             "generated_by": "adversarial_agent",
@@ -946,6 +972,10 @@ class AppHandler(BaseHTTPRequestHandler):
             f"剩余 {budget['remaining']}；来源：{source_label}"
         )
         notice = f"{notice.rstrip('。')}；{budget_note}。" if notice else f"{budget_note}。"
+        review_screening = capability_review_screening(
+            capability_review,
+            attempted=capability_review_attempted,
+        )
         selection_bundle_id = store_topic_selection_bundle(goal, pack, candidates)
         return {
             "goal": goal,
@@ -971,7 +1001,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 "material_count": 0,
             },
             "learning": learning_store.memory_snapshot(pack["id"]),
-            "screening": f"已排除危险目标、无依据承诺和重复选题；公开依据将在研究阶段逐条核验；{budget_note}。",
+            "screening": f"{review_screening}；{budget_note}。",
             # Keep the topic-specific public field used by the released UI and
             # expose the shared name used by /api/agent/plan as well.
             "topic_provider_budget": budget,

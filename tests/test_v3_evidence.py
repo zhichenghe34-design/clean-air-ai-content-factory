@@ -42,7 +42,15 @@ class IsolatedInstanceTests(unittest.TestCase):
                     "notice": "动态能力包未通过严格反证审核，已本地降级",
                     "candidates": [{}, {}, {}],
                     "capability_pack": {"audit": {"status": "local_safe_fallback"}},
-                    "capability_review": None,
+                    "capability_review": {
+                        "status": "needs_revision",
+                        "issues": ["安全化问题摘要，不进入捕获摘要"],
+                        "safe_scope": ["只作为待核验问题"],
+                        "candidate_verdicts": [
+                            {"candidate_id": f"topic-{index}", "verdict": "needs_evidence"}
+                            for index in range(1, 4)
+                        ],
+                    },
                     "pretask_provider_budget": {"attempted": 2, "limit": 3},
                 },
             ]
@@ -51,8 +59,31 @@ class IsolatedInstanceTests(unittest.TestCase):
                     capture_v3_bootstrap.capture("http://127.0.0.1:8785", root / "output", "咖啡店内容验证", formal, isolated)
             diagnostic = json.loads((root / "output" / "bootstrap-diagnostic.json").read_text(encoding="utf-8"))
             self.assertEqual(diagnostic["source"], "local_safe_agent")
+            self.assertEqual(diagnostic["capability_review_status"], "needs_revision")
+            self.assertEqual(diagnostic["capability_review_summary"]["verdict_counts"]["needs_evidence"], 3)
+            self.assertEqual(
+                diagnostic["capability_review_summary"]["candidates"],
+                [
+                    {"candidate_id": f"topic-{index}", "verdict": "needs_evidence"}
+                    for index in range(1, 4)
+                ],
+            )
+            self.assertNotIn("安全化问题摘要", json.dumps(diagnostic, ensure_ascii=False))
             self.assertFalse(diagnostic["automatic_paid_retry_started"])
             self.assertEqual(diagnostic["tasks_created"], 0)
+
+    def test_bootstrap_capture_marks_invalid_review_schema_without_retaining_content(self):
+        unsafe = {
+            "status": "passed",
+            "issues": ["authorization: " + "Bea" + "rer must-not-survive"],
+            "candidate_verdicts": [{"candidate_id": "customer-secret", "verdict": "usable_limited"}],
+        }
+        summary = capture_v3_bootstrap.safe_review_summary(unsafe)
+        serialized = json.dumps(summary, ensure_ascii=False)
+        self.assertEqual(summary["status"], "invalid_schema")
+        self.assertEqual(summary["candidates"], [])
+        self.assertNotIn("must-not-survive", serialized)
+        self.assertNotIn("customer-secret", serialized)
 
     def test_rejects_formal_runtime_repo_and_disk_root(self):
         safe = Path(tempfile.gettempdir()) / "shiyi-v03-safe-storage-test"
