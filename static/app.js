@@ -18,6 +18,10 @@ const state = {
   reviewFiles: {},
   busyJobs: new Set(),
   pollTimer: null,
+  pollJobId: null,
+  pollFailures: 0,
+  pollInFlight: false,
+  auxiliaryRefresh: null,
 };
 
 const statusLabels = {
@@ -55,6 +59,8 @@ const artifactLabels = {
 };
 const PENDING_CREATE_STORAGE = "shiyi_pending_agent_create";
 const EMPTY_RESEARCH_APPROVAL_NOTE = "本人确认本次无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板";
+const POLL_BASE_DELAY_MS = 1000;
+const POLL_MAX_DELAY_MS = 8000;
 
 function isEmptyLocalResearch(research) {
   const findings = Array.isArray(research?.findings) ? research.findings : [];
@@ -95,10 +101,21 @@ async function api(path, options = {}) {
 }
 
 async function readJsonArtifact(url) {
-  const response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+  let response;
+  try {
+    response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+  } catch (cause) {
+    const error = new Error("产物暂时无法读取，稍后会自动重试");
+    error.networkUncertain = true;
+    error.cause = cause;
+    throw error;
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.error?.message || `HTTP ${response.status}`);
+    const error = new Error(body.error?.message || `HTTP ${response.status}`);
+    error.httpStatus = response.status;
+    error.networkUncertain = false;
+    throw error;
   }
   const bytes = await response.arrayBuffer();
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -122,6 +139,31 @@ function setBusy(button, busy, text) {
   if (!button.dataset.originalHtml) button.dataset.originalHtml = button.innerHTML;
   button.disabled = busy;
   button.innerHTML = busy ? escapeHtml(text) : button.dataset.originalHtml;
+}
+
+function syncSelectedJobBusyState() {
+  const button = document.getElementById("rerunJobBtn");
+  if (!button || !state.selectedJob) return;
+  button.disabled = state.selectedJob.legacy_read_only
+    || !runnableStates.has(state.selectedJob.status)
+    || state.busyJobs.has(state.selectedJob.id);
+}
+
+function beginJobBusy(jobId) {
+  if (state.busyJobs.has(jobId)) return false;
+  state.busyJobs.add(jobId);
+  renderJobs();
+  syncSelectedJobBusyState();
+  return true;
+}
+
+function endJobBusy(jobId) {
+  state.busyJobs.delete(jobId);
+  // A refresh may have rendered disabled controls while the request was still
+  // in flight. Render once more after finally so those controls cannot remain
+  // visually stuck.
+  renderJobs();
+  syncSelectedJobBusyState();
 }
 
 function statusClass(status) {
@@ -186,18 +228,45 @@ function closeMenu() {
   document.getElementById("appMenuButton").setAttribute("aria-expanded", "false");
 }
 
+function refreshAuxiliary() {
+  if (state.auxiliaryRefresh) return state.auxiliaryRefresh;
+  const pending = Promise.allSettled([
+    api("/api/config"), api("/api/tools"), api("/api/catalog"), api("/api/hardware"),
+  ]).then(([config, toolsData, catalog, hardware]) => {
+    if (config.status === "fulfilled") {
+      state.config = config.value;
+      renderSettings();
+    }
+    if (toolsData.status === "fulfilled") {
+      state.tools = toolsData.value.tools || [];
+      renderTools(toolsData.value);
+    }
+    if (catalog.status === "fulfilled") {
+      state.catalog = catalog.value;
+      renderCatalog();
+    }
+    if (hardware.status === "fulfilled") {
+      state.hardware = hardware.value;
+      if (state.catalog) renderCatalog();
+    }
+  });
+  state.auxiliaryRefresh = pending.finally(() => {
+    state.auxiliaryRefresh = null;
+  });
+  return state.auxiliaryRefresh;
+}
+
 async function refresh({ syncHomeView = true } = {}) {
-  const [status, config, toolsData, jobsData, catalog, hardware] = await Promise.all([
-    api("/api/status"), api("/api/config"), api("/api/tools"), api("/api/jobs"), api("/api/catalog"), api("/api/hardware"),
-  ]);
-  Object.assign(state, { status, config, tools: toolsData.tools || [], jobs: jobsData.jobs || [], catalog, hardware });
+  // Jobs and status drive every visible transition. Auxiliary settings and
+  // discovery cards update independently and may not hold the workbench hostage.
+  const auxiliary = refreshAuxiliary();
+  const [status, jobsData] = await Promise.all([api("/api/status"), api("/api/jobs")]);
+  Object.assign(state, { status, jobs: jobsData.jobs || [] });
   renderStatus();
-  renderSettings();
-  renderTools(toolsData);
   renderJobs();
-  renderCatalog();
   renderLatestArtifact();
   if (syncHomeView) await syncHome();
+  auxiliary.catch(() => {});
 }
 
 function renderStatus() {
@@ -375,15 +444,17 @@ function renderRunningCard(title, message, progress) {
     <div class="progress-block"><div class="progress-copy"><span>${escapeHtml(message)}</span><b class="mono">${progress}%</b></div><div class="progress-track"><span class="progress-value progress-${progress}"></span></div></div>`;
 }
 
-async function advanceJob(id) {
-  if (state.busyJobs.has(id)) return;
-  state.busyJobs.add(id);
+async function advanceJob(id, { busyAlready = false } = {}) {
+  const ownsBusy = !busyAlready;
+  if (ownsBusy && !beginJobBusy(id)) return;
   // A new user action is a new logical attempt. Only an automatic replay of
-  // the same network-uncertain request is allowed to reuse this key.
+  // job creation is allowed. A long /run is posted exactly once and observed
+  // through GET polling, even if its response becomes network-uncertain.
   const requestKey = newIdempotencyKey();
   try {
     const current = state.jobs.find(item => item.id === id) || await api(`/api/jobs/${id}`);
     document.getElementById("activeJobPanel").innerHTML = renderRunningCard(current.production_input?.topic || current.id, "Agent 正在推进当前阶段…", statusProgress[current.status] || 20);
+    schedulePoll(id, { immediate: true, reset: true });
     const runOnce = () => api(`/api/jobs/${id}/run`, {
       method: "POST",
       headers: { "Idempotency-Key": requestKey },
@@ -394,7 +465,9 @@ async function advanceJob(id) {
       job = await runOnce();
     } catch (error) {
       if (!error.networkUncertain) throw error;
-      job = await runOnce();
+      // Do not emit a second POST. The server may already be working; recover
+      // current truth through the read-only job endpoint while polling remains active.
+      job = await api(`/api/jobs/${id}`);
     }
     await refresh({ syncHomeView: false });
     await renderHomeJob(job);
@@ -404,7 +477,11 @@ async function advanceJob(id) {
     if (job) await renderHomeJob(job);
     throw error;
   } finally {
-    state.busyJobs.delete(id);
+    if (ownsBusy) endJobBusy(id);
+    else {
+      renderJobs();
+      syncSelectedJobBusyState();
+    }
   }
 }
 
@@ -428,21 +505,59 @@ async function syncHome() {
   else renderTopicChoices();
 }
 
-function schedulePoll(jobId) {
+function stopPoll(jobId = null) {
+  if (jobId && state.pollJobId && state.pollJobId !== jobId) return;
   clearTimeout(state.pollTimer);
+  state.pollTimer = null;
+  state.pollJobId = null;
+  state.pollFailures = 0;
+}
+
+function schedulePoll(jobId, { immediate = false, reset = false } = {}) {
+  if (reset || state.pollJobId !== jobId) {
+    state.pollFailures = 0;
+    state.pollJobId = jobId;
+  }
+  clearTimeout(state.pollTimer);
+  const delay = immediate
+    ? 0
+    : Math.min(POLL_BASE_DELAY_MS * (2 ** Math.max(0, state.pollFailures - 1)), POLL_MAX_DELAY_MS);
   state.pollTimer = setTimeout(async () => {
+    if (state.pollJobId !== jobId) return;
+    if (state.pollInFlight) {
+      schedulePoll(jobId);
+      return;
+    }
+    state.pollInFlight = true;
+    let keepPolling = true;
     try {
       const job = await api(`/api/jobs/${jobId}`);
       const index = state.jobs.findIndex(item => item.id === jobId);
       if (index >= 0) state.jobs[index] = job;
-      await renderHomeJob(job);
+      else state.jobs.unshift(job);
+      renderJobs();
+      const artifactPending = state.homeJobId === jobId
+        ? await renderHomeJob(job, { managePolling: false })
+        : false;
+      const detailArtifactPending = state.selectedJob?.id === jobId && document.body.dataset.view === "jobs"
+        ? await openJob(jobId, { job, scroll: false, managePolling: false })
+        : false;
+      state.pollFailures = 0;
+      keepPolling = artifactPending || detailArtifactPending || runningStates.has(job.status) || state.busyJobs.has(jobId);
     } catch (error) {
-      toast(error.message, true);
+      state.pollFailures = Math.min(state.pollFailures + 1, 4);
+      if (state.pollFailures === 1) toast("状态刷新暂时中断，正在自动重试", true);
+      keepPolling = true;
+    } finally {
+      state.pollInFlight = false;
+      if (state.pollJobId !== jobId) return;
+      if (keepPolling) schedulePoll(jobId);
+      else stopPoll(jobId);
     }
-  }, 4000);
+  }, delay);
 }
 
-async function renderHomeJob(job) {
+async function renderHomeJob(job, { managePolling = true } = {}) {
   const storedIndex = state.jobs.findIndex(item => item.id === job.id);
   if (storedIndex >= 0) state.jobs[storedIndex] = job;
   else state.jobs.unshift(job);
@@ -459,14 +574,20 @@ async function renderHomeJob(job) {
 
   if (runningStates.has(status)) {
     panel.innerHTML = renderRunningCard(title, statusLabels[status], progress);
-    schedulePoll(job.id);
-    return;
+    if (managePolling) schedulePoll(job.id);
+    return true;
   }
-  clearTimeout(state.pollTimer);
 
   const head = `<div class="job-chat-head"><div><h2>${escapeHtml(title)}</h2><p>其余步骤由 Agent 自动完成。</p></div><span class="status-pill ${statusClass(status)}">${escapeHtml(statusLabels[status] || status)}</span></div>`;
   if (status === "awaiting_research_approval") {
-    const research = await readJsonArtifact(`/api/jobs/${job.id}/review-artifacts/research.json`);
+    let research;
+    try {
+      research = await readJsonArtifact(`/api/jobs/${job.id}/review-artifacts/research.json`);
+    } catch (_) {
+      panel.innerHTML = `${head}<div class="gate-card"><h3>研究证据正在发布</h3><p>任务状态已经更新，证据文件尚未就绪；页面会自动重试，无需再次点击。</p></div>`;
+      if (managePolling) schedulePoll(job.id);
+      return true;
+    }
     state.reviewFiles.research = research;
     const findings = research.data.findings || [];
     const eligible = findings.filter(item => item.auto_review_status === "eligible").length;
@@ -478,7 +599,8 @@ async function renderHomeJob(job) {
     } else {
       panel.innerHTML = `${head}<div class="gate-card"><h3>研究证据已反向核验</h3><div class="gate-stats"><span><b>${eligible}</b> 条可用</span><span><b>${rejected}</b> 条已否决</span></div><p>脚本只会使用你这次确认、且能够回到原始来源的内容。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="approve-research">继续制作</button><button class="quiet-link" type="button" data-home-action="show-details">查看依据</button></div><p class="reply-hint">也可以直接回复：继续</p></div>`;
     }
-    return;
+    if (managePolling) stopPoll(job.id);
+    return false;
   }
   if (["awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision"].includes(status)) {
     let review = null;
@@ -488,36 +610,55 @@ async function renderHomeJob(job) {
       script = await readJsonArtifact(`/api/jobs/${job.id}/review-artifacts/approved_script.json`);
       state.reviewFiles.review = review;
       state.reviewFiles.script = script;
-    } catch (_) { /* detailed view will surface a missing review artifact */ }
+    } catch (_) {
+      if (status === "awaiting_compliance_approval") {
+        panel.innerHTML = `${head}<div class="gate-card"><h3>脚本与合规结果正在发布</h3><p>任务状态已经更新，审核文件尚未就绪；页面会自动重试，无需再次点击。</p></div>`;
+        if (managePolling) schedulePoll(job.id);
+        return true;
+      }
+      /* detailed view will surface a missing review artifact */
+    }
     const blocked = !review || review.data.status === "blocked" || review.data.blocked || status !== "awaiting_compliance_approval";
     const warnings = review?.data?.warnings?.map(item => item.message).filter(Boolean).join("；") || "脚本仍需人工修改或重新检查。";
     panel.innerHTML = `${head}<div class="gate-card"><h3>${blocked ? "最终脚本暂时不能放行" : "最终脚本已通过自动合规检查"}</h3><p>${escapeHtml(blocked ? warnings : "没有发现阻断项。你确认后，Agent 将直接开始配音和成片装配。")}</p><div class="gate-actions">${blocked ? "" : '<button class="primary" type="button" data-home-action="approve-compliance">确认脚本并渲染</button>'}<button class="quiet-link" type="button" data-home-action="show-details">${blocked ? "打开脚本修改" : "查看脚本与合规依据"}</button></div>${blocked ? "" : '<p class="reply-hint">也可以直接回复：继续</p>'}</div>`;
-    return;
+    if (managePolling) stopPoll(job.id);
+    return false;
   }
   if (status === "complete") {
     panel.innerHTML = `${head}<div class="gate-card"><h3>成片已经完成</h3><p>视频、证据清单、审批记录和哈希都已发布到本次成功运行；失败尝试没有覆盖它。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="play-latest">播放最新成片</button><button class="quiet-link" type="button" data-home-action="new-task">再做一条</button></div></div>`;
     renderLatestArtifact();
-    return;
+    if (managePolling) stopPoll(job.id);
+    return false;
   }
   if (status === "planned") {
     panel.innerHTML = `${head}<div class="gate-card"><h3>已选好角度</h3><p>点击一次即可同时记录任务执行授权，并开始研究。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="authorize">授权并开始</button></div></div>`;
-    return;
+    if (managePolling) stopPoll(job.id);
+    return false;
   }
   if (runnableStates.has(status)) {
     panel.innerHTML = `${head}${job.last_error ? `<div class="error-card">${escapeHtml(job.last_error)}</div>` : ""}<div class="gate-actions"><button class="primary" type="button" data-home-action="advance">${status === "failed" ? "重试当前步骤" : "继续处理"}</button><button class="quiet-link" type="button" data-home-action="show-details">查看详情</button></div>`;
-    return;
+    if (managePolling) stopPoll(job.id);
+    return false;
   }
   panel.innerHTML = `${head}${job.last_error ? `<div class="error-card">${escapeHtml(job.last_error)}</div>` : ""}<div class="gate-actions"><button class="quiet-link" type="button" data-home-action="show-details">打开任务记录</button><button class="quiet-link" type="button" data-home-action="new-task">返回选题</button></div>`;
+  if (managePolling) stopPoll(job.id);
+  return false;
 }
 
-async function authorizeHomeJob(jobId) {
-  const job = await approveWithRecovery({ id: jobId });
-  await renderHomeJob(job);
-  if (job.status === "planned") {
-    toast("暂时无法确认授权结果，任务已保留；请稍后再点一次。", true);
-    return;
+async function authorizeHomeJob(jobId, { busyAlready = false } = {}) {
+  const ownsBusy = !busyAlready;
+  if (ownsBusy && !beginJobBusy(jobId)) return;
+  try {
+    const job = await approveWithRecovery({ id: jobId });
+    await renderHomeJob(job);
+    if (job.status === "planned") {
+      toast("暂时无法确认授权结果，任务已保留；请稍后再点一次。", true);
+      return;
+    }
+    if (job.status === "authorized") await advanceJob(jobId, { busyAlready: true });
+  } finally {
+    if (ownsBusy) endJobBusy(jobId);
   }
-  if (job.status === "authorized") await advanceJob(jobId);
 }
 
 async function approveHomeResearch(jobId) {
@@ -634,8 +775,9 @@ function renderJobs() {
   list.innerHTML = state.jobs.map(job => {
     const title = job.production_input?.topic || job.plan?.goal || job.id;
     const busy = state.busyJobs.has(job.id);
-    const runButton = runnableStates.has(job.status) && job.production_input && !job.legacy_read_only ? `<button class="primary" data-action="run" data-job-id="${job.id}" ${busy ? "disabled" : ""}>${busy ? "执行中…" : "推进下一阶段"}</button>` : "";
-    return `<div class="job"><div class="job-head"><div><h3>${escapeHtml(title)}</h3><small>${escapeHtml(job.id)} · ${escapeHtml(job.created_at)}</small></div><span class="pill ${statusClass(job.status)}">${escapeHtml(statusLabels[job.status] || job.status)}</span></div>${job.last_error ? `<div class="notice">${escapeHtml(job.last_error)}</div>` : ""}<div class="job-facts"><span>预算 ${job.budget?.attempted || 0}/${job.budget?.limit || 7}</span><span>尝试 ${job.runs?.length || 0}</span><span>当前成功 ${escapeHtml(job.current_run_id || "无")}</span></div><div class="action-row">${job.status === "planned" && !job.legacy_read_only ? `<button class="secondary" data-action="authorize" data-job-id="${job.id}">批准任务执行</button>` : ""}${runButton}${job.production_input || job.legacy_read_only ? `<button class="secondary" data-action="open" data-job-id="${job.id}">查看/精修</button>` : ""}</div></div>`;
+    const busyAttribute = busy ? 'disabled aria-busy="true"' : "";
+    const runButton = runnableStates.has(job.status) && job.production_input && !job.legacy_read_only ? `<button class="primary" data-action="run" data-job-id="${job.id}" ${busyAttribute}>${busy ? "执行中…" : "推进下一阶段"}</button>` : "";
+    return `<div class="job"><div class="job-head"><div><h3>${escapeHtml(title)}</h3><small>${escapeHtml(job.id)} · ${escapeHtml(job.created_at)}</small></div><span class="pill ${statusClass(job.status)}">${escapeHtml(statusLabels[job.status] || job.status)}</span></div>${job.last_error ? `<div class="notice">${escapeHtml(job.last_error)}</div>` : ""}<div class="job-facts"><span>预算 ${job.budget?.attempted || 0}/${job.budget?.limit || 7}</span><span>尝试 ${job.runs?.length || 0}</span><span>当前成功 ${escapeHtml(job.current_run_id || "无")}</span></div><div class="action-row">${job.status === "planned" && !job.legacy_read_only ? `<button class="secondary" data-action="authorize" data-job-id="${job.id}" ${busyAttribute}>${busy ? "处理中…" : "批准任务执行"}</button>` : ""}${runButton}${job.production_input || job.legacy_read_only ? `<button class="secondary" data-action="open" data-job-id="${job.id}" ${busyAttribute}>查看/精修</button>` : ""}</div></div>`;
   }).join("");
 }
 
@@ -685,10 +827,11 @@ function syncApprovalButton(kind) {
   button.textContent = kind === "research" ? (approved ? "提交审核并进入下一步" : "提交审核并退回研究") : (approved ? "提交审核并进入渲染" : "提交审核并退回改稿");
 }
 
-async function openJob(id) {
-  const job = await api(`/api/jobs/${id}`);
+async function openJob(id, { job: suppliedJob = null, scroll = true, managePolling = true } = {}) {
+  const job = suppliedJob || await api(`/api/jobs/${id}`);
   state.selectedJob = job;
   state.reviewFiles = {};
+  let artifactPending = false;
   switchView("jobs");
   const panel = document.getElementById("jobDetailPanel");
   panel.hidden = false;
@@ -700,8 +843,27 @@ async function openJob(id) {
   const compliancePanel = document.getElementById("complianceApprovalPanel");
   researchPanel.hidden = job.status !== "awaiting_research_approval";
   compliancePanel.hidden = !["awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision", "compliance_approved"].includes(job.status);
+  const researchFindings = document.getElementById("researchFindings");
+  const complianceSummary = document.getElementById("complianceSummary");
+  const researchSubmit = document.getElementById("submitResearchBtn");
+  const complianceSubmit = document.getElementById("submitComplianceBtn");
+  researchFindings.innerHTML = '<p class="lead">研究产物尚未加载。</p>';
+  complianceSummary.textContent = "合规产物尚未加载。";
+  document.getElementById("researchNote").value = "";
+  document.getElementById("complianceNote").value = "";
+  document.getElementById("approvedScriptInput").value = "";
+  document.getElementById("durationEstimate").textContent = "内容阶段完成后才能人工改稿。";
+  document.getElementById("artifactLinks").innerHTML = "";
+  document.getElementById("runHistory").innerHTML = '<p class="lead">运行记录加载中。</p>';
+  const staleVideo = document.getElementById("artifactVideo");
+  staleVideo.hidden = true;
+  staleVideo.removeAttribute("src");
+  researchSubmit.disabled = true;
+  complianceSubmit.disabled = true;
   let script = "";
+  const researchMayExist = !["planned", "authorized", "research_running"].includes(job.status);
   try {
+    if (!researchMayExist) throw new Error("research_not_ready");
     state.reviewFiles.research = await readJsonArtifact(`/api/jobs/${id}/review-artifacts/research.json`);
     if (!researchPanel.hidden) {
       const findings = state.reviewFiles.research.data.findings || [];
@@ -710,9 +872,19 @@ async function openJob(id) {
       document.getElementById("researchDecision").value = findings.some(item => item.auto_review_status === "eligible") || emptyLocalResearch ? "approved" : "rejected";
       if (emptyLocalResearch) document.getElementById("researchNote").value = EMPTY_RESEARCH_APPROVAL_NOTE;
       syncApprovalButton("research");
+      researchSubmit.disabled = false;
     }
-  } catch (_) { /* research may not exist yet */ }
+  } catch (error) {
+    if (researchMayExist && (error.networkUncertain || error.httpStatus === 404)) {
+      artifactPending = true;
+      if (!researchPanel.hidden) researchFindings.innerHTML = '<p class="lead">产物发布中，页面会自动重试。</p>';
+    } else if (researchMayExist && !researchPanel.hidden) {
+      researchFindings.textContent = `研究产物读取失败：${error.message}`;
+    }
+  }
+  const contentMayExist = !["planned", "authorized", "research_running", "awaiting_research_approval", "awaiting_research_revision", "research_approved", "content_running"].includes(job.status);
   try {
+    if (!contentMayExist) throw new Error("content_not_ready");
     state.reviewFiles.script = await readJsonArtifact(`/api/jobs/${id}/review-artifacts/approved_script.json`);
     script = state.reviewFiles.script.data.script || "";
     state.reviewFiles.review = await readJsonArtifact(`/api/jobs/${id}/review-artifacts/review.json`);
@@ -720,18 +892,30 @@ async function openJob(id) {
     document.getElementById("complianceSummary").textContent = review.status === "blocked" ? `自动检查：阻断。${(review.warnings || []).map(item => item.message).join("；")}` : "严格检查未发现阻断项；最终仍由你亲自确认。";
     document.getElementById("complianceDecision").value = review.status === "blocked" || review.blocked ? "rejected" : "approved";
     syncApprovalButton("compliance");
-  } catch (_) { /* content may not exist yet */ }
+    complianceSubmit.disabled = false;
+  } catch (error) {
+    if (contentMayExist && (error.networkUncertain || error.httpStatus === 404)) {
+      artifactPending = true;
+      if (!compliancePanel.hidden) complianceSummary.textContent = "产物发布中，页面会自动重试。";
+    } else if (contentMayExist && !compliancePanel.hidden) {
+      complianceSummary.textContent = `合规产物读取失败：${error.message}`;
+    }
+  }
   document.getElementById("approvedScriptInput").value = script;
   document.getElementById("approvedScriptInput").disabled = job.legacy_read_only || !script;
   document.getElementById("saveScriptBtn").disabled = job.legacy_read_only || !script;
-  document.getElementById("rerunJobBtn").disabled = job.legacy_read_only || !runnableStates.has(job.status);
+  document.getElementById("rerunJobBtn").disabled = job.legacy_read_only || !runnableStates.has(job.status) || state.busyJobs.has(job.id);
   document.getElementById("durationEstimate").textContent = script ? `当前 ${script.length} 字；保存时按标点加权校验 35–75 秒，配音后只允许 0.75–1.5 倍安全变速。` : "内容阶段完成后才能人工改稿。";
   renderRunHistory(job);
   document.getElementById("artifactLinks").innerHTML = (job.artifacts || []).map(name => `<a href="/api/jobs/${id}/artifacts/${name}" target="_blank" rel="noreferrer">${escapeHtml(artifactLabels[name] || name)}</a>`).join("");
   const video = document.getElementById("artifactVideo");
   if ((job.artifacts || []).includes("final.mp4")) { video.src = `/api/jobs/${id}/artifacts/final.mp4`; video.hidden = false; }
   else { video.hidden = true; video.removeAttribute("src"); }
-  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (managePolling && (runningStates.has(job.status) || artifactPending)) {
+    schedulePoll(job.id, { immediate: runningStates.has(job.status) });
+  } else if (managePolling) stopPoll(job.id);
+  if (scroll) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  return artifactPending;
 }
 
 async function submitResearch(decision) {
@@ -874,7 +1058,15 @@ document.getElementById("jobList").addEventListener("click", event => {
   const button = event.target.closest("button[data-action]");
   if (!button) return;
   const id = button.dataset.jobId;
-  const task = button.dataset.action === "authorize" ? authorizeHomeJob(id) : button.dataset.action === "run" ? advanceJob(id) : openJob(id);
+  const task = button.dataset.action === "authorize"
+    ? authorizeHomeJob(id)
+    : button.dataset.action === "run"
+      ? advanceJob(id)
+      : (async () => {
+          if (!beginJobBusy(id)) return;
+          try { await openJob(id); }
+          finally { endJobBusy(id); }
+        })();
   Promise.resolve(task).catch(error => toast(error.message, true));
 });
 document.getElementById("reloadJobs").addEventListener("click", () => refresh({ syncHomeView: false }).catch(error => toast(error.message, true)));

@@ -21,6 +21,7 @@ const batches = [
   const errors = [];
   let topicCalls = 0;
   let providerVerified = false;
+  let auxiliaryToolsSettled = false;
   page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', err => errors.push(err.message));
   await page.route('**/api/status', async route => {
@@ -46,6 +47,12 @@ const batches = [
       contentType: 'application/json; charset=utf-8',
       body: JSON.stringify({ ok: true, models: ['deepseek-v4-flash'], configured_model_available: true, connection_verified: true }),
     });
+  });
+  await page.route('**/api/tools', async route => {
+    const response = await route.fetch();
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    auxiliaryToolsSettled = true;
+    await route.fulfill({ response });
   });
   await page.route('**/api/jobs', async route => {
     const response = await route.fetch();
@@ -90,8 +97,9 @@ const batches = [
     });
   });
 
-  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.locator('#topicCandidates .topic-option').first().waitFor();
+  const criticalRenderedBeforeAuxiliary = !auxiliaryToolsSettled;
   const providerBadge = await page.locator('#providerBadge').innerText();
   const providerConfiguredClass = await page.locator('#providerQuickButton').evaluate(node => node.classList.contains('configured'));
   const initialScreening = await page.locator('#topicScreening').innerText();
@@ -169,9 +177,10 @@ const batches = [
     storageDirectories,
     mobileNoOverflow,
     topicCalls,
+    criticalRenderedBeforeAuxiliary,
     errors,
   };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
-  if (errors.length || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 本次连接已验证' || !providerVerifiedClass || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('项目启动结构含未知字段') || !initialScreening.includes('反证审核未执行') || initialScreening.includes('needs_evidence') || initialScreening.includes('候选1') || initialScreening.includes('ORIGINAL REVIEWED TITLE') || initialScreening.includes('<redacted-unknown-field>') || !refreshedScreening.includes('2/3') || !refreshedScreening.includes('项目启动结构校验通过') || !refreshedScreening.includes('被审核候选“测醛前为什么要先确认封闭时间？”') || refreshedScreening.includes('候选1') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow) process.exit(1);
+  if (errors.length || !criticalRenderedBeforeAuxiliary || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 本次连接已验证' || !providerVerifiedClass || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('项目启动结构含未知字段') || !initialScreening.includes('反证审核未执行') || initialScreening.includes('needs_evidence') || initialScreening.includes('候选1') || initialScreening.includes('ORIGINAL REVIEWED TITLE') || initialScreening.includes('<redacted-unknown-field>') || !refreshedScreening.includes('2/3') || !refreshedScreening.includes('项目启动结构校验通过') || !refreshedScreening.includes('被审核候选“测醛前为什么要先确认封闭时间？”') || refreshedScreening.includes('候选1') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow) process.exit(1);
 })();

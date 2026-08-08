@@ -11,10 +11,33 @@ const { chromium } = require('playwright');
   let runCount = 0;
   let runRequests = 0;
   const runKeys = [];
+  let runInFlight = false;
+  let concurrentRunRequests = 0;
+  let maxConcurrentRunRequests = 0;
+  let pollsDuringLongRun = 0;
+  let injectedPollFailures = 0;
+  let recoveredPolls = 0;
+  let researchArtifactRequests = 0;
   let createRequests = 0;
   const createKeys = [];
   let authorizeRequests = 0;
   let researchApprovalPayload = null;
+  let detailJobReads = 0;
+  let detailArtifactRequests = 0;
+  let detailRunRequests = 0;
+  let detailJob = {
+    schema_version: 2,
+    id: 'running-detail-job',
+    status: 'research_running',
+    created_at: '2026-08-01T14:00:00+08:00',
+    production_input: { topic: '运行详情轮询测试', audience: '测试用户' },
+    approvals: { research: { status: 'pending' }, compliance: { status: 'pending' } },
+    budget: { limit: 7, attempted: 1, succeeded: 1, failed: 0 },
+    runs: [{ run_id: 'detail-run', stage: 'research', status: 'running' }],
+    artifacts: [],
+    active_run_id: 'detail-run',
+    current_run_id: null,
+  };
 
   page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', err => errors.push(err.message));
@@ -36,7 +59,7 @@ const { chromium } = require('playwright');
   await page.route('**/api/jobs', route => route.fulfill({
     status: 200,
     contentType: 'application/json; charset=utf-8',
-    body: JSON.stringify({ jobs: job ? [job] : [] }),
+    body: JSON.stringify({ jobs: job ? [job, detailJob] : [detailJob] }),
   }));
   await page.route('**/api/demo-job', async route => {
     createRequests += 1;
@@ -75,45 +98,110 @@ const { chromium } = require('playwright');
     calls.push('create-replay');
     await route.fulfill({ status: 201, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) });
   });
-  await page.route('**/api/jobs/fake-job', route => route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) }));
+  await page.route('**/api/jobs/fake-job', route => {
+    if (runInFlight) {
+      pollsDuringLongRun += 1;
+      if (!injectedPollFailures) {
+        injectedPollFailures += 1;
+        return route.abort('connectionfailed');
+      }
+      recoveredPolls += 1;
+    }
+    return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) });
+  });
+  await page.route('**/api/jobs/running-detail-job', route => {
+    detailJobReads += 1;
+    if (detailJobReads >= 2) {
+      detailJob = { ...detailJob, status: 'awaiting_research_approval', active_run_id: null, runs: [{ ...detailJob.runs[0], status: 'complete' }] };
+    }
+    return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(detailJob) });
+  });
+  await page.route('**/api/jobs/running-detail-job/review-artifacts/research.json', route => {
+    detailArtifactRequests += 1;
+    if (detailArtifactRequests === 1) {
+      return route.fulfill({ status: 404, contentType: 'application/json; charset=utf-8', body: JSON.stringify({ error: { message: '产物尚未发布' } }) });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json; charset=utf-8',
+      body: JSON.stringify({
+        status: 'partial',
+        summary: '详情研究已发布',
+        findings: [{
+          finding_id: 'detail-new-finding',
+          claim: '新的详情 finding',
+          auto_review_status: 'eligible',
+          review_summary: '新的详情 finding',
+          allowed_use: '仅按证据原意转述',
+          prohibited_use: '不得外推',
+          source_label: '测试来源',
+          source_urls: ['https://example.com/source'],
+          evidence: [],
+        }],
+        sources: [],
+      }),
+    });
+  });
+  await page.route('**/api/jobs/running-detail-job/run', route => {
+    detailRunRequests += 1;
+    return route.fulfill({ status: 500, contentType: 'application/json; charset=utf-8', body: JSON.stringify({ error: { message: '不应该重放 /run' } }) });
+  });
   await page.route('**/api/jobs/fake-job/approve', route => {
     authorizeRequests += 1;
     calls.push('authorize-network-uncertain');
     job = { ...job, status: 'authorized' };
     return route.abort('connectionfailed');
   });
-  await page.route('**/api/jobs/fake-job/run', route => {
+  await page.route('**/api/jobs/fake-job/run', async route => {
     runRequests += 1;
+    concurrentRunRequests += 1;
+    maxConcurrentRunRequests = Math.max(maxConcurrentRunRequests, concurrentRunRequests);
     runKeys.push(route.request().headers()['idempotency-key']);
-    if (runRequests === 1) {
-      calls.push('run-network-uncertain');
-      return route.abort('connectionfailed');
+    try {
+      if (runRequests === 1) {
+        calls.push('run-long');
+        runInFlight = true;
+        job = { ...job, status: 'research_running', active_run_id: 'run-long' };
+        await new Promise(resolve => setTimeout(resolve, 1400));
+        runCount += 1;
+        job = { ...job, status: 'awaiting_research_approval', active_run_id: null, budget: { ...job.budget, attempted: 1 } };
+        return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) });
+      }
+      if (runRequests === 2) {
+        calls.push('run-2-failed');
+        job = { ...job, status: 'failed', last_error: '模拟的已知服务端失败' };
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json; charset=utf-8',
+          body: JSON.stringify({ error: { code: 'simulated_failure', message: '模拟的已知服务端失败' } }),
+        });
+      }
+      runCount += 1;
+      calls.push(`run-${runRequests}`);
+      const status = runRequests === 3 ? 'awaiting_compliance_approval' : 'complete';
+      job = { ...job, status, last_error: null, budget: { ...job.budget, attempted: runRequests } };
+      return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) });
+    } finally {
+      runInFlight = false;
+      concurrentRunRequests -= 1;
     }
-    if (runRequests === 3) {
-      calls.push('run-2-failed');
-      job = { ...job, status: 'failed', last_error: '模拟的已知服务端失败' };
-      return route.fulfill({
-        status: 500,
-        contentType: 'application/json; charset=utf-8',
-        body: JSON.stringify({ error: { code: 'simulated_failure', message: '模拟的已知服务端失败' } }),
-      });
-    }
-    runCount += 1;
-    calls.push(`run-${runCount}`);
-    const statuses = ['awaiting_research_approval', 'awaiting_compliance_approval', 'complete'];
-    job = { ...job, status: statuses[runCount - 1], budget: { ...job.budget, attempted: runCount + 1 } };
-    return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) });
   });
-  await page.route('**/api/jobs/fake-job/review-artifacts/research.json', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json; charset=utf-8',
-    body: JSON.stringify({
-      status: 'offline',
-      summary: '未配置API Key，跳过联网研究并使用本地范式',
-      findings: [],
-      sources: [],
-    }),
-  }));
+  await page.route('**/api/jobs/fake-job/review-artifacts/research.json', route => {
+    researchArtifactRequests += 1;
+    if (researchArtifactRequests === 1) {
+      return route.fulfill({ status: 404, contentType: 'application/json; charset=utf-8', body: JSON.stringify({ error: { message: '产物尚未发布' } }) });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json; charset=utf-8',
+      body: JSON.stringify({
+        status: 'offline',
+        summary: '未配置API Key，跳过联网研究并使用本地范式',
+        findings: [],
+        sources: [],
+      }),
+    });
+  });
   await page.route('**/api/jobs/fake-job/review-artifacts/approved_script.json', route => route.fulfill({
     status: 200,
     contentType: 'application/json; charset=utf-8',
@@ -143,23 +231,41 @@ const { chromium } = require('playwright');
   await page.getByRole('button', { name: '确认边界并继续' }).click();
   const retryButton = page.getByRole('button', { name: '重试当前步骤' });
   await retryButton.waitFor();
-  await retryButton.evaluate(button => { button.click(); button.click(); });
+  await page.locator('#appMenuButton').click();
+  await page.locator('#appMenu [data-view="jobs"]').click();
+  const listRetryButton = page.locator('#jobList button[data-action="run"][data-job-id="fake-job"]');
+  await listRetryButton.waitFor();
+  await listRetryButton.evaluate(button => { button.click(); button.click(); });
+  await page.waitForFunction(() => [...document.querySelectorAll('#jobList .pill')].some(node => node.textContent.includes('待你确认最终脚本')));
+  await page.locator('#homeButton').click();
   await page.getByRole('heading', { name: '最终脚本已通过自动合规检查' }).waitFor();
   await page.getByRole('button', { name: '确认脚本并渲染' }).click();
   await page.getByRole('heading', { name: '成片已经完成' }).waitFor();
+  const completedOpenEnabled = await page.locator('#jobList button[data-action="open"][data-job-id="fake-job"]').isEnabled();
 
-  const expectedCalls = ['create-network-uncertain', 'create-replay', 'authorize-network-uncertain', 'run-network-uncertain', 'run-1', 'research-approval', 'run-2-failed', 'run-2', 'compliance-approval', 'run-3'];
+  await page.locator('#appMenuButton').click();
+  await page.locator('#appMenu [data-view="jobs"]').click();
+  await page.locator('#researchFindings').evaluate(node => {
+    node.innerHTML = '<div class="finding" data-finding-id="stale">旧任务 finding 不应保留</div>';
+  });
+  await page.locator('#jobList button[data-action="open"][data-job-id="running-detail-job"]').click();
+  await page.waitForFunction(() => document.querySelector('#researchFindings')?.textContent.includes('产物发布中'));
+  const staleFindingClearedDuringPending = !(await page.locator('#researchFindings').innerText()).includes('旧任务 finding 不应保留');
+  await page.waitForFunction(() => document.querySelector('#jobDetailBadge')?.textContent === '待你确认研究证据'
+    && document.querySelector('#researchFindings')?.textContent.includes('新的详情 finding'));
+  const staleFindingAbsentAfterRecovery = !(await page.locator('#researchFindings').innerText()).includes('旧任务 finding 不应保留');
+
+  const expectedCalls = ['create-network-uncertain', 'create-replay', 'authorize-network-uncertain', 'run-long', 'research-approval', 'run-2-failed', 'run-3', 'compliance-approval', 'run-4'];
   const createReplayReusedKey = createKeys[0] && createKeys[0] === createKeys[1];
-  const automaticReplayReusedKey = runKeys[0] && runKeys[0] === runKeys[1];
-  const explicitRetryUsedNewKey = runKeys[2] && runKeys[3] && runKeys[2] !== runKeys[3];
-  const logicalAttemptKeysAreUnique = new Set([runKeys[0], runKeys[2], runKeys[3], runKeys[4]]).size === 4;
+  const noAutomaticRunReplay = runRequests === 4;
+  const logicalAttemptKeysAreUnique = runKeys.length === 4 && new Set(runKeys).size === 4;
   const emptyResearchBoundaryConfirmed = researchApprovalPayload
     && Array.isArray(researchApprovalPayload.findings)
     && researchApprovalPayload.findings.length === 0
     && researchApprovalPayload.note === '本人确认本次无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板';
-  const unexpectedErrors = errors.filter(message => !/net::ERR_CONNECTION_FAILED|status of 500 \(Internal Server Error\)/.test(message));
-  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, authorizeRequests, runKeys, automaticReplayReusedKey, explicitRetryUsedNewKey, logicalAttemptKeysAreUnique, emptyResearchBoundaryConfirmed, expectedFailureSignals: errors, unexpectedErrors };
+  const unexpectedErrors = errors.filter(message => !/net::ERR_CONNECTION_FAILED|status of 404 \(Not Found\)|status of 500 \(Internal Server Error\)/.test(message));
+  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, authorizeRequests, runKeys, noAutomaticRunReplay, logicalAttemptKeysAreUnique, maxConcurrentRunRequests, pollsDuringLongRun, injectedPollFailures, recoveredPolls, researchArtifactRequests, detailJobReads, detailArtifactRequests, detailRunRequests, staleFindingClearedDuringPending, staleFindingAbsentAfterRecovery, completedOpenEnabled, emptyResearchBoundaryConfirmed, expectedFailureSignals: errors, unexpectedErrors };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
-  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || authorizeRequests !== 1 || runRequests !== 5 || !automaticReplayReusedKey || !explicitRetryUsedNewKey || !logicalAttemptKeysAreUnique || !emptyResearchBoundaryConfirmed) process.exit(1);
+  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || authorizeRequests !== 1 || !noAutomaticRunReplay || !logicalAttemptKeysAreUnique || maxConcurrentRunRequests !== 1 || pollsDuringLongRun < 2 || injectedPollFailures !== 1 || recoveredPolls < 1 || researchArtifactRequests < 2 || detailJobReads < 3 || detailArtifactRequests < 2 || detailRunRequests !== 0 || !staleFindingClearedDuringPending || !staleFindingAbsentAfterRecovery || !completedOpenEnabled || !emptyResearchBoundaryConfirmed) process.exit(1);
 })();
