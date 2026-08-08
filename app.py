@@ -732,6 +732,22 @@ class AppHandler(BaseHTTPRequestHandler):
         return local_topic_candidates(goal, pack, excluded)
 
     @staticmethod
+    def _startup_memory_rules(goal: str) -> list[dict[str, object]]:
+        """Read rules from the deterministic base pack before regeneration.
+
+        A local pack that incorporates a learned constraint has a new immutable
+        hash (and therefore may have a new id).  The base local-pack id remains
+        the stable lookup key for project-scoped startup memory.
+        """
+
+        base_pack_id = local_capability_pack(goal)["id"]
+        return learning_store.rules_for(base_pack_id)
+
+    @classmethod
+    def _local_pack_with_startup_memory(cls, goal: str) -> dict:
+        return local_capability_pack(goal, cls._startup_memory_rules(goal))
+
+    @staticmethod
     def _validate_topic_goal(value: object) -> str:
         try:
             return validate_goal(value, minimum=4, maximum=200)
@@ -818,12 +834,12 @@ class AppHandler(BaseHTTPRequestHandler):
             # A model-generated pack is never usable without a separate
             # counter-evidence pass.  Do not spend the final request on a
             # bootstrap result that cannot be independently reviewed.
-            pack = local_capability_pack(goal)
+            pack = self._local_pack_with_startup_memory(goal)
             raw = self._safe_topic_candidates(excluded, goal, pack)
             source = "local_safe_agent"
             notice = "预任务预算不足以同时完成能力包生成和独立反证审核，已使用本地安全能力包。"
         elif remaining_before_call <= 0:
-            pack = pack or local_capability_pack(goal)
+            pack = pack or self._local_pack_with_startup_memory(goal)
             raw = self._safe_topic_candidates(excluded, goal, pack)
             source = "local_safe_agent"
             notice = "本机会话的预任务 Agent Provider 预算已耗尽，已使用本地通用能力包和安全候选。"
@@ -840,13 +856,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 else:
                     bootstrap_method = getattr(provider, "bootstrap_project", None)
                     if not callable(bootstrap_method):
-                        pack = local_capability_pack(goal)
+                        pack = self._local_pack_with_startup_memory(goal)
                         raw = provider.suggest_topics(goal, excluded)
                         source = "deepseek"
                         bootstrap = None
                     else:
-                        inferred_pack_id = local_capability_pack(goal)["id"]
-                        startup_memory_rules = learning_store.rules_for(inferred_pack_id)
+                        startup_memory_rules = self._startup_memory_rules(goal)
                         bootstrap = bootstrap_method(goal, excluded, startup_memory_rules)
                     if bootstrap is None:
                         pass
@@ -905,12 +920,12 @@ class AppHandler(BaseHTTPRequestHandler):
                             and str(item.get("title", "")).strip() not in rejected_titles
                         ]
             except (ProviderError, TypeError, ValueError) as exc:
-                pack = supplied_pack or local_capability_pack(goal)
+                pack = supplied_pack or self._local_pack_with_startup_memory(goal)
                 raw = self._safe_topic_candidates(excluded, goal, pack)
                 source = "local_safe_agent"
                 notice = f"DeepSeek本次未返回可用项目结构，已切换到本地通用能力包：{exc}"
         if pack is None:
-            pack = local_capability_pack(goal)
+            pack = self._local_pack_with_startup_memory(goal)
         pack = self._publish_capability_pack(pack)
         candidates, used_local_fallback = self._normalize_topic_candidates(raw, excluded, goal, pack)
         if source in {"deepseek", "deepseek_bootstrap"} and used_local_fallback:
@@ -1074,34 +1089,46 @@ class AppHandler(BaseHTTPRequestHandler):
         correction_kind = infer_correction_kind(str(body.get("message", "")), body.get("kind"))
         learning_payload = dict(body)
         learning_payload["kind"] = correction_kind
+        if correction_kind == "capability":
+            requested_scope = body.get("scope")
+            if requested_scope is not None and requested_scope not in {"task", "project", "workspace"}:
+                raise UnprocessableError("scope必须是task、project或workspace")
+            if requested_scope == "task":
+                raise UnprocessableError("能力包不可变，能力包纠错不能仅作用于当前任务；请使用project或明确全局范围")
+            # Capability corrections can only guide a future task with a newly
+            # reviewed pack.  A job-associated correction would otherwise
+            # default to task scope and become an unreachable old-job memory.
+            if requested_scope is None:
+                learning_payload["scope"] = "project"
+            resolved_scope = LearningStore._resolve_scope(
+                str(body.get("message", "")), learning_payload.get("scope"), has_job=job_id is not None,
+            )
+            if resolved_scope == "task":
+                raise UnprocessableError("能力包不可变，能力包纠错不能仅作用于当前任务；请使用project或明确全局范围")
         correction = learning_store.record_correction(learning_payload, pack, job_id=job_id)
         rules = learning_store.rules_for(pack["id"], job_id=job_id)
         updated_job = None
         queued = False
-        requires_new_task = False
-        notice = None
-        if job_id:
-            if correction_kind == "capability":
-                # Packs are immutable and this v3 preview has no public rebind
-                # contract.  Persist the scoped rule for future topic creation,
-                # but never strand the current job in an unreachable revision
-                # state or pretend that its trusted snapshot changed.
-                requires_new_task = True
-                notice = "能力包不可变：本次纠错已安全记录为后续任务规则，当前任务继续使用原能力包；请通过 /api/agent/topics 重新生成候选并创建带新能力包的任务。"
-            else:
-                try:
-                    updated_job = job_store.apply_learning_rules(
-                        job_id,
-                        rules,
-                        str(body.get("message", "")),
-                        correction_kind=correction_kind,
-                    )
-                except ConflictError:
-                    current = job_store.get(job_id)
-                    if current.get("status") not in {"research_running", "content_running", "rendering"}:
-                        raise
-                    # A blocking Provider call is not falsely reported as cancelled.
-                    queued = True
+        requires_new_task = correction_kind == "capability"
+        notice = (
+            "能力包不可变：本次纠错已安全记录为后续任务规则，当前任务继续使用原能力包；请通过 /api/agent/topics 重新生成候选并创建带新能力包的任务。"
+            if requires_new_task
+            else None
+        )
+        if job_id and correction_kind != "capability":
+            try:
+                updated_job = job_store.apply_learning_rules(
+                    job_id,
+                    rules,
+                    str(body.get("message", "")),
+                    correction_kind=correction_kind,
+                )
+            except ConflictError:
+                current = job_store.get(job_id)
+                if current.get("status") not in {"research_running", "content_running", "rendering"}:
+                    raise
+                # A blocking Provider call is not falsely reported as cancelled.
+                queued = True
         return {
             "correction": correction,
             "correction_kind": correction_kind,
@@ -1113,7 +1140,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "applied_to_current": bool(updated_job),
             "queued_for_next_stage": queued,
             "interrupt_supported": False,
-            "effective_mode": "defer" if queued else "applied_at_safe_boundary",
+            "effective_mode": "recorded_for_new_task" if requires_new_task else ("defer" if queued else "applied_at_safe_boundary"),
             "requires_new_task": requires_new_task,
             "notice": notice,
         }

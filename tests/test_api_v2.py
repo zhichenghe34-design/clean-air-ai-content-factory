@@ -459,11 +459,74 @@ class ApiV2Tests(unittest.TestCase):
         correction = json.loads(body)
         self.assertFalse(correction["applied_to_current"])
         self.assertTrue(correction["requires_new_task"])
+        self.assertEqual(correction["effective_mode"], "recorded_for_new_task")
         self.assertIn("/api/agent/topics", correction["notice"])
         self.assertEqual(app.job_store.get(job["id"])["status"], "planned")
         status, _, body = self.request("POST", f"/api/jobs/{job['id']}/approve", {}, self.secure_headers())
         self.assertEqual(status, 200)
         self.assertEqual(app.job_store._next_stage(app.job_store.get(job["id"])), "research")
+
+    def test_capability_correction_scope_can_bootstrap_future_topic_but_never_task_only(self):
+        goal = "为本地餐饮门店制作一条新品介绍短视频"
+        pack = local_capability_pack(goal)
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {"production_input": {"topic": "新品上市前先回答顾客最关心的三个问题", "audience": "到店顾客", "capability_pack": pack}},
+            self.secure_headers(**{"Idempotency-Key": "capability-scope-create"}),
+        )
+        self.assertEqual(status, 201)
+        job_id = json.loads(body)["id"]
+        status, _, body = self.request(
+            "POST",
+            "/api/agent/corrections",
+            {"job_id": job_id, "message": "行业判断需要重新审查", "kind": "capability", "actor": "测试操作员", "mode": "defer"},
+            self.secure_headers(**{"Idempotency-Key": "capability-scope-project"}),
+        )
+        self.assertEqual(status, 201)
+        saved = json.loads(body)
+        self.assertEqual(saved["effective_scope"], "project")
+        self.assertEqual(saved["correction"]["scope"], "project")
+        self.assertEqual(saved["effective_mode"], "recorded_for_new_task")
+
+        observed_startup_rules = []
+
+        class UnavailableBootstrapProvider:
+            def bootstrap_project(self, _goal, _excluded, rules):
+                observed_startup_rules.extend(rules)
+                raise app.ProviderError("测试 Provider 不可用")
+
+        original_pack_sha256 = pack["sha256"]
+        with mock.patch.object(app.AppHandler, "_provider", return_value=UnavailableBootstrapProvider()):
+            status, _, body = self.request(
+                "POST", "/api/agent/topics", {"goal": goal, "excluded_topics": []}, self.secure_headers()
+            )
+        self.assertEqual(status, 200)
+        regenerated = json.loads(body)
+        self.assertEqual([item["rule_id"] for item in observed_startup_rules], [saved["correction"]["rule_id"]])
+        self.assertEqual(regenerated["source"], "local_safe_agent")
+        self.assertNotEqual(regenerated["capability_pack"]["sha256"], original_pack_sha256)
+        self.assertIn(
+            "已确认纠错规则：行业判断需要重新审查",
+            regenerated["capability_pack"]["audit"]["constraints_added"],
+        )
+        self.assertEqual(
+            app.job_store.get(job_id)["production_input"]["capability_pack"]["sha256"],
+            original_pack_sha256,
+        )
+
+        before = len(app.learning_store.list_memories())
+        for suffix, rejected_payload in (
+            ("explicit", {"job_id": job_id, "message": "行业判断需要重新审查", "kind": "capability", "scope": "task"}),
+            ("natural", {"job_id": job_id, "message": "只改这次行业判断", "kind": "capability", "scope": "project"}),
+        ):
+            with self.subTest(task_only=suffix):
+                status, _, body = self.request(
+                    "POST", "/api/agent/corrections", rejected_payload, self.secure_headers(**{"Idempotency-Key": f"capability-scope-{suffix}"})
+                )
+                self.assertEqual(status, 422)
+                self.assertIn("不能仅作用于当前任务", json.loads(body)["error"]["message"])
+                self.assertEqual(len(app.learning_store.list_memories()), before)
 
     def test_dynamic_pack_requires_a_separate_passed_counterevidence_review(self):
         goal = "为本地咖啡店制作新品介绍短视频"
