@@ -64,6 +64,17 @@ const batches = [
         source: 'deepseek',
         notice: `预任务 Provider 请求 ${topicCalls}/3，剩余 ${3 - topicCalls}；来源：DeepSeek。`,
         screening: `已排除越域、夸大承诺和重复选题；公开依据将在研究阶段逐条核验；预任务 Provider 请求 ${topicCalls}/3，剩余 ${3 - topicCalls}；来源：DeepSeek。`,
+        capability_review: {
+          status: 'passed',
+          issues: ['门店资料仍待核验'],
+          safe_scope: ['仅可作为研究问题'],
+          candidate_verdicts: batch.map((_, index) => ({
+            candidate_id: `topic-${index + 1}`,
+            verdict: index === 0 ? 'needs_evidence' : 'usable_limited',
+            reasons: ['不得提前断言门店事实'],
+            safe_scope: '进入研究后逐条取证',
+          })),
+        },
         topic_provider_budget: { limit: 3, attempted: topicCalls, succeeded: topicCalls, failed: 0, remaining: 3 - topicCalls, events: [] },
         pretask_provider_budget: { limit: 3, attempted: topicCalls, succeeded: topicCalls, failed: 0, remaining: 3 - topicCalls, events: [] },
         candidates: batch.map(([title, reason], index) => ({ id: `topic-${index + 1}`, title, reason, audience: '新房家庭' })),
@@ -154,5 +165,5 @@ const batches = [
   };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
-  if (errors.length || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 本次连接已验证' || !providerVerifiedClass || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('研究阶段逐条核验') || !refreshedScreening.includes('2/3') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow) process.exit(1);
+  if (errors.length || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 本次连接已验证' || !providerVerifiedClass || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('研究阶段逐条核验') || !initialScreening.includes('反证审核通过') || !initialScreening.includes('原因：门店资料仍待核验') || !initialScreening.includes('允许范围：仅可作为研究问题') || initialScreening.includes('needs_evidence') || !refreshedScreening.includes('2/3') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow) process.exit(1);
 })();

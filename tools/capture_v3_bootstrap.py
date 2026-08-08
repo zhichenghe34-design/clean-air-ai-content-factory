@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -11,6 +11,13 @@ import uuid
 from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from core.provider import ProviderError, normalize_capability_review
 
 
 class BootstrapError(RuntimeError):
@@ -32,33 +39,51 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def safe_review_summary(review: Any) -> dict[str, Any]:
-    """Keep only bounded server enums and fixed bootstrap candidate identities."""
+    """Revalidate and retain only bounded, safe review explanations."""
 
-    statuses = {"passed", "needs_revision", "blocked"}
     verdicts = {"usable_limited", "needs_evidence", "rejected"}
-    if not isinstance(review, dict) or review.get("status") not in statuses:
+    try:
+        normalized = normalize_capability_review(review, ["topic-1", "topic-2", "topic-3"])
+    except ProviderError:
         return {
             "status": "invalid_schema",
+            "failure_kind": "invalid_schema",
+            "issues": [],
+            "safe_scope": [],
             "verdict_counts": {name: 0 for name in sorted(verdicts)},
-            "candidates": [],
+            "candidate_verdicts": [],
         }
     counts = {name: 0 for name in sorted(verdicts)}
     candidates = []
-    raw_candidates = review.get("candidate_verdicts")
-    if not isinstance(raw_candidates, list) or len(raw_candidates) != 3:
-        return {"status": "invalid_schema", "verdict_counts": counts, "candidates": []}
-    for item in raw_candidates[:3]:
-        if not isinstance(item, dict):
-            return {"status": "invalid_schema", "verdict_counts": counts, "candidates": []}
-        candidate_id = item.get("candidate_id")
-        verdict = item.get("verdict")
-        if not isinstance(candidate_id, str) or not re.fullmatch(r"topic-[1-3]", candidate_id) or verdict not in verdicts:
-            return {"status": "invalid_schema", "verdict_counts": counts, "candidates": []}
-        counts[verdict] += 1
-        candidates.append({"candidate_id": candidate_id, "verdict": verdict})
-    if [item["candidate_id"] for item in candidates] != ["topic-1", "topic-2", "topic-3"]:
-        return {"status": "invalid_schema", "verdict_counts": {name: 0 for name in sorted(verdicts)}, "candidates": []}
-    return {"status": review["status"], "verdict_counts": counts, "candidates": candidates}
+    for item in normalized["candidate_verdicts"]:
+        counts[item["verdict"]] += 1
+        candidates.append({
+            "candidate_id": item["candidate_id"],
+            "verdict": item["verdict"],
+            "reasons": item["reasons"][:4],
+            "safe_scope": item["safe_scope"],
+        })
+    return {
+        "status": normalized["status"],
+        "failure_kind": normalized["status"],
+        "issues": normalized["issues"][:6],
+        "safe_scope": normalized["safe_scope"][:6],
+        "verdict_counts": counts,
+        "candidate_verdicts": candidates,
+    }
+
+
+def safe_review_failure_kind(summary: dict[str, Any], screening: Any) -> str:
+    if summary.get("status") in {"passed", "needs_revision", "blocked"}:
+        return str(summary["status"])
+    text = str(screening or "")
+    if "结构或候选身份无效" in text:
+        return "invalid_schema"
+    if "Provider 或传输不可用" in text:
+        return "provider_unavailable"
+    if "未执行" in text:
+        return "not_run"
+    return "invalid_schema"
 
 
 class LocalApi:
@@ -131,6 +156,8 @@ def capture(base_url: str, output_dir: Path, goal: str, formal_secret: Path, iso
     pack = topics.get("capability_pack")
     review = topics.get("capability_review")
     review_summary = safe_review_summary(review)
+    review_failure_kind = safe_review_failure_kind(review_summary, topics.get("screening"))
+    review_summary["failure_kind"] = review_failure_kind
     candidates = topics.get("candidates")
     formal_after = sha256(formal_secret)
     if formal_after != formal_before:
@@ -168,6 +195,7 @@ def capture(base_url: str, output_dir: Path, goal: str, formal_secret: Path, iso
             "candidate_count": len(candidates) if isinstance(candidates, list) else None,
             "pack_audit_status": (pack.get("audit") or {}).get("status") if isinstance(pack, dict) else None,
             "capability_review_status": review_summary["status"],
+            "capability_review_failure_kind": review_failure_kind,
             "capability_review_summary": review_summary,
             "pretask_provider_budget": budget,
             "automatic_paid_retry_started": False,

@@ -513,6 +513,19 @@ class ProviderGenericTests(unittest.TestCase):
         mixed_reasons["candidate_verdicts"][0]["reasons"] = ["安全", 7]
         invalid_reviews["mixed_types"] = mixed_reasons
         invalid_reviews["malformed"] = {"status": "passed"}
+        passed_with_rejected = valid_review("passed")
+        passed_with_rejected["candidate_verdicts"][0]["verdict"] = "rejected"
+        invalid_reviews["passed_with_rejected"] = passed_with_rejected
+        unexplained_revision = valid_review("needs_revision")
+        unexplained_revision["issues"] = []
+        for item in unexplained_revision["candidate_verdicts"]:
+            item["reasons"] = []
+        invalid_reviews["unexplained_revision"] = unexplained_revision
+        unexplained_block = valid_review("blocked")
+        unexplained_block["issues"] = []
+        for item in unexplained_block["candidate_verdicts"]:
+            item["reasons"] = []
+        invalid_reviews["unexplained_block"] = unexplained_block
 
         for name, payload in invalid_reviews.items():
             with self.subTest(invalid=name):

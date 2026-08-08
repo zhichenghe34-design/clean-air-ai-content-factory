@@ -267,7 +267,26 @@ function renderTopicChoices(result = state.topicResponse || {}) {
     : result.source === "deepseek_filtered_with_local_fallback"
       ? "DeepSeek + 本地安全 Agent"
       : "本地安全 Agent";
-  document.getElementById("topicScreening").innerHTML = `<img class="ui-icon" src="/icons/shield-check.svg" alt="">${escapeHtml(result.screening || "已排除危险目标、无依据承诺和重复选题；公开依据将在研究阶段逐条核验。")}<span class="sr-only">${source}</span>`;
+  const review = result.capability_review;
+  const reviewLabels = { passed: "反证审核通过，仅允许进入研究，不代表事实已证实", needs_revision: "反证审核需要修改，当前动态能力包未放行", blocked: "反证审核已阻止，当前内容不得进入研究" };
+  const verdictLabels = { usable_limited: "可有限使用", needs_evidence: "需要补充证据", rejected: "已拒绝" };
+  const reviewParts = [];
+  if (review && reviewLabels[review.status]) {
+    reviewParts.push(reviewLabels[review.status]);
+    const issues = Array.isArray(review.issues) ? review.issues.filter(item => typeof item === "string" && item.trim()).slice(0, 2) : [];
+    const scopes = Array.isArray(review.safe_scope) ? review.safe_scope.filter(item => typeof item === "string" && item.trim()).slice(0, 2) : [];
+    if (issues.length) reviewParts.push(`原因：${issues.join("；")}`);
+    if (scopes.length) reviewParts.push(`允许范围：${scopes.join("；")}`);
+    const candidateNotes = Array.isArray(review.candidate_verdicts) ? review.candidate_verdicts.slice(0, 2).map((item, index) => {
+      const reasons = Array.isArray(item?.reasons) ? item.reasons.filter(reason => typeof reason === "string" && reason.trim()).slice(0, 1) : [];
+      const scope = typeof item?.safe_scope === "string" ? item.safe_scope.trim() : "";
+      const detail = [reasons[0], scope ? `范围：${scope}` : ""].filter(Boolean).join("；");
+      return detail ? `候选${index + 1}${verdictLabels[item?.verdict] || "待核验"}：${detail}` : "";
+    }).filter(Boolean) : [];
+    if (candidateNotes.length) reviewParts.push(candidateNotes.join("；"));
+  }
+  reviewParts.push(result.screening || "已排除危险目标、无依据承诺和重复选题；公开依据将在研究阶段逐条核验。");
+  document.getElementById("topicScreening").innerHTML = `<img class="ui-icon" src="/icons/shield-check.svg" alt="">${escapeHtml(reviewParts.join("。"))}<span class="sr-only">${source}</span>`;
   document.getElementById("topicCandidates").innerHTML = state.topicCandidates.map((item, index) => `
     <button class="topic-option${index === state.selectedTopicIndex ? " selected" : ""}" type="button" role="radio" aria-checked="${index === state.selectedTopicIndex}" data-topic-index="${index}">
       <span class="topic-index">${String(index + 1).padStart(2, "0")}</span>

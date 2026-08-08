@@ -44,10 +44,15 @@ class IsolatedInstanceTests(unittest.TestCase):
                     "capability_pack": {"audit": {"status": "local_safe_fallback"}},
                     "capability_review": {
                         "status": "needs_revision",
-                        "issues": ["安全化问题摘要，不进入捕获摘要"],
+                        "issues": ["门店资料尚未提供"],
                         "safe_scope": ["只作为待核验问题"],
                         "candidate_verdicts": [
-                            {"candidate_id": f"topic-{index}", "verdict": "needs_evidence"}
+                            {
+                                "candidate_id": f"topic-{index}",
+                                "verdict": "needs_evidence",
+                                "reasons": [f"候选{index}仍缺公开依据"],
+                                "safe_scope": "只可进入研究取证",
+                            }
                             for index in range(1, 4)
                         ],
                     },
@@ -60,15 +65,22 @@ class IsolatedInstanceTests(unittest.TestCase):
             diagnostic = json.loads((root / "output" / "bootstrap-diagnostic.json").read_text(encoding="utf-8"))
             self.assertEqual(diagnostic["source"], "local_safe_agent")
             self.assertEqual(diagnostic["capability_review_status"], "needs_revision")
+            self.assertEqual(diagnostic["capability_review_failure_kind"], "needs_revision")
             self.assertEqual(diagnostic["capability_review_summary"]["verdict_counts"]["needs_evidence"], 3)
+            self.assertEqual(diagnostic["capability_review_summary"]["issues"], ["门店资料尚未提供"])
+            self.assertEqual(diagnostic["capability_review_summary"]["safe_scope"], ["只作为待核验问题"])
             self.assertEqual(
-                diagnostic["capability_review_summary"]["candidates"],
+                diagnostic["capability_review_summary"]["candidate_verdicts"],
                 [
-                    {"candidate_id": f"topic-{index}", "verdict": "needs_evidence"}
+                    {
+                        "candidate_id": f"topic-{index}",
+                        "verdict": "needs_evidence",
+                        "reasons": [f"候选{index}仍缺公开依据"],
+                        "safe_scope": "只可进入研究取证",
+                    }
                     for index in range(1, 4)
                 ],
             )
-            self.assertNotIn("安全化问题摘要", json.dumps(diagnostic, ensure_ascii=False))
             self.assertFalse(diagnostic["automatic_paid_retry_started"])
             self.assertEqual(diagnostic["tasks_created"], 0)
 
@@ -81,9 +93,53 @@ class IsolatedInstanceTests(unittest.TestCase):
         summary = capture_v3_bootstrap.safe_review_summary(unsafe)
         serialized = json.dumps(summary, ensure_ascii=False)
         self.assertEqual(summary["status"], "invalid_schema")
-        self.assertEqual(summary["candidates"], [])
+        self.assertEqual(summary["candidate_verdicts"], [])
         self.assertNotIn("must-not-survive", serialized)
         self.assertNotIn("customer-secret", serialized)
+
+        self.assertEqual(
+            capture_v3_bootstrap.safe_review_failure_kind(summary, "反证审核 Provider 或传输不可用；已安全降级"),
+            "provider_unavailable",
+        )
+        self.assertEqual(
+            capture_v3_bootstrap.safe_review_failure_kind(summary, "反证审核未执行；已使用本地安全能力包"),
+            "not_run",
+        )
+        self.assertEqual(
+            capture_v3_bootstrap.safe_review_failure_kind(summary, "反证审核结构或候选身份无效；已安全降级"),
+            "invalid_schema",
+        )
+
+    def test_bootstrap_capture_records_provider_failure_kind_without_raw_error(self):
+        with tempfile.TemporaryDirectory(prefix="shiyi-bootstrap-provider-failure-") as temporary:
+            root = Path(temporary)
+            formal, isolated = root / "formal.json", root / "isolated.json"
+            formal.write_text('{"protected":"ciphertext"}\n', encoding="utf-8")
+            isolated.write_bytes(formal.read_bytes())
+            fake_api = mock.Mock()
+            fake_api.request.side_effect = [
+                {"ok": True, "connection_verified": True, "model": "test-model"},
+                {
+                    "source": "local_safe_agent",
+                    "notice": "Provider 未返回审核结果，已本地降级",
+                    "screening": "反证审核 Provider 或传输不可用；已安全降级，未把通信失败误作审核结论",
+                    "candidates": [{}, {}, {}],
+                    "capability_pack": {"audit": {"status": "local_safe_fallback"}},
+                    "capability_review": None,
+                    "pretask_provider_budget": {"attempted": 2, "limit": 3},
+                },
+            ]
+            with mock.patch.object(capture_v3_bootstrap, "LocalApi", return_value=fake_api):
+                with self.assertRaises(capture_v3_bootstrap.BootstrapError):
+                    capture_v3_bootstrap.capture(
+                        "http://127.0.0.1:8785", root / "output", "餐饮内容验证", formal, isolated,
+                    )
+            diagnostic_text = (root / "output" / "bootstrap-diagnostic.json").read_text(encoding="utf-8")
+            diagnostic = json.loads(diagnostic_text)
+            self.assertEqual(diagnostic["capability_review_failure_kind"], "provider_unavailable")
+            self.assertEqual(diagnostic["capability_review_summary"]["failure_kind"], "provider_unavailable")
+            self.assertEqual(diagnostic["capability_review_summary"]["candidate_verdicts"], [])
+            self.assertNotIn("raw provider payload", diagnostic_text)
 
     def test_rejects_formal_runtime_repo_and_disk_root(self):
         safe = Path(tempfile.gettempdir()) / "shiyi-v03-safe-storage-test"

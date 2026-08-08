@@ -85,7 +85,7 @@ def pretask_budget_for(goal: str) -> BudgetLedger:
         return ledger
 
 
-def capability_review_screening(review: dict | None, *, attempted: bool) -> str:
+def capability_review_screening(review: dict | None, *, failure_kind: str) -> str:
     """Summarize only local enums and counts; never surface reviewer prose."""
 
     if isinstance(review, dict):
@@ -94,15 +94,29 @@ def capability_review_screening(review: dict | None, *, attempted: bool) -> str:
             if isinstance(item, dict) and item.get("verdict") in counts:
                 counts[item["verdict"]] += 1
         count_text = (
-            f"usable_limited {counts['usable_limited']}、"
-            f"needs_evidence {counts['needs_evidence']}、rejected {counts['rejected']}"
+            f"可有限使用 {counts['usable_limited']}、"
+            f"需要证据 {counts['needs_evidence']}、已拒绝 {counts['rejected']}"
         )
         if review.get("status") == "passed":
-            return f"反证审核状态 passed；候选 {count_text}；仅允许进入研究，不代表事实已证实"
-        return f"反证审核状态 {review.get('status')}；候选 {count_text}；已安全降级，未允许动态能力包进入研究"
-    if attempted:
-        return "反证审核结构无效；已安全降级，未保存或展示模型原始审核内容"
-    return "未取得可用反证审核；已使用本地安全能力包，公开依据仍须在研究阶段逐条核验"
+            return f"反证审核通过；候选 {count_text}；仅允许进入研究，不代表事实已证实"
+        if review.get("status") == "needs_revision":
+            return f"反证审核需要修改；候选 {count_text}；已安全降级，修改后才能重新审核"
+        return f"反证审核已阻止；候选 {count_text}；已安全降级，当前内容不得进入研究"
+    if failure_kind == "invalid_schema":
+        return "反证审核结构或候选身份无效；已安全降级，当前候选不沿用原裁决"
+    if failure_kind == "provider_unavailable":
+        return "反证审核 Provider 或传输不可用；已安全降级，未把通信失败误作审核结论"
+    return "反证审核未执行；已使用本地安全能力包，公开依据仍须在研究阶段逐条核验"
+
+
+def capability_review_failure_from_budget(budget: BudgetLedger) -> str:
+    for event in reversed(budget.snapshot().get("events", [])):
+        if event.get("stage") != "capability_pack_adversarial_review":
+            continue
+        if event.get("error_type") == "invalid_capability_review_schema":
+            return "invalid_schema"
+        return "provider_unavailable"
+    return "provider_unavailable"
 
 
 def store_topic_selection_bundle(goal: str, pack: dict, candidates: list[dict]) -> str:
@@ -848,7 +862,8 @@ class AppHandler(BaseHTTPRequestHandler):
         raw: list[dict]
         pack = supplied_pack
         capability_review: dict | None = None
-        capability_review_attempted = False
+        capability_review_failure_kind = "not_run"
+        reviewed_candidate_titles: dict[str, str] | None = None
         source = "deepseek_bootstrap"
         notice = ""
         remaining_before_call = pretask_budget.snapshot()["remaining"]
@@ -898,18 +913,29 @@ class AppHandler(BaseHTTPRequestHandler):
                         review_method = getattr(provider, "adversarial_review_capability_pack", None)
                         if pretask_budget.snapshot()["remaining"] <= 0 or not callable(review_method):
                             raise ProviderError("动态行业能力包缺少独立反证审核额度或审核器")
-                        capability_review_attempted = True
+                        capability_review_failure_kind = "provider_unavailable"
                         audit = review_method(pack, raw)
                         if not isinstance(audit, dict):
+                            capability_review_failure_kind = "invalid_schema"
                             raise ProviderError("严格反证审核没有返回JSON对象")
-                        capability_review = normalize_capability_review(
-                            audit,
-                            [str(item.get("id", "")) for item in raw],
-                        )
+                        try:
+                            capability_review = normalize_capability_review(
+                                audit,
+                                [str(item.get("id", "")) for item in raw],
+                            )
+                        except ProviderError:
+                            capability_review_failure_kind = "invalid_schema"
+                            raise
                         audit = capability_review
                         audit_status = audit["status"]
+                        capability_review_failure_kind = audit_status
                         if audit_status != "passed":
                             raise ProviderError("动态行业能力包未通过严格反证审核")
+                        reviewed_candidate_titles = {
+                            str(item.get("id", "")): str(item.get("title", "")).strip()
+                            for item in raw
+                            if isinstance(item, dict)
+                        }
                         normalized_audit = {
                             "status": "passed",
                             "generated_by": "adversarial_agent",
@@ -928,38 +954,38 @@ class AppHandler(BaseHTTPRequestHandler):
                         pack = normalize_capability_pack(
                             audited_snapshot, goal, "deepseek", audit=normalized_audit,
                         )
-                        reviews = audit.get(
-                            "candidate_verdicts",
-                            audit.get("candidate_reviews", audit.get("candidates", [])),
-                        )
-                        rejected_ids: set[str] = set()
-                        rejected_titles: set[str] = set()
-                        if isinstance(reviews, list):
-                            for review in reviews:
-                                if not isinstance(review, dict) or review.get("verdict") != "rejected":
-                                    continue
-                                rejected_ids.add(str(review.get("candidate_id", review.get("id", ""))).strip())
-                                rejected_titles.add(str(review.get("title", "")).strip())
-                        raw = [
-                            item for item in raw
-                            if isinstance(item, dict)
-                            and str(item.get("id", "")).strip() not in rejected_ids
-                            and str(item.get("title", "")).strip() not in rejected_titles
-                        ]
-            except (ProviderError, TypeError, ValueError) as exc:
+            except (ProviderError, TypeError, ValueError):
+                if capability_review_failure_kind == "provider_unavailable":
+                    capability_review_failure_kind = capability_review_failure_from_budget(pretask_budget)
                 pack = supplied_pack or self._local_pack_with_startup_memory(goal)
                 raw = self._safe_topic_candidates(excluded, goal, pack)
                 source = "local_safe_agent"
-                notice = f"DeepSeek本次未返回可用项目结构，已切换到本地通用能力包：{exc}"
+                notice = {
+                    "needs_revision": "动态行业能力包需要修改后重新审核，已切换到本地安全能力包。",
+                    "blocked": "动态行业能力包被反证审核阻止，已切换到本地安全能力包。",
+                    "invalid_schema": "反证审核结构或候选身份无效，已切换到本地安全能力包。",
+                    "provider_unavailable": "Provider 或传输未返回可用审核结果，已切换到本地安全能力包。",
+                }.get(capability_review_failure_kind, "反证审核未执行，已切换到本地安全能力包。")
         if pack is None:
             pack = self._local_pack_with_startup_memory(goal)
-        pack = self._publish_capability_pack(pack)
         candidates, used_local_fallback = self._normalize_topic_candidates(raw, excluded, goal, pack)
+        if reviewed_candidate_titles is not None:
+            returned_candidate_titles = {item["id"]: item["title"] for item in candidates}
+            if used_local_fallback or returned_candidate_titles != reviewed_candidate_titles:
+                pack = self._local_pack_with_startup_memory(goal)
+                raw = self._safe_topic_candidates(excluded, goal, pack)
+                candidates, used_local_fallback = self._normalize_topic_candidates(raw, excluded, goal, pack)
+                source = "local_safe_agent"
+                notice = "反证审核与候选身份绑定不一致，已切换到不沿用原裁决的本地安全候选。"
+                capability_review = None
+                capability_review_failure_kind = "invalid_schema"
+                reviewed_candidate_titles = None
         if source in {"deepseek", "deepseek_bootstrap"} and used_local_fallback:
             source = "deepseek_filtered_with_local_fallback"
             notice = "部分模型候选未通过安全校验，已用本地安全选题补足三个角度。"
         if len(candidates) != 3:
             raise WorkflowError("Agent暂时没有找到三个互不重复的安全角度，请稍后再试")
+        pack = self._publish_capability_pack(pack)
         budget = pretask_budget.snapshot()
         source_label = {
             "deepseek": "DeepSeek",
@@ -974,7 +1000,7 @@ class AppHandler(BaseHTTPRequestHandler):
         notice = f"{notice.rstrip('。')}；{budget_note}。" if notice else f"{budget_note}。"
         review_screening = capability_review_screening(
             capability_review,
-            attempted=capability_review_attempted,
+            failure_kind=capability_review_failure_kind,
         )
         selection_bundle_id = store_topic_selection_bundle(goal, pack, candidates)
         return {

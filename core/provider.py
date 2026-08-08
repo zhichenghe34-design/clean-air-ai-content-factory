@@ -321,6 +321,12 @@ def normalize_capability_review(
         })
     if [item["candidate_id"] for item in verdicts] != candidate_ids:
         raise ProviderError("行业能力包反证审核接口返回的候选顺序无效")
+    if value["status"] == "passed" and any(item["verdict"] == "rejected" for item in verdicts):
+        raise ProviderError("行业能力包反证审核接口返回的全局通过与候选拒绝相互冲突")
+    if value["status"] in {"needs_revision", "blocked"} and not (
+        issues or any(item["reasons"] for item in verdicts)
+    ):
+        raise ProviderError("行业能力包反证审核接口返回的非通过裁决缺少可执行解释")
     return {
         "status": value["status"],
         "issues": issues,

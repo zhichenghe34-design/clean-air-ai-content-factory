@@ -556,6 +556,7 @@ class ApiV2Tests(unittest.TestCase):
         insufficient = json.loads(body)
         self.assertEqual(insufficient["source"], "local_safe_agent")
         self.assertEqual(insufficient["capability_pack"]["audit"]["status"], "local_safe_fallback")
+        self.assertIn("反证审核未执行", insufficient["screening"])
 
         app.learning_store.record_correction(
             {"message": "以后不要使用未经证明的稀缺性话术", "scope": "project", "mode": "defer"},
@@ -606,12 +607,12 @@ class ApiV2Tests(unittest.TestCase):
         self.assertEqual(rejected["capability_pack"]["source"], "local")
         self.assertEqual(rejected["capability_pack"]["audit"]["status"], "local_safe_fallback")
         self.assertEqual(rejected["capability_review"]["status"], "needs_revision")
-        self.assertIn("usable_limited 0", rejected["screening"])
-        self.assertIn("needs_evidence 3", rejected["screening"])
+        self.assertIn("可有限使用 0", rejected["screening"])
+        self.assertIn("需要证据 3", rejected["screening"])
         self.assertIn("已安全降级", rejected["screening"])
         self.assertEqual(rejected["pretask_provider_budget"]["attempted"], 2)
         self.assertEqual(app.job_store.list(), [])
-        self.assertIn("未通过严格反证审核", rejected["notice"])
+        self.assertIn("需要修改后重新审核", rejected["notice"])
         self.assertEqual(len(observed_startup_rules), 1)
 
     def test_capability_review_observability_preserves_fail_closed_protocol(self):
@@ -675,13 +676,20 @@ class ApiV2Tests(unittest.TestCase):
                 self.assertEqual(result["capability_review"]["status"], status_name)
                 self.assertEqual(set(result["capability_review"]), {"status", "issues", "safe_scope", "candidate_verdicts"})
                 self.assertEqual(result["pretask_provider_budget"]["attempted"], 2)
-                self.assertIn("usable_limited 2", result["screening"])
-                self.assertIn("needs_evidence 1", result["screening"])
+                self.assertIn("可有限使用 2", result["screening"])
+                self.assertIn("需要证据 1", result["screening"])
                 if status_name == "passed":
                     self.assertEqual(result["source"], "deepseek_bootstrap")
                     self.assertEqual(result["capability_pack"]["audit"]["status"], "passed")
                     self.assertEqual(len(result["candidates"]), 3)
                     self.assertIn("仅允许进入研究，不代表事实已证实", result["screening"])
+                    candidate_titles = {item["id"]: item["title"] for item in result["candidates"]}
+                    review_verdicts = {
+                        item["candidate_id"]: item["verdict"]
+                        for item in result["capability_review"]["candidate_verdicts"]
+                    }
+                    self.assertEqual(candidate_titles, {item["id"]: item["title"] for item in candidates})
+                    self.assertEqual(review_verdicts, {"topic-1": "needs_evidence", "topic-2": "usable_limited", "topic-3": "usable_limited"})
                 else:
                     self.assertEqual(result["source"], "local_safe_agent")
                     self.assertEqual(result["capability_pack"]["audit"]["status"], "local_safe_fallback")
@@ -731,11 +739,124 @@ class ApiV2Tests(unittest.TestCase):
         malformed = json.loads(body)
         self.assertEqual(malformed["source"], "local_safe_agent")
         self.assertIsNone(malformed["capability_review"])
-        self.assertIn("反证审核结构无效", malformed["screening"])
+        self.assertIn("反证审核结构或候选身份无效", malformed["screening"])
         self.assertNotIn("must-not-leak", body)
         self.assertEqual(malformed["pretask_provider_budget"]["attempted"], 2)
         self.assertEqual(malformed["pretask_provider_budget"]["succeeded"], 1)
         self.assertEqual(malformed["pretask_provider_budget"]["failed"], 1)
+        self.assertEqual(app.job_store.list(), [])
+
+    def test_passed_review_cannot_reject_or_rebind_candidate_identity(self):
+        raw_pack = {
+            "label": "餐饮候选身份能力包",
+            "industry": "本地餐饮",
+            "audience": "首次到店顾客",
+            "platforms": ["抖音"],
+            "content_purpose": "菜单流程说明",
+            "tone": ["清晰"],
+            "risk_level": "low",
+        }
+        base_candidates = [
+            {"id": f"topic-{index}", "title": f"原始候选标题{index}", "reason": "等待研究核验", "audience": "首次到店顾客"}
+            for index in range(1, 4)
+        ]
+
+        class IdentityProvider:
+            def __init__(self, budget, *, rejected=False, unsafe_title=False):
+                self.budget = budget
+                self.rejected = rejected
+                self.unsafe_title = unsafe_title
+
+            def bootstrap_project(self, _goal, _excluded, _rules):
+                token = self.budget.begin("capability_pack_bootstrap")
+                self.budget.finish(token, ok=True)
+                payload = [dict(item) for item in base_candidates]
+                if self.unsafe_title:
+                    payload[0]["title"] = "绝对安全的危险候选"
+                return {"capability_pack": raw_pack, "candidates": payload}
+
+            def adversarial_review_capability_pack(self, _pack, reviewed_candidates):
+                token = self.budget.begin("capability_pack_adversarial_review")
+                self.budget.finish(token, ok=True)
+                return {
+                    "status": "passed",
+                    "issues": [],
+                    "safe_scope": ["仅允许进入研究"],
+                    "candidate_verdicts": [
+                        {
+                            "candidate_id": item["id"],
+                            "verdict": "rejected" if self.rejected and index == 0 else "usable_limited",
+                            "reasons": ["保持问题式表达"],
+                            "safe_scope": "不得提前断言事实",
+                        }
+                        for index, item in enumerate(reviewed_candidates)
+                    ],
+                }
+
+        cases = (("passed_rejected", True, False), ("post_review_filter", False, True))
+        for suffix, rejected, unsafe_title in cases:
+            with self.subTest(case=suffix):
+                goal = f"为餐饮门店制作候选身份测试视频-{suffix}"
+                with mock.patch.object(
+                    app.AppHandler,
+                    "_provider",
+                    new=lambda _handler, budget=None, _rejected=rejected, _unsafe=unsafe_title: IdentityProvider(
+                        budget, rejected=_rejected, unsafe_title=_unsafe,
+                    ),
+                ):
+                    status, _, body = self.request(
+                        "POST", "/api/agent/topics", {"goal": goal, "excluded_topics": []}, self.secure_headers()
+                    )
+                self.assertEqual(status, 200)
+                result = json.loads(body)
+                self.assertEqual(result["source"], "local_safe_agent")
+                self.assertIsNone(result["capability_review"])
+                self.assertIn("不沿用原裁决", result["screening"])
+                self.assertEqual([item["id"] for item in result["candidates"]], ["topic-1", "topic-2", "topic-3"])
+                self.assertNotEqual(
+                    {item["id"]: item["title"] for item in result["candidates"]},
+                    {item["id"]: item["title"] for item in base_candidates},
+                )
+                self.assertEqual(app.job_store.list(), [])
+
+    def test_review_transport_failure_is_not_reported_as_invalid_schema(self):
+        goal = "为餐饮门店制作传输失败分类测试视频"
+        raw_pack = {
+            "label": "餐饮传输测试能力包", "industry": "本地餐饮", "audience": "首次顾客",
+            "platforms": ["抖音"], "content_purpose": "流程说明", "tone": ["克制"], "risk_level": "low",
+        }
+        candidates = [
+            {"id": f"topic-{index}", "title": f"传输测试候选{index}", "reason": "等待研究核验", "audience": "首次顾客"}
+            for index in range(1, 4)
+        ]
+
+        class TransportFailureProvider:
+            def __init__(self, budget):
+                self.budget = budget
+
+            def bootstrap_project(self, _goal, _excluded, _rules):
+                token = self.budget.begin("capability_pack_bootstrap")
+                self.budget.finish(token, ok=True)
+                return {"capability_pack": raw_pack, "candidates": candidates}
+
+            def adversarial_review_capability_pack(self, _pack, _candidates):
+                token = self.budget.begin("capability_pack_adversarial_review")
+                self.budget.finish(token, ok=False, error_type="ProviderError")
+                raise app.ProviderError("opaque transport detail must not leak")
+
+        with mock.patch.object(
+            app.AppHandler, "_provider", new=lambda _handler, budget=None: TransportFailureProvider(budget),
+        ):
+            status, _, body = self.request(
+                "POST", "/api/agent/topics", {"goal": goal, "excluded_topics": []}, self.secure_headers()
+            )
+        self.assertEqual(status, 200)
+        result = json.loads(body)
+        self.assertEqual(result["source"], "local_safe_agent")
+        self.assertIsNone(result["capability_review"])
+        self.assertIn("Provider 或传输不可用", result["screening"])
+        self.assertNotIn("结构或候选身份无效", result["screening"])
+        self.assertNotIn("opaque transport detail", body)
         self.assertEqual(app.job_store.list(), [])
 
     def test_agent_topics_and_provider_status_are_truthful(self):
