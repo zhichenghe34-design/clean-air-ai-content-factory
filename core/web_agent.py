@@ -10,7 +10,11 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from core.capability_pack import CapabilityPackError, validate_capability_pack
-from core.provider import OpenAICompatibleProvider, ProviderError
+from core.provider import (
+    OpenAICompatibleProvider,
+    ProviderError,
+    sanitize_adversarial_review_schema_diagnostic,
+)
 from core.strict_audit import (
     adversarial_review_payload,
     derive_local_source_type,
@@ -37,6 +41,10 @@ SYSTEM_PROMPT = """你是通用商业与知识短视频的内容调研大脑，�
 完成后只输出JSON对象：status(complete或partial), summary, findings, content_patterns, evidence_gaps, sources。
 findings每项包含claim, source_urls, evidence, confidence, limitations；evidence每项包含url, excerpt, source_type, retrieved_at。
 sources每项包含url, title, publisher, source_type, retrieved_at。source_type只是建议值，系统会根据实际提取的URL重新分类。高置信发现必须有来自已读取页面的短证据摘录；没有证据的判断必须降级并写入evidence_gaps。"""
+
+
+ADVERSARIAL_REVIEW_FAILURE_MESSAGE = "反向举证审核未返回可用裁决，相关证据已保持不可用"
+ADVERSARIAL_REVIEW_UNAVAILABLE_MESSAGE = "反证审核能力不可用，相关证据已保持不可用"
 
 
 LEGACY_CAPABILITY_PACK_ID = "legacy-clean-air-v2"
@@ -494,6 +502,7 @@ class WebResearchAgent:
         )
         local_audit = strict_audit_research(result, self.registry.trace)
         if local_audit.get("script_eligible_findings"):
+            model_review_diagnostic: dict[str, Any] | None = None
             review_method = getattr(self.provider, "adversarial_review_research", None)
             if callable(review_method):
                 try:
@@ -503,11 +512,11 @@ class WebResearchAgent:
                     else:
                         model_review = review_method(payload, capability_pack=capability_pack)
                 except ProviderError as exc:
-                    model_review = {"status": "failed", "error": str(exc), "findings": []}
+                    model_review = {"status": "failed", "findings": []}
+                    model_review_diagnostic = sanitize_adversarial_review_schema_diagnostic(exc.details)
             else:
                 model_review = {
                     "status": "missing",
-                    "error": "反证审核能力不可用",
                     "findings": [],
                 }
             result = strict_audit_research(
@@ -516,7 +525,14 @@ class WebResearchAgent:
                 model_review=model_review,
                 require_model_review=True,
             )
-            result["strict_audit"]["model_review_error"] = str(model_review.get("error", ""))
+            model_review_status = str(model_review.get("status", ""))
+            if model_review_status == "missing":
+                result["strict_audit"]["model_review_error"] = ADVERSARIAL_REVIEW_UNAVAILABLE_MESSAGE
+            elif model_review_status == "failed":
+                result["strict_audit"]["model_review_error"] = ADVERSARIAL_REVIEW_FAILURE_MESSAGE
+            artifact_diagnostic = sanitize_adversarial_review_schema_diagnostic(model_review_diagnostic)
+            if artifact_diagnostic is not None:
+                result["strict_audit"]["model_review_schema_diagnostic"] = artifact_diagnostic
         else:
             result = local_audit
         result["tool_trace"] = self.registry.trace

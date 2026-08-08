@@ -14,6 +14,7 @@ from core.provider import (
     ProviderError,
     bootstrap_capability_schema_diagnostics,
     normalize_bootstrap_capability_snapshot,
+    sanitize_adversarial_review_schema_diagnostic,
     sanitize_bootstrap_schema_diagnostic,
 )
 from core.strict_audit import strict_audit_research
@@ -58,6 +59,52 @@ def candidates() -> list[dict]:
         {"id": "topic-2", "title": "一道招牌菜该核对哪些公开信息？", "reason": "从证据边界切入。", "audience": "重视信息透明的顾客"},
         {"id": "topic-3", "title": "拍门店短视频怎样避免虚构证言？", "reason": "从可信表达切入。", "audience": "门店运营人员"},
     ]
+
+
+def adversarial_findings() -> list[dict]:
+    """Mirror the bounded three-row shape produced by the real clean-air run."""
+
+    claims = [
+        "该来源页面称：检测盒只能显示大致范围，不能替代标准检测。",
+        "该来源页面称：便携自测仪可能误判，不能据此给出准确结果。",
+        "该来源页面称：没有气味不能判断是否超标，仍需专业检测。",
+    ]
+    return [
+        {
+            "audit_id": f"{index:016x}",
+            "claim": claim,
+            "evidence": [{
+                "evidence_type": "verbatim",
+                "excerpt": claim.removeprefix("该来源页面称："),
+                "source_type": "source_page",
+                "source_scope": "source_page_statement_only",
+                "source_classification": "local_exact_rule",
+                "local_source_type": "source_page",
+                "retrieved_at": "2026-08-09T03:22:22+08:00",
+                "url": "https://news.cctv.com/example.shtml",
+            }],
+            "limitations": ["只允许带来源归属转述", "不能替代标准检测、CMA报告或产品结果"],
+            "local_binding_method": "exact_tool_excerpt",
+        }
+        for index, claim in enumerate(claims, start=1)
+    ]
+
+
+def adversarial_review_response(findings: list[dict] | None = None) -> dict:
+    subjects = findings or adversarial_findings()
+    return {
+        "status": "complete",
+        "findings": [
+            {
+                "audit_id": item["audit_id"],
+                "claim": item["claim"],
+                "verdict": "supported_limited",
+                "reasons": ["逐字摘录与有限范围一致"],
+                "safe_scope": "仅限带来源归属的页面表述",
+            }
+            for item in subjects
+        ],
+    }
 
 
 class ProviderGenericTests(unittest.TestCase):
@@ -617,6 +664,215 @@ class ProviderGenericTests(unittest.TestCase):
         self.assertEqual(snapshot["failed"], 1)
         self.assertEqual(snapshot["events"][0]["error_type"], "invalid_capability_review_schema")
 
+    def test_research_adversarial_review_normalizes_bounded_equivalent_shapes(self):
+        subject = provider()
+        findings = adversarial_findings()
+        observed = {}
+        verdicts = ["supported_with_limits", "supported_with_limitations", "有限支持"]
+        rows = {}
+        for index in reversed(range(len(findings))):
+            finding = findings[index]
+            row = {
+                "auditId": finding["audit_id"],
+                "verdict": verdicts[index],
+                "reason": "现有摘录只支持带归属的有限转述",
+                "scope": ["仅限页面原文明确表达的范围"],
+                "ignored_model_metadata": {"not": "persisted"},
+            }
+            if index == 1:
+                row["claim"] = finding["claim"]
+            rows[finding["audit_id"]] = row
+
+        def fake_chat(system, user_data, *, stage="provider", count_budget=True):
+            observed.update(system=system, user_data=user_data, stage=stage)
+            return {"result": {"status": "completed", "reviews": rows}}
+
+        subject._chat_json = fake_chat  # type: ignore[method-assign]
+        normalized = subject.adversarial_review_research(findings)
+
+        self.assertEqual(normalized["status"], "complete")
+        self.assertEqual(
+            [item["audit_id"] for item in normalized["findings"]],
+            [item["audit_id"] for item in findings],
+        )
+        self.assertEqual(
+            [item["claim"] for item in normalized["findings"]],
+            [item["claim"] for item in findings],
+        )
+        self.assertTrue(all(item["verdict"] == "supported_limited" for item in normalized["findings"]))
+        self.assertTrue(all(item["reasons"] == ["现有摘录只支持带归属的有限转述"] for item in normalized["findings"]))
+        self.assertTrue(all(item["safe_scope"] == "仅限页面原文明确表达的范围" for item in normalized["findings"]))
+        self.assertTrue(all(set(item) == {"audit_id", "claim", "verdict", "reasons", "safe_scope"} for item in normalized["findings"]))
+        self.assertEqual(observed["stage"], "research_adversarial_review")
+        self.assertEqual(len(observed["user_data"]["findings"]), 3)
+        self.assertIn("status仅允许complete或partial", observed["system"])
+        self.assertIn("reasons必须是1到4条非空字符串数组", observed["system"])
+        self.assertIn("不得改写audit_id、claim", observed["system"])
+
+    def test_research_adversarial_review_defaults_missing_status_and_negative_scope_safely(self):
+        subject = provider()
+        findings = adversarial_findings()
+        rows = []
+        for index in reversed(range(len(findings))):
+            finding = findings[index]
+            if index == 1:
+                rows.append({
+                    "audit_id": finding["audit_id"],
+                    "verdict": "needs_evidence",
+                    "reasons": "摘录不足以支持该有限主张",
+                })
+            else:
+                rows.append({
+                    "audit_id": finding["audit_id"],
+                    "verdict": "supported_limited",
+                    "reasons": ["逐字摘录与有限范围一致"],
+                    "safe_scope": "仅限带归属的页面表述",
+                })
+        subject._chat_json = lambda *args, **kwargs: {"results": rows}  # type: ignore[method-assign]
+
+        normalized = subject.adversarial_review_research(findings)
+
+        self.assertEqual(normalized["status"], "complete")
+        self.assertEqual([item["audit_id"] for item in normalized["findings"]], [item["audit_id"] for item in findings])
+        self.assertEqual(normalized["findings"][1]["verdict"], "insufficient")
+        self.assertEqual(normalized["findings"][1]["safe_scope"], "")
+        self.assertEqual(normalized["findings"][1]["claim"], findings[1]["claim"])
+
+    def test_research_adversarial_review_fails_closed_with_redacted_shape_diagnostics(self):
+        findings = adversarial_findings()
+        allowed_diagnostic_keys = {
+            "category", "expected_count", "actual_count", "known_missing", "known_types",
+            "invalid_indices", "id_set_match", "order_match", "claim_match", "duplicate_id",
+        }
+        invalid_reviews = {}
+
+        missing_row = adversarial_review_response(findings)
+        missing_row["findings"].pop()
+        invalid_reviews["count"] = missing_row
+        duplicate_id = adversarial_review_response(findings)
+        duplicate_id["findings"][1]["audit_id"] = duplicate_id["findings"][0]["audit_id"]
+        invalid_reviews["duplicate_id"] = duplicate_id
+        changed_claim = adversarial_review_response(findings)
+        changed_claim["findings"][0]["claim"] += "（模型改写）"
+        invalid_reviews["claim"] = changed_claim
+        broad_positive = adversarial_review_response(findings)
+        broad_positive["findings"][0]["verdict"] = "supported"
+        invalid_reviews["broad_positive"] = broad_positive
+        empty_reasons = adversarial_review_response(findings)
+        empty_reasons["findings"][0]["reasons"] = []
+        invalid_reviews["empty_reasons"] = empty_reasons
+        too_many_reasons = adversarial_review_response(findings)
+        too_many_reasons["findings"][0]["reasons"] = ["原因"] * 5
+        invalid_reviews["too_many_reasons"] = too_many_reasons
+        object_reason = adversarial_review_response(findings)
+        object_reason["findings"][0]["reasons"] = [{"detail": "opaque"}]
+        invalid_reviews["object_reason"] = object_reason
+        missing_positive_scope = adversarial_review_response(findings)
+        missing_positive_scope["findings"][0].pop("safe_scope")
+        invalid_reviews["missing_positive_scope"] = missing_positive_scope
+        multi_scope = adversarial_review_response(findings)
+        multi_scope["findings"][0]["safe_scope"] = ["范围一", "范围二"]
+        invalid_reviews["multi_scope"] = multi_scope
+        ambiguous_container = adversarial_review_response(findings)
+        ambiguous_container["reviews"] = copy.deepcopy(ambiguous_container["findings"])
+        invalid_reviews["ambiguous_container"] = ambiguous_container
+        map_identity_conflict = adversarial_review_response(findings)
+        map_identity_conflict["findings"] = {
+            item["audit_id"]: {**item, "audit_id": findings[(index + 1) % len(findings)]["audit_id"]}
+            for index, item in enumerate(map_identity_conflict["findings"])
+        }
+        invalid_reviews["map_identity_conflict"] = map_identity_conflict
+        unsafe_values = (
+            "authorization: " + "Bea" + "rer opaque-credential",
+            "https://example.com/private-review",
+            "C:\\Users\\operator\\review.txt",
+            "powershell -enc opaque-command",
+            "unsafe\u0001control",
+            "x" * 301,
+        )
+        for index, unsafe in enumerate(unsafe_values):
+            unsafe_review = adversarial_review_response(findings)
+            unsafe_review["findings"][0]["reasons"] = [unsafe]
+            unsafe_review["findings"][0]["mystery-customer-field"] = "customer-id-440123199001011234"
+            invalid_reviews[f"unsafe_text_{index}"] = unsafe_review
+
+        for name, payload in invalid_reviews.items():
+            with self.subTest(invalid=name):
+                subject = provider()
+                subject._chat_json = lambda *args, _payload=payload, **kwargs: copy.deepcopy(_payload)  # type: ignore[method-assign]
+                with self.assertRaises(ProviderError) as captured:
+                    subject.adversarial_review_research(findings)
+                error = captured.exception
+                self.assertEqual(set(error.details or {}), allowed_diagnostic_keys)
+                self.assertEqual(error.details["expected_count"], 3)
+                self.assertIsInstance(error.details["id_set_match"], bool)
+                self.assertIsInstance(error.details["order_match"], bool)
+                self.assertIsInstance(error.details["claim_match"], bool)
+                self.assertIsInstance(error.details["duplicate_id"], bool)
+                diagnostic_text = str(error)
+                self.assertIn("结构诊断", diagnostic_text)
+                self.assertNotIn("opaque-credential", diagnostic_text)
+                self.assertNotIn("customer-id-440123199001011234", diagnostic_text)
+                self.assertNotIn("mystery-customer-field", diagnostic_text)
+                for finding in findings:
+                    self.assertNotIn(finding["audit_id"], diagnostic_text)
+                    self.assertNotIn(finding["claim"], diagnostic_text)
+
+    def test_research_adversarial_schema_failure_corrects_budget_and_artifact_error_is_safe(self):
+        budget = BudgetLedger(limit=3)
+        subject = OpenAICompatibleProvider(
+            {"base_url": "https://api.deepseek.com", "model": "test-model"},
+            "test-only-key",
+            budget,
+        )
+        token = budget.begin("research_adversarial_review")
+        budget.finish(token, ok=True)
+        subject._last_budget_token = token
+        unsafe_response = adversarial_review_response()
+        unsafe_response["findings"][0]["safe_scope"] = "api_key=" + "sk-opaque-secret-value"
+        subject._chat_json = lambda *args, **kwargs: unsafe_response  # type: ignore[method-assign]
+
+        with self.assertRaises(ProviderError) as captured:
+            subject.adversarial_review_research(adversarial_findings())
+
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["attempted"], 1)
+        self.assertEqual(snapshot["succeeded"], 0)
+        self.assertEqual(snapshot["failed"], 1)
+        self.assertEqual(snapshot["events"][0]["error_type"], "invalid_adversarial_schema")
+        diagnostic = sanitize_adversarial_review_schema_diagnostic(captured.exception.details)
+        self.assertIsNotNone(diagnostic)
+        self.assertEqual(diagnostic["category"], "unsafe_safe_scope")
+        self.assertEqual(diagnostic["invalid_indices"], [0])
+        self.assertIsNone(sanitize_adversarial_review_schema_diagnostic({
+            **diagnostic,
+            "opaque_secret": "sk-opaque-secret-value",
+        }))
+        self.assertIsNone(sanitize_adversarial_review_schema_diagnostic({
+            **diagnostic,
+            "category": "opaque-secret-category",
+        }))
+        self.assertIsNone(sanitize_adversarial_review_schema_diagnostic({
+            **diagnostic,
+            "known_types": {**diagnostic["known_types"], "opaque_secret": "string"},
+        }))
+        self.assertIsNone(sanitize_adversarial_review_schema_diagnostic({
+            **diagnostic,
+            "known_types": {**diagnostic["known_types"], "status": "opaque-secret-type"},
+        }))
+        self.assertIsNone(sanitize_adversarial_review_schema_diagnostic({
+            **diagnostic,
+            "known_missing": ["findings[].opaque_secret"],
+        }))
+        self.assertIsNone(sanitize_adversarial_review_schema_diagnostic({
+            **diagnostic,
+            "actual_count": True,
+        }))
+        self.assertIsNone(sanitize_adversarial_review_schema_diagnostic({
+            **diagnostic,
+            "invalid_indices": [diagnostic["actual_count"]],
+        }))
+
     def test_old_suggest_topics_call_still_works_and_new_context_is_forwarded(self):
         subject = provider()
         calls = []
@@ -1007,7 +1263,129 @@ class SourceTrustTests(unittest.TestCase):
         self.assertTrue(result["strict_audit"]["model_review_required"])
         self.assertEqual(result["strict_audit"]["model_review_status"], "failed")
         self.assertTrue(all(item["script_eligible"] is False for item in result["findings"]))
-        self.assertIn("预算已耗尽", result["strict_audit"]["model_review_error"])
+        self.assertEqual(
+            result["strict_audit"]["model_review_error"],
+            "反向举证审核未返回可用裁决，相关证据已保持不可用",
+        )
+        self.assertNotIn("model_review_schema_diagnostic", result["strict_audit"])
+
+    def test_adversarial_provider_error_details_are_resanitized_before_research_artifact(self):
+        rules = [rule for rule in EXACT_EVIDENCE_RULES if rule.get("source_hosts") == ["news.cctv.com"]]
+        url = "https://news.cctv.com/2024/01/12/clean-air.shtml"
+        captured_text = "\n".join(str(rule["excerpt"]) for rule in rules)
+
+        def extract(value, output_dir):
+            return {
+                "status": "complete",
+                "source": {"final_url": value, "title": "甲醛自测方式靠谱吗？"},
+                "content": {"text": captured_text, "text_chars": len(captured_text)},
+                "attempts": [{"route": "fake", "status": "complete"}],
+                "warnings": [],
+            }
+
+        class ReviewProviderBase:
+            api_key = "mock-only"
+
+            @staticmethod
+            def chat_with_tools(messages, tools, tool_choice="auto"):
+                return {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "status": "partial",
+                        "summary": "等待本地精确证据绑定",
+                        "findings": [],
+                        "content_patterns": [],
+                        "evidence_gaps": [],
+                        "sources": [],
+                    }, ensure_ascii=False),
+                }
+
+            @staticmethod
+            def parse_json_content(content):
+                return json.loads(content)
+
+        shape_secret = "sk-" + "provider-shape-secret"
+        malicious_message = "opaque-provider-message-" + "sk-" + "malicious-secret"
+        malicious_authorization = "authorization: " + "Bea" + "rer malicious-credential"
+
+        class ValidShapeFailureProvider(ReviewProviderBase):
+            @staticmethod
+            def adversarial_review_research(findings, capability_pack=None):
+                subject = provider()
+                unsafe_response = adversarial_review_response(findings)
+                unsafe_response["findings"][0]["safe_scope"] = "api_key=" + shape_secret
+                subject._chat_json = lambda *args, **kwargs: unsafe_response  # type: ignore[method-assign]
+                return subject.adversarial_review_research(findings, capability_pack=capability_pack)
+
+        class MaliciousDetailsProvider(ReviewProviderBase):
+            @staticmethod
+            def adversarial_review_research(findings, capability_pack=None):
+                raise ProviderError(
+                    malicious_message,
+                    details={
+                        "category": "unsafe_safe_scope",
+                        "expected_count": 3,
+                        "actual_count": 3,
+                        "known_missing": [],
+                        "known_types": {
+                            "response": "object",
+                            "status": "string",
+                            "findings": "array",
+                            "items": ["object"],
+                            "audit_id": ["string"],
+                            "claim": ["string"],
+                            "verdict": ["string"],
+                            "reasons": ["array"],
+                            "safe_scope": ["string"],
+                        },
+                        "invalid_indices": [0],
+                        "id_set_match": True,
+                        "order_match": True,
+                        "claim_match": True,
+                        "duplicate_id": False,
+                        "opaque_secret": malicious_authorization,
+                    },
+                )
+
+        topic = "甲醛检测盒和便携自测仪为什么不能替代专业检测？"
+        clean_air_pack = local_capability_pack(topic)
+
+        def run(review_provider):
+            with tempfile.TemporaryDirectory() as folder:
+                registry = TrustedWebToolRegistry(Path(folder), extractor=extract, seed_urls=[url])
+                return WebResearchAgent(review_provider, registry).run(
+                    topic,
+                    "新房家庭",
+                    [url],
+                    capability_pack=clean_air_pack,
+                )
+
+        valid_shape_result = run(ValidShapeFailureProvider())
+        valid_artifact_text = json.dumps(valid_shape_result, ensure_ascii=False)
+        self.assertEqual(
+            valid_shape_result["strict_audit"]["model_review_error"],
+            "反向举证审核未返回可用裁决，相关证据已保持不可用",
+        )
+        self.assertEqual(
+            valid_shape_result["strict_audit"]["model_review_schema_diagnostic"]["category"],
+            "unsafe_safe_scope",
+        )
+        self.assertNotIn(shape_secret, valid_artifact_text)
+        self.assertNotIn("结构诊断", valid_shape_result["strict_audit"]["model_review_error"])
+
+        malicious_result = run(MaliciousDetailsProvider())
+        malicious_artifact_text = json.dumps(malicious_result, ensure_ascii=False)
+        self.assertEqual(
+            malicious_result["strict_audit"]["model_review_error"],
+            "反向举证审核未返回可用裁决，相关证据已保持不可用",
+        )
+        self.assertNotIn("model_review_schema_diagnostic", malicious_result["strict_audit"])
+        for secret in (
+            malicious_message,
+            malicious_authorization,
+            "opaque_secret",
+        ):
+            self.assertNotIn(secret, malicious_artifact_text)
 
     def test_cctv_rules_expose_controlled_attribution_anchor_groups(self):
         rules = [rule for rule in EXACT_EVIDENCE_RULES if rule.get("source_hosts") == ["news.cctv.com"]]
