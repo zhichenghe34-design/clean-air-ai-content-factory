@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import mimetypes
+import os
 import secrets
 import threading
 import time
@@ -44,7 +45,7 @@ from core.provider import BudgetLedger, OpenAICompatibleProvider, ProviderError
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
-RUNTIME_DIR = APP_DIR / "runtime"
+RUNTIME_DIR = Path(os.environ.get("SHIYI_RUNTIME_DIR", APP_DIR / "runtime")).expanduser().resolve()
 RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 DISCOVERY_CACHE = RUNTIME_DIR / "discovery.json"
 CATALOG_FILE = APP_DIR / "catalog" / "package-catalog.json"
