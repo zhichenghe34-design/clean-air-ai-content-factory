@@ -376,7 +376,7 @@ def _write_root_launcher(package: Path) -> None:
         "setlocal\r\n"
         "cd /d \"%~dp0\"\r\n"
         "set \"SHIYI_LAUNCHER_PYTHON=%~dp0runtime\\python\\python.exe\"\r\n"
-        "\"%SHIYI_LAUNCHER_PYTHON%\" -I -S -B -X utf8 \"%~dp0tools\\verify_combined_portable.py\" \"%~dp0\" --startup\r\n"
+        "\"%SHIYI_LAUNCHER_PYTHON%\" -I -S -B -X utf8 \"%~dp0tools\\verify_combined_portable.py\" \"%~dp0.\" --startup\r\n"
         "if errorlevel 1 (\r\n"
         "  echo [ERROR] Package integrity verification failed.\r\n"
         "  pause\r\n"

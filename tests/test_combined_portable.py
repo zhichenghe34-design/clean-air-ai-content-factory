@@ -192,7 +192,7 @@ class CombinedPortableTests(unittest.TestCase):
         self.assertIn(f'-AppPython "{shared}"', launcher)
         self.assertIn(
             '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 '
-            '"%~dp0tools\\verify_combined_portable.py" "%~dp0" --startup',
+            '"%~dp0tools\\verify_combined_portable.py" "%~dp0." --startup',
             launcher,
         )
         powershell_launcher = (inputs.output / "scripts" / "launch_combined.ps1").read_text(encoding="utf-8-sig")

@@ -535,7 +535,7 @@ def _verify_mpt_and_launchers(
     shared_python = "%~dp0runtime\\python\\python.exe"
     required_launcher_fragments = (
         f'set "SHIYI_LAUNCHER_PYTHON={shared_python}"',
-        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8',
+        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 "%~dp0tools\\verify_combined_portable.py" "%~dp0." --startup',
         '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
         f'-MptPython "{shared_python}"',
         f'-AppPython "{shared_python}"',
