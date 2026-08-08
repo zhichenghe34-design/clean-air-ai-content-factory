@@ -18,7 +18,13 @@ from core.orchestrator import JobStore, local_fallback_plan
 
 class ApiV2Tests(unittest.TestCase):
     def setUp(self):
-        self.environment = mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""})
+        self.environment = mock.patch.dict(
+            os.environ,
+            {
+                "DEEPSEEK_API_KEY": "",
+                "SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS": "1",
+            },
+        )
         self.environment.start()
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)

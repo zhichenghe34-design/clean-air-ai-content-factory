@@ -14,6 +14,7 @@ const { chromium } = require('playwright');
   let createRequests = 0;
   const createKeys = [];
   let authorizeRequests = 0;
+  let researchApprovalPayload = null;
 
   page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', err => errors.push(err.message));
@@ -107,8 +108,10 @@ const { chromium } = require('playwright');
     status: 200,
     contentType: 'application/json; charset=utf-8',
     body: JSON.stringify({
-      findings: [{ finding_id: 'finding-1', claim: '检测结论需要结合检测条件理解。', auto_review_status: 'eligible', evidence: [], source_urls: ['https://example.com'] }],
-      strict_audit: { passed_count: 1, rejected_count: 0 },
+      status: 'offline',
+      summary: '未配置API Key，跳过联网研究并使用本地范式',
+      findings: [],
+      sources: [],
     }),
   }));
   await page.route('**/api/jobs/fake-job/review-artifacts/approved_script.json', route => route.fulfill({
@@ -121,8 +124,9 @@ const { chromium } = require('playwright');
     contentType: 'application/json; charset=utf-8',
     body: JSON.stringify({ status: 'passed', blocked: false, warnings: [] }),
   }));
-  await page.route('**/api/jobs/fake-job/approvals/research', route => {
+  await page.route('**/api/jobs/fake-job/approvals/research', async route => {
     calls.push('research-approval');
+    researchApprovalPayload = await route.request().postDataJSON();
     job = { ...job, status: 'research_approved', approvals: { ...job.approvals, research: { status: 'approved' } } };
     return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) });
   });
@@ -135,8 +139,8 @@ const { chromium } = require('playwright');
   await page.goto(baseUrl, { waitUntil: 'networkidle' });
   await page.locator('#topicCandidates .topic-option').nth(1).click();
   await page.locator('#startSelectedTopic').click();
-  await page.getByRole('heading', { name: '研究证据已反向核验' }).waitFor();
-  await page.getByRole('button', { name: '继续制作' }).click();
+  await page.getByRole('heading', { name: '本次没有可采信的外部证据' }).waitFor();
+  await page.getByRole('button', { name: '确认边界并继续' }).click();
   const retryButton = page.getByRole('button', { name: '重试当前步骤' });
   await retryButton.waitFor();
   await retryButton.evaluate(button => { button.click(); button.click(); });
@@ -149,9 +153,13 @@ const { chromium } = require('playwright');
   const automaticReplayReusedKey = runKeys[0] && runKeys[0] === runKeys[1];
   const explicitRetryUsedNewKey = runKeys[2] && runKeys[3] && runKeys[2] !== runKeys[3];
   const logicalAttemptKeysAreUnique = new Set([runKeys[0], runKeys[2], runKeys[3], runKeys[4]]).size === 4;
+  const emptyResearchBoundaryConfirmed = researchApprovalPayload
+    && Array.isArray(researchApprovalPayload.findings)
+    && researchApprovalPayload.findings.length === 0
+    && researchApprovalPayload.note === '本人确认本次无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板';
   const unexpectedErrors = errors.filter(message => !/net::ERR_CONNECTION_FAILED|status of 500 \(Internal Server Error\)/.test(message));
-  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, authorizeRequests, runKeys, automaticReplayReusedKey, explicitRetryUsedNewKey, logicalAttemptKeysAreUnique, expectedFailureSignals: errors, unexpectedErrors };
+  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, authorizeRequests, runKeys, automaticReplayReusedKey, explicitRetryUsedNewKey, logicalAttemptKeysAreUnique, emptyResearchBoundaryConfirmed, expectedFailureSignals: errors, unexpectedErrors };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
-  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || authorizeRequests !== 1 || runRequests !== 5 || !automaticReplayReusedKey || !explicitRetryUsedNewKey || !logicalAttemptKeysAreUnique) process.exit(1);
+  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || authorizeRequests !== 1 || runRequests !== 5 || !automaticReplayReusedKey || !explicitRetryUsedNewKey || !logicalAttemptKeysAreUnique || !emptyResearchBoundaryConfirmed) process.exit(1);
 })();

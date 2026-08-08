@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import tempfile
 import threading
@@ -15,7 +16,7 @@ from core.orchestrator import (
     local_fallback_plan,
 )
 from core.provider import BudgetLedger, ProviderError, validate_provider_base_url, validate_provider_response_url
-from core.production import build_local_variants, estimate_narration_duration, review_script
+from core.production import ProductionRunner, build_local_variants, estimate_narration_duration, review_script
 from core.secrets import protect_secret, unprotect_secret
 
 
@@ -70,6 +71,19 @@ class FakeStageRunner:
                 path.write_text(json.dumps({"name": name}, ensure_ascii=False), encoding="utf-8")
             else:
                 path.write_bytes(("fake:" + name).encode("utf-8"))
+
+
+class FakeEngineStageRunner(FakeStageRunner):
+    def run_render_stage(self, output, production_input, approvals):
+        super().run_render_stage(output, production_input, approvals)
+        (output / "material_sources.json").write_text(
+            json.dumps({"sources": [{"source": "local_fixture", "sha256": "a" * 64}]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (output / "engine_report.json").write_text(
+            json.dumps({"engine": "MoneyPrinterTurbo", "version": "1.3.3"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
 class SlowResearchRunner(FakeStageRunner):
@@ -178,6 +192,71 @@ class V2WorkflowTests(unittest.TestCase):
             self.assertTrue(manifest["approval_hashes"]["research"])
             self.assertTrue(manifest["approval_hashes"]["compliance"])
             self.assertEqual(jobs.resolve_artifact(job["id"], "final.mp4").read_bytes(), b"fake:final.mp4")
+
+    def test_no_key_empty_research_requires_scoped_human_confirmation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            runner = ProductionRunner(provider=None, research_config={"enabled": True})
+            job = jobs.approve(job["id"])
+            job = jobs.advance(job["id"], runner, "offline-research-0001")
+            self.assertEqual(job["status"], "awaiting_research_approval")
+
+            research_path = jobs.resolve_review_artifact(job["id"], "research.json")
+            research = json.loads(research_path.read_text(encoding="utf-8"))
+            self.assertEqual(research["status"], "offline")
+            self.assertEqual(research["findings"], [])
+
+            job = jobs.approve_research(job["id"], {
+                "decision": "approved",
+                "reviewer": "测试审核员",
+                "note": "这条客户端备注不得覆盖固定边界",
+                "artifact_sha256": file_sha256(research_path),
+                "findings": [],
+            })
+            self.assertEqual(job["status"], "research_approved")
+            self.assertEqual(
+                job["approvals"]["research"]["note"],
+                "本人确认本次无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板",
+            )
+            self.assertEqual(
+                job["approvals"]["research"]["empty_finding_confirmation"],
+                {
+                    "research_status": "offline",
+                    "content_scope": "local_safe_template_without_industry_fact_claims",
+                },
+            )
+            job = jobs.advance(job["id"], runner, "offline-content-0001")
+            self.assertEqual(job["status"], "awaiting_compliance_approval")
+            review = json.loads(
+                jobs.resolve_review_artifact(job["id"], "review.json").read_text(encoding="utf-8")
+            )
+            self.assertFalse(review["blocked"])
+
+    def test_failed_or_excluded_empty_research_cannot_be_approved(self):
+        for research in (
+            {"status": "failed", "findings": []},
+            {"status": "partial", "findings": [{"claim": "未证实结论", "script_eligible": False}]},
+        ):
+            with self.subTest(status=research["status"]), tempfile.TemporaryDirectory() as folder:
+                jobs, job = self.make_job(folder)
+                job = jobs.approve(job["id"])
+                raw, job_folder = jobs._load_v2(job["id"])
+                raw["status"] = "awaiting_research_approval"
+                draft = job_folder / "draft"
+                draft.mkdir(parents=True, exist_ok=True)
+                research_path = draft / "research.json"
+                research_path.write_text(json.dumps(research, ensure_ascii=False), encoding="utf-8")
+                jobs._prepare_research(research_path)
+                jobs._write(job_folder / "job.json", raw)
+
+                with self.assertRaises(UnprocessableError):
+                    jobs.approve_research(job["id"], {
+                        "decision": "approved",
+                        "reviewer": "测试审核员",
+                        "note": "试图空审批",
+                        "artifact_sha256": file_sha256(research_path),
+                        "findings": [],
+                    })
 
     def test_evidence_correction_revokes_research_and_downstream_approval(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -292,6 +371,29 @@ class V2WorkflowTests(unittest.TestCase):
                 )
             self.assertEqual(jobs.get(job["id"])["current_run_id"], current_run)
 
+    def test_engine_artifacts_are_manifest_bound_and_preserved_by_report_rebuild(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            runner = FakeEngineStageRunner()
+            job = advance_to_content_gate(jobs, job, runner)
+            job = approve_compliance(jobs, job)
+            job = jobs.advance(job["id"], runner, "engine-render-complete")
+
+            self.assertIn("material_sources.json", job["artifacts"])
+            self.assertIn("engine_report.json", job["artifacts"])
+            sources_before = jobs.resolve_artifact(job["id"], "material_sources.json").read_bytes()
+            engine_before = jobs.resolve_artifact(job["id"], "engine_report.json").read_bytes()
+            manifest = json.loads(jobs.resolve_artifact(job["id"], "manifest.json").read_text(encoding="utf-8"))
+            names = {item["name"] for item in manifest["artifacts"]}
+            self.assertIn("material_sources.json", names)
+            self.assertIn("engine_report.json", names)
+
+            job = jobs.rebuild_successful_delivery(
+                job["id"], ReportRebuildRunner(), "engine-report-rebuild-0001", "重算组合引擎报告"
+            )
+            self.assertEqual(jobs.resolve_artifact(job["id"], "material_sources.json").read_bytes(), sources_before)
+            self.assertEqual(jobs.resolve_artifact(job["id"], "engine_report.json").read_bytes(), engine_before)
+
     def test_approval_hash_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             jobs, job = self.make_job(folder)
@@ -303,6 +405,57 @@ class V2WorkflowTests(unittest.TestCase):
                     "decision": "approved", "reviewer": "测试审核员", "artifact_sha256": "0" * 64,
                     "findings": [{"finding_id": research["findings"][0]["finding_id"], "decision": "approved", "evidence_type": "verbatim"}],
                 })
+
+    def test_research_change_after_approval_invalidates_gate_before_content(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            runner = FakeStageRunner()
+            job = jobs.approve(job["id"])
+            job = jobs.advance(job["id"], runner, "research-hash-0001")
+            research_path = jobs.resolve_review_artifact(job["id"], "research.json")
+            research = json.loads(research_path.read_text(encoding="utf-8"))
+            finding = research["findings"][0]
+            job = jobs.approve_research(job["id"], {
+                "decision": "approved",
+                "reviewer": "测试审核员",
+                "artifact_sha256": file_sha256(research_path),
+                "findings": [{
+                    "finding_id": finding["finding_id"],
+                    "decision": "approved",
+                    "evidence_type": "paraphrase",
+                }],
+            })
+            research["findings"][0]["claim"] = "审批后被替换的研究结论"
+            research_path.write_text(json.dumps(research, ensure_ascii=False), encoding="utf-8")
+
+            run_count = len(job["runs"])
+            with self.assertRaises(ConflictError):
+                jobs.advance(job["id"], runner, "content-after-tamper-0001")
+            current = jobs.get(job["id"])
+            self.assertEqual(current["status"], "awaiting_research_approval")
+            self.assertEqual(current["approvals"]["research"]["status"], "pending")
+            self.assertEqual(current["approvals"]["compliance"]["status"], "pending")
+            self.assertEqual(len(current["runs"]), run_count)
+
+    def test_script_change_after_approval_invalidates_gate_before_render(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            runner = FakeStageRunner()
+            job = advance_to_content_gate(jobs, job, runner)
+            job = approve_compliance(jobs, job)
+            script_path = jobs.resolve_review_artifact(job["id"], "approved_script.json")
+            script = json.loads(script_path.read_text(encoding="utf-8"))
+            script["script"] = "审批后被替换且不得渲染的脚本"
+            script_path.write_text(json.dumps(script, ensure_ascii=False), encoding="utf-8")
+
+            run_count = len(job["runs"])
+            with self.assertRaises(ConflictError):
+                jobs.advance(job["id"], runner, "render-after-tamper-0001")
+            current = jobs.get(job["id"])
+            self.assertEqual(current["status"], "awaiting_compliance_approval")
+            self.assertEqual(current["approvals"]["research"]["status"], "approved")
+            self.assertEqual(current["approvals"]["compliance"]["status"], "pending")
+            self.assertEqual(len(current["runs"]), run_count)
 
     def test_script_edit_invalidates_only_compliance_approval(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -597,6 +750,321 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
             self.assertEqual(report["render"]["mode"], "fake_ci")
             self.assertEqual(report["adoption_proxy"]["provisionally_usable_count"], 1)
             self.assertEqual(report["adoption_proxy"]["evidence_binding"], "approved_research_findings")
+
+    def test_production_runner_uses_coarse_engine_only_after_both_approvals(self):
+        from core.production import ProductionRunner
+
+        class Result:
+            @staticmethod
+            def as_dict():
+                return {
+                    "engine_name": "MoneyPrinterTurbo",
+                    "engine_version": "1.3.3",
+                    "engine_commit": "254cd028906ee657eab844dc94087cdbea2a7aa8",
+                    "mode": "local_http",
+                    "task_id": "11111111-1111-4111-8111-111111111111",
+                }
+
+        class Engine:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, **kwargs):
+                self.calls.append(kwargs)
+                output = Path(kwargs["staging_dir"])
+                private = output / ".engine-import"
+                private.mkdir()
+                (private / "audio.mp3").write_bytes(b"fake-mp3")
+                (output / "captions.srt").write_text(
+                    "1\n00:00:00,000 --> 00:00:52,000\n测试字幕\n", encoding="utf-8"
+                )
+                (output / "final.mp4").write_bytes(b"fake-mpt-video")
+                (output / "material_sources.json").write_text(
+                    json.dumps({"sources": [{"source_type": "local_user_supplied"}]}), encoding="utf-8"
+                )
+                artifact_specs = (
+                    ("final.mp4", "final.mp4", "video/mp4", output / "final.mp4"),
+                    ("audio.mp3", ".engine-import/audio.mp3", "audio/mpeg", private / "audio.mp3"),
+                    ("captions.srt", "captions.srt", "application/x-subrip", output / "captions.srt"),
+                    (
+                        "material_sources.json",
+                        "material_sources.json",
+                        "application/json",
+                        output / "material_sources.json",
+                    ),
+                )
+                (output / "engine_report.json").write_text(
+                    json.dumps({
+                        "script_sha256": hashlib.sha256(kwargs["script"].encode("utf-8")).hexdigest().upper(),
+                        "artifacts": [
+                            {
+                                "name": name,
+                                "relative_path": relative_path,
+                                "mime": mime,
+                                "size": path.stat().st_size,
+                                "sha256": hashlib.sha256(path.read_bytes()).hexdigest().upper(),
+                            }
+                            for name, relative_path, mime, path in artifact_specs
+                        ],
+                    }),
+                    encoding="utf-8",
+                )
+                return Result()
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name, value in {
+                "research.json": {"findings": []},
+                "insight.json": {},
+                "script_variants.json": {"variants": [{"script": LONG_SAFE_SCRIPT}], "provider": {}},
+                "approved_script.json": {"script": LONG_SAFE_SCRIPT},
+                "review.json": review_script(LONG_SAFE_SCRIPT, []),
+            }.items():
+                (root / name).write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            engine = Engine()
+
+            def import_audio(source, destination):
+                self.assertTrue(source.is_file())
+                destination.write_bytes(b"RIFF" + b"\0" * 64)
+
+            runner = ProductionRunner(
+                production_engine_adapter=engine,
+                production_engine_options={
+                    "material_strategy": "local",
+                    "voice_strategy": "edge_tts",
+                    "local_material_paths": [Path("fixture.mp4")],
+                },
+            )
+            with self.assertRaises(RuntimeError):
+                runner.run_render_stage(
+                    root,
+                    {"topic": VALID_TOPIC, "audience": "新房家庭"},
+                    {"research": {"status": "approved"}, "compliance": {"status": "pending"}},
+                )
+            self.assertEqual(engine.calls, [])
+
+            with patch.object(ProductionRunner, "_import_engine_audio", side_effect=import_audio), \
+                 patch.object(ProductionRunner, "_audio_duration", return_value=52.0), \
+                 patch.object(ProductionRunner, "_validate_engine_captions", return_value={"status": "passed", "cue_count": 1}), \
+                 patch.object(ProductionRunner, "_probe_engine_video", return_value={"ok": True, "duration_seconds": 52.0, "video_codec": "h264", "audio_codec": "aac", "width": 1080, "height": 1920}):
+                report = runner.run_render_stage(
+                    root,
+                    {"topic": VALID_TOPIC, "audience": "新房家庭"},
+                    {"research": {"status": "approved"}, "compliance": {"status": "approved"}},
+                )
+            self.assertEqual(len(engine.calls), 1)
+            self.assertTrue(engine.calls[0]["approved"])
+            self.assertEqual(report["production_engine"]["version"], "1.3.3")
+            self.assertIn("engine_report.json", report["artifacts"])
+            self.assertFalse((root / ".engine-import").exists())
+            engine_report = json.loads((root / "engine_report.json").read_text(encoding="utf-8"))
+            self.assertNotIn(".engine-import/audio.mp3", json.dumps(engine_report["artifacts"]))
+            self.assertEqual(
+                engine_report["engine_imports"][0]["disposition"],
+                "transcoded_to_voice_wav_then_removed",
+            )
+
+    def test_engine_caption_validator_binds_text_and_full_timeline(self):
+        from core.production import ProductionRunner
+
+        with tempfile.TemporaryDirectory() as folder:
+            caption_path = Path(folder) / "captions.srt"
+            caption_path.write_text(
+                f"1\n00:00:00,000 --> 00:00:52,000\n{LONG_SAFE_SCRIPT}\n",
+                encoding="utf-8",
+            )
+            report = ProductionRunner._validate_engine_captions(
+                caption_path, 52.0, LONG_SAFE_SCRIPT
+            )
+            self.assertEqual(report["status"], "passed")
+            self.assertEqual(report["maximum_gap_seconds"], 0.0)
+
+            caption_path.write_text(
+                "1\n00:00:00,000 --> 00:00:52,000\n完全无关内容\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(RuntimeError):
+                ProductionRunner._validate_engine_captions(
+                    caption_path, 52.0, LONG_SAFE_SCRIPT
+                )
+
+            caption_path.write_text(
+                f"1\n00:00:00,000 --> 00:00:01,000\n{LONG_SAFE_SCRIPT}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(RuntimeError):
+                ProductionRunner._validate_engine_captions(
+                    caption_path, 52.0, LONG_SAFE_SCRIPT
+                )
+
+    def test_voice_duration_uses_a_feasible_safe_target_for_35_seconds(self):
+        from core.production import ProductionRunner
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "voice.wav").write_bytes(b"RIFF" + b"\0" * 64)
+
+            def fake_ffmpeg(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"RIFF" + b"\0" * 64)
+                return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+            with patch.object(ProductionRunner, "_audio_duration", side_effect=[35.0, 46.667]), \
+                 patch("core.production._tool_available", return_value=True), \
+                 patch("core.production.subprocess.run", side_effect=fake_ffmpeg):
+                report = ProductionRunner._normalize_voice_duration(root, 52.0)
+
+            self.assertTrue(report["tempo_adjusted"])
+            self.assertAlmostEqual(report["tempo_factor"], 0.75, places=4)
+            self.assertEqual(report["duration_seconds"], 46.667)
+
+    def test_engine_retimes_video_audio_and_captions_for_44_and_61_seconds(self):
+        from core.production import ProductionRunner
+
+        class Result:
+            @staticmethod
+            def as_dict():
+                return {
+                    "engine_name": "MoneyPrinterTurbo",
+                    "engine_version": "1.3.3",
+                    "engine_commit": "254cd028906ee657eab844dc94087cdbea2a7aa8",
+                    "mode": "local_http",
+                    "task_id": "11111111-1111-4111-8111-111111111111",
+                }
+
+        for raw_duration in (44.0, 61.0):
+            with self.subTest(raw_duration=raw_duration), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+
+                class Engine:
+                    @staticmethod
+                    def run(**kwargs):
+                        output = Path(kwargs["staging_dir"])
+                        private = output / ".engine-import"
+                        private.mkdir()
+                        audio = b"fake-mp3"
+                        (private / "audio.mp3").write_bytes(audio)
+                        milliseconds = int(raw_duration * 1000)
+                        minutes, remainder = divmod(milliseconds, 60_000)
+                        seconds, milliseconds = divmod(remainder, 1000)
+                        (output / "captions.srt").write_text(
+                            "1\n"
+                            f"00:00:00,000 --> 00:{minutes:02d}:{seconds:02d},{milliseconds:03d}\n"
+                            f"{LONG_SAFE_SCRIPT}\n",
+                            encoding="utf-8",
+                        )
+                        (output / "final.mp4").write_bytes(b"raw-mpt-video")
+                        (output / "material_sources.json").write_text(
+                            json.dumps({"sources": [{"source_type": "local_user_supplied"}]}),
+                            encoding="utf-8",
+                        )
+                        artifact_specs = (
+                            ("final.mp4", "final.mp4", "video/mp4", output / "final.mp4"),
+                            ("audio.mp3", ".engine-import/audio.mp3", "audio/mpeg", private / "audio.mp3"),
+                            (
+                                "captions.srt",
+                                "captions.srt",
+                                "application/x-subrip",
+                                output / "captions.srt",
+                            ),
+                            (
+                                "material_sources.json",
+                                "material_sources.json",
+                                "application/json",
+                                output / "material_sources.json",
+                            ),
+                        )
+                        (output / "engine_report.json").write_text(
+                            json.dumps({
+                                "script_sha256": hashlib.sha256(
+                                    kwargs["script"].encode("utf-8")
+                                ).hexdigest().upper(),
+                                "artifacts": [
+                                    {
+                                        "name": name,
+                                        "relative_path": relative_path,
+                                        "mime": mime,
+                                        "size": path.stat().st_size,
+                                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest().upper(),
+                                    }
+                                    for name, relative_path, mime, path in artifact_specs
+                                ],
+                            }),
+                            encoding="utf-8",
+                        )
+                        return Result()
+
+                commands = []
+
+                def import_audio(_source, destination):
+                    destination.write_bytes(b"RIFF" + b"\0" * 64)
+
+                def fake_ffmpeg(command, **kwargs):
+                    self.assertIsInstance(command, list)
+                    self.assertFalse(kwargs.get("shell", False))
+                    commands.append(list(command))
+                    Path(command[-1]).write_bytes(
+                        b"retimed-video" if "-filter_complex" in command else b"RIFF" + b"\0" * 64
+                    )
+                    return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+                runner = ProductionRunner(
+                    production_engine_adapter=Engine(),
+                    production_engine_options={
+                        "material_strategy": "local",
+                        "voice_strategy": "edge_tts",
+                        "local_material_paths": [Path("fixture.mp4")],
+                    },
+                )
+                with patch.object(ProductionRunner, "_import_engine_audio", side_effect=import_audio), \
+                     patch.object(ProductionRunner, "_audio_duration", side_effect=[raw_duration, 52.0, 52.0]), \
+                     patch.object(ProductionRunner, "_probe_engine_video", return_value={
+                         "ok": True,
+                         "duration_seconds": 52.0,
+                         "video_codec": "h264",
+                         "audio_codec": "aac",
+                         "width": 1080,
+                         "height": 1920,
+                     }), \
+                     patch("core.production._tool_available", return_value=True), \
+                     patch("core.production.subprocess.run", side_effect=fake_ffmpeg):
+                    result = runner._run_production_engine(
+                        root,
+                        {"script": LONG_SAFE_SCRIPT},
+                        {"topic": VALID_TOPIC, "target_duration_seconds": 52},
+                        [{"title": "室内空气检测"}],
+                    )
+
+                self.assertTrue(result["render"]["retiming"]["applied"])
+                self.assertEqual((root / "final.mp4").read_bytes(), b"retimed-video")
+                self.assertIn(
+                    "00:00:52,000",
+                    (root / "captions.srt").read_text(encoding="utf-8"),
+                )
+                engine_report = json.loads(
+                    (root / "engine_report.json").read_text(encoding="utf-8")
+                )
+                artifact_index = {
+                    item["relative_path"]: item for item in engine_report["artifacts"]
+                }
+                for relative_path in ("final.mp4", "captions.srt"):
+                    artifact = artifact_index[relative_path]
+                    actual_path = root / relative_path
+                    self.assertEqual(artifact["size"], actual_path.stat().st_size)
+                    self.assertEqual(
+                        artifact["sha256"],
+                        hashlib.sha256(actual_path.read_bytes()).hexdigest().upper(),
+                    )
+                    self.assertTrue(artifact["control_layer_retimed"])
+                    self.assertIn("engine_source_sha256", artifact)
+                self.assertEqual(
+                    engine_report["control_layer_validation"]["captions_sha256"],
+                    hashlib.sha256((root / "captions.srt").read_bytes()).hexdigest().upper(),
+                )
+                video_command = next(command for command in commands if "-filter_complex" in command)
+                self.assertIn("[0:v:0]setpts=PTS/", video_command[video_command.index("-filter_complex") + 1])
+                self.assertEqual(video_command[video_command.index("-map") + 1], "[v]")
+                self.assertIn("1:a:0", video_command)
+                self.assertIn("aac", video_command)
 
 
 if __name__ == "__main__":

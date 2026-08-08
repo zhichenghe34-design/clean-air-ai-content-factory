@@ -65,6 +65,17 @@ LEGACY_TERMS = ("甲醛", "除醛", "新房", "入住", "检测报告", "实验�
 
 
 class GenericProductionTests(unittest.TestCase):
+    def test_no_key_research_keeps_findings_empty_instead_of_fabricating_evidence(self):
+        runner = ProductionRunner(provider=None, research_config={"enabled": True})
+        with tempfile.TemporaryDirectory() as folder_name:
+            research = runner.run_research_stage(
+                Path(folder_name),
+                {"topic": "如何跟进第一次接触的企业客户？", "audience": "销售新人"},
+            )["research"]
+        self.assertEqual(research["status"], "offline")
+        self.assertEqual(research["findings"], [])
+        self.assertEqual(research["sources"], [])
+
     def test_offline_variants_are_topic_bound_process_only_and_duration_safe(self):
         topic = "如何跟进第一次接触的企业客户？"
         variants = build_local_variants(topic, "销售新人", [], GENERIC_PACK, LEARNING_RULES)
