@@ -130,8 +130,51 @@ class ProviderGenericTests(unittest.TestCase):
         normalized = normalize_bootstrap_capability_snapshot(raw, raw["goal"])
         self.assertEqual(
             normalized["visual_direction"],
-            ["画幅：1080×1920竖屏", "构图：门店环境与信息卡片"],
+            ["构图：门店环境与信息卡片", "画幅：1080×1920竖屏"],
         )
+
+    def test_bootstrap_visual_object_rejects_composite_sensitive_keys(self):
+        sensitive_keys = (
+            "authorization_header",
+            "refresh_token",
+            "client_secret",
+            "cookie_value",
+            "api_key_copy",
+            "authorizationHeader",
+            "authorizationheader",
+            "refreshtoken",
+            "clientsecret",
+            "cookievalue",
+            "apikeycopy",
+            "访问令牌备份",
+            "客户授权信息",
+            "接口密钥副本",
+            "登录凭据说明",
+        )
+        for key in sensitive_keys:
+            with self.subTest(key=key):
+                raw = capability_snapshot()
+                raw["visual_direction"] = {key: "信息卡片"}
+                with self.assertRaises(ProviderError) as raised:
+                    normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+                self.assertNotIn(key, str(raised.exception))
+
+    def test_bootstrap_visual_object_order_is_hash_stable_and_normalized_duplicates_fail(self):
+        first_raw = capability_snapshot()
+        first_raw["visual_direction"] = {"palette": "暖色", "shot": "近景"}
+        second_raw = capability_snapshot()
+        second_raw["visual_direction"] = {"shot": "近景", "palette": "暖色"}
+        first_snapshot = normalize_bootstrap_capability_snapshot(first_raw, first_raw["goal"])
+        second_snapshot = normalize_bootstrap_capability_snapshot(second_raw, second_raw["goal"])
+        self.assertEqual(first_snapshot["visual_direction"], second_snapshot["visual_direction"])
+        first_pack = normalize_capability_pack(first_snapshot, first_raw["goal"], "deepseek")
+        second_pack = normalize_capability_pack(second_snapshot, second_raw["goal"], "deepseek")
+        self.assertEqual(first_pack["sha256"], second_pack["sha256"])
+
+        duplicate = capability_snapshot()
+        duplicate["visual_direction"] = {"shot-type": "近景", "shot_type": "远景"}
+        with self.assertRaisesRegex(ProviderError, "规范化重名键"):
+            normalize_bootstrap_capability_snapshot(duplicate, duplicate["goal"])
 
     def test_bootstrap_maps_only_explicit_equivalent_risk_levels(self):
         cases = {
@@ -241,19 +284,23 @@ class ProviderGenericTests(unittest.TestCase):
         raw.pop("industry")
         raw["unexpected"] = {"secret": "sk-1234567890abcdef"}
         raw["api_key=sk-1234567890abcdef"] = "should not enter diagnostics"
+        raw["customer-id-440123199001011234"] = "should not enter diagnostics"
         raw["tone"] = ["克制", 3, False]
         details = bootstrap_capability_schema_diagnostics(raw)
         self.assertEqual(details["missing_fields"], ["industry"])
-        self.assertEqual(details["unknown_fields"], ["<redacted-unknown-field>", "unexpected"])
+        self.assertEqual(details["unknown_fields"], ["<redacted-unknown-field>"])
         self.assertEqual(details["field_types"]["tone"], "array")
         self.assertEqual(details["list_element_types"]["tone"], ["boolean", "number", "string"])
         serialized = json.dumps(details, ensure_ascii=False)
         self.assertNotIn("sk-1234567890abcdef", serialized)
         self.assertNotIn("克制", serialized)
+        self.assertNotIn("customer-id-440123199001011234", serialized)
+        self.assertNotIn("unexpected", serialized)
         error = ProviderError("schema failed", details=details)
         self.assertIn("missing_fields", str(error))
         self.assertNotIn("sk-1234567890abcdef", str(error))
         self.assertNotIn("克制", str(error))
+        self.assertNotIn("customer-id-440123199001011234", str(error))
 
     def test_bootstrap_adapter_still_uses_final_pack_constraints_and_stable_hash(self):
         raw = capability_snapshot()

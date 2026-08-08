@@ -116,6 +116,45 @@ _BOOTSTRAP_FORBIDDEN_VISUAL_KEYS = {
     "网址",
     "链接",
 }
+_BOOTSTRAP_SENSITIVE_VISUAL_KEY_TOKENS = {
+    "auth",
+    "authorization",
+    "bearer",
+    "cookie",
+    "credential",
+    "credentials",
+    "jwt",
+    "oauth",
+    "password",
+    "secret",
+    "token",
+}
+_BOOTSTRAP_SENSITIVE_VISUAL_KEY_FRAGMENTS = {
+    "accesskey",
+    "apikey",
+    "authorization",
+    "clientsecret",
+    "cookie",
+    "credential",
+    "password",
+    "privatekey",
+    "refreshtoken",
+}
+_BOOTSTRAP_SENSITIVE_VISUAL_KEY_SEQUENCES = {
+    ("access", "key"),
+    ("api", "key"),
+    ("client", "key"),
+    ("private", "key"),
+}
+_BOOTSTRAP_SENSITIVE_VISUAL_KEY_MARKERS = (
+    "密钥",
+    "口令",
+    "密码",
+    "令牌",
+    "授权",
+    "认证",
+    "凭据",
+)
 _BOOTSTRAP_URL_RE = re.compile(r"(?i)(?:https?|file|ftp)://")
 _BOOTSTRAP_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|(?:^|\s)/(?:etc|home|users|var|tmp)/|\.\.[\\/])")
 _BOOTSTRAP_SECRET_RE = re.compile(
@@ -145,20 +184,6 @@ def _bootstrap_value_type(value: Any) -> str:
     return "other"
 
 
-def _bootstrap_diagnostic_field_name(value: str) -> str:
-    if (
-        not value
-        or len(value) > 80
-        or _BOOTSTRAP_CONTROL_RE.search(value)
-        or _BOOTSTRAP_URL_RE.search(value)
-        or _BOOTSTRAP_PATH_RE.search(value)
-        or _BOOTSTRAP_COMMAND_RE.search(value)
-        or _BOOTSTRAP_SECRET_RE.search(value)
-    ):
-        return "<redacted-unknown-field>"
-    return value
-
-
 def bootstrap_capability_schema_diagnostics(value: Any) -> dict[str, Any]:
     """Describe only schema shape; never retain model-provided content values."""
 
@@ -171,13 +196,10 @@ def bootstrap_capability_schema_diagnostics(value: Any) -> dict[str, Any]:
         }
     string_keys = {key for key in value if isinstance(key, str)}
     missing = [field for field in CAPABILITY_SNAPSHOT_FIELDS if field not in string_keys]
-    unknown = sorted({
-        _bootstrap_diagnostic_field_name(key)
-        for key in string_keys
-        if key not in CAPABILITY_SNAPSHOT_FIELDS
-    })
-    if any(not isinstance(key, str) for key in value):
-        unknown.append("<non-string-key>")
+    has_unknown = any(key not in CAPABILITY_SNAPSHOT_FIELDS for key in string_keys) or any(
+        not isinstance(key, str) for key in value
+    )
+    unknown = ["<redacted-unknown-field>"] if has_unknown else []
     field_types = {
         field: _bootstrap_value_type(value[field])
         for field in CAPABILITY_SNAPSHOT_FIELDS
@@ -244,21 +266,47 @@ def _normalize_bootstrap_list(value: Any, *, field: str) -> list[str]:
     return result
 
 
+def _normalized_bootstrap_visual_key(value: str) -> str:
+    camel_split = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", camel_split.casefold()).strip("_")
+    if not normalized:
+        raise ProviderError("项目启动接口返回的visual_direction键无法规范化")
+    tokens = tuple(token for token in normalized.split("_") if token)
+    token_set = set(tokens)
+    has_sensitive_sequence = any(
+        all(sequence[index] == tokens[start + index] for index in range(len(sequence)))
+        for sequence in _BOOTSTRAP_SENSITIVE_VISUAL_KEY_SEQUENCES
+        for start in range(len(tokens) - len(sequence) + 1)
+    )
+    if (
+        normalized in _BOOTSTRAP_FORBIDDEN_VISUAL_KEYS
+        or token_set.intersection(_BOOTSTRAP_SENSITIVE_VISUAL_KEY_TOKENS)
+        or any(fragment in token for token in tokens for fragment in _BOOTSTRAP_SENSITIVE_VISUAL_KEY_FRAGMENTS)
+        or has_sensitive_sequence
+        or any(marker in normalized for marker in _BOOTSTRAP_SENSITIVE_VISUAL_KEY_MARKERS)
+    ):
+        raise ProviderError("项目启动接口返回的visual_direction包含敏感键")
+    return normalized
+
+
 def _normalize_bootstrap_visual_object(value: dict[Any, Any]) -> list[str]:
     if not 1 <= len(value) <= 12:
         raise ProviderError("项目启动接口返回的visual_direction对象必须包含1到12项")
-    result: list[str] = []
+    entries: list[tuple[str, str, str]] = []
+    normalized_keys: set[str] = set()
     for key, item in value.items():
         if not isinstance(key, str) or not isinstance(item, str):
             raise ProviderError("项目启动接口返回的visual_direction对象必须是扁平字符串映射")
         clean_key = key.strip()
-        normalized_key = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", clean_key.casefold()).strip("_")
-        if normalized_key in _BOOTSTRAP_FORBIDDEN_VISUAL_KEYS:
-            raise ProviderError("项目启动接口返回的visual_direction包含敏感键")
         clean_key = _assert_bootstrap_safe_text(clean_key, field="visual_direction键", maximum=80)
+        normalized_key = _normalized_bootstrap_visual_key(clean_key)
+        if normalized_key in normalized_keys:
+            raise ProviderError("项目启动接口返回的visual_direction包含规范化重名键")
+        normalized_keys.add(normalized_key)
         clean_value = _assert_bootstrap_safe_text(item, field="visual_direction值", maximum=200)
-        result.append(f"{clean_key}：{clean_value}")
-    return result
+        entries.append((normalized_key, clean_key, clean_value))
+    entries.sort(key=lambda entry: entry[0])
+    return [f"{clean_key}：{clean_value}" for _, clean_key, clean_value in entries]
 
 
 def normalize_bootstrap_capability_snapshot(raw_pack: Any, goal: str) -> dict[str, Any]:
