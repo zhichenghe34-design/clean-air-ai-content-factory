@@ -6,7 +6,9 @@ import json
 import mimetypes
 import secrets
 import threading
+import time
 import webbrowser
+from collections import OrderedDict
 from datetime import datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -15,9 +17,19 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from core.catalog import HardwareProbe, PackageCatalog
+from core.capability_pack import (
+    local_capability_pack,
+    local_topic_candidates,
+    normalize_capability_pack,
+    validate_capability_pack,
+    validate_goal,
+)
+from core.capability_registry import CapabilityPackConflictError, CapabilityPackRegistry
 from core.config import ConfigStore
 from core.discovery import ProjectDiscovery
+from core.learning import LearningError, LearningStore
 from core.orchestrator import (
+    ConflictError,
     IDEMPOTENCY_RE,
     JobStore,
     UnprocessableError,
@@ -40,16 +52,101 @@ CATALOG_FILE = APP_DIR / "catalog" / "package-catalog.json"
 config_store = ConfigStore(RUNTIME_DIR)
 config_store.ensure_storage_layout()
 job_store = JobStore(RUNTIME_DIR)
+learning_store = LearningStore(RUNTIME_DIR)
+capability_registry = CapabilityPackRegistry(RUNTIME_DIR)
 package_catalog = PackageCatalog(CATALOG_FILE)
 state_lock = threading.Lock()
 SESSION_COOKIE = "shiyi_session"
 SESSION_ID = secrets.token_urlsafe(32)
 CSRF_TOKEN = secrets.token_urlsafe(32)
 provider_session_state = {"verified_signature": None, "verified_at": None, "revision": 0}
-pretask_provider_budget = BudgetLedger(limit=3)
+PRETASK_PROVIDER_LIMIT = 3
+pretask_provider_budgets: OrderedDict[str, BudgetLedger] = OrderedDict()
 agent_create_replays: dict[str, dict[str, str]] = {}
+correction_replays: OrderedDict[str, dict] = OrderedDict()
+topic_selection_bundles: OrderedDict[str, dict] = OrderedDict()
+SELECTION_BUNDLE_TTL_SECONDS = 2 * 60 * 60
 
-SAFE_TOPIC_POOL = [
+
+def pretask_budget_for(goal: str) -> BudgetLedger:
+    """Return a hard pre-task ledger scoped to one normalized project goal."""
+
+    key = hashlib.sha256(goal.strip().encode("utf-8")).hexdigest()
+    with state_lock:
+        ledger = pretask_provider_budgets.get(key)
+        if ledger is None:
+            ledger = BudgetLedger(limit=PRETASK_PROVIDER_LIMIT)
+            pretask_provider_budgets[key] = ledger
+            while len(pretask_provider_budgets) > 128:
+                pretask_provider_budgets.popitem(last=False)
+        else:
+            pretask_provider_budgets.move_to_end(key)
+        return ledger
+
+
+def store_topic_selection_bundle(goal: str, pack: dict, candidates: list[dict]) -> str:
+    bundle_id = f"selection-{secrets.token_urlsafe(24)}"
+    record = {
+        "goal": goal,
+        "pack_id": pack["id"],
+        "pack_sha256": pack["sha256"],
+        "candidates": {str(item["id"]): json.loads(json.dumps(item, ensure_ascii=False)) for item in candidates},
+        "created_monotonic": time.monotonic(),
+    }
+    with state_lock:
+        topic_selection_bundles[bundle_id] = record
+        while len(topic_selection_bundles) > 128:
+            topic_selection_bundles.popitem(last=False)
+    return bundle_id
+
+
+def resolve_topic_selection_bundle(bundle_id: object, candidate_id: object) -> tuple[dict, dict]:
+    if not isinstance(bundle_id, str) or not bundle_id.startswith("selection-") or len(bundle_id) > 96:
+        raise UnprocessableError("selection_bundle_id格式无效")
+    if not isinstance(candidate_id, str) or not 1 <= len(candidate_id) <= 80:
+        raise UnprocessableError("candidate_id格式无效")
+    with state_lock:
+        record = topic_selection_bundles.get(bundle_id)
+        if record is None:
+            raise UnprocessableError("选题凭证不存在或已失效，请重新获取三个候选")
+        if time.monotonic() - float(record["created_monotonic"]) > SELECTION_BUNDLE_TTL_SECONDS:
+            topic_selection_bundles.pop(bundle_id, None)
+            raise UnprocessableError("选题凭证已过期，请重新获取三个候选")
+        candidate = record["candidates"].get(candidate_id)
+        if candidate is None:
+            raise UnprocessableError("候选选题不属于当前服务端选题凭证")
+        record = dict(record)
+        candidate = dict(candidate)
+    try:
+        pack = capability_registry.get(record["pack_id"], record["pack_sha256"])
+    except (TypeError, ValueError) as exc:
+        raise UnprocessableError("选题关联的行业能力包已失效，请重新生成") from exc
+    return candidate, pack
+
+
+def infer_correction_kind(message: str, requested: object = None) -> str:
+    allowed = {"style", "content", "evidence", "capability", "process"}
+    if requested is not None:
+        if requested not in allowed:
+            raise UnprocessableError("kind必须是style、content、evidence、capability或process")
+        return str(requested)
+    text = str(message or "")
+    if any(marker in text for marker in ("行业能力包", "能力包判断", "行业判断", "受众判断", "平台判断")):
+        return "capability"
+    if any(marker in text for marker in ("来源是假的", "来源不可信", "证据是假的", "证据不可信", "报告是假的", "引用错误", "数据不可信", "数字不对", "这条事实不对")):
+        return "evidence"
+    if any(marker in text for marker in ("语气", "风格", "措辞", "画面", "字体", "配色", "节奏")):
+        return "style"
+    if any(marker in text for marker in ("流程", "步骤", "先后顺序", "审批方式", "工作方式")):
+        return "process"
+    return "content"
+
+
+def combine_correction_kinds(kinds: list[str]) -> str:
+    priority = {"style": 1, "process": 2, "content": 3, "capability": 4, "evidence": 5}
+    return max((kind for kind in kinds if kind in priority), key=lambda item: priority[item], default="content")
+
+LEGACY_CLEAN_AIR_TOPIC_POOL = [
     {
         "title": "通风后没有气味，室内空气就安全了吗？",
         "reason": "从常见误区切入，适合新房家庭。",
@@ -186,6 +283,7 @@ SAFE_TOPIC_POOL = [
         "audience": "临近入住的新房家庭",
     },
 ]
+SAFE_TOPIC_POOL = LEGACY_CLEAN_AIR_TOPIC_POOL  # compatibility for released tests/tools
 UNSAFE_TOPIC_PHRASES = ("绝对安全", "完全去除", "彻底去除", "零甲醛", "立即入住", "母婴零风险")
 BLOCKED_GOAL_PHRASES = (
     "忽略前面", "忽略以上", "忽略之前", "忽略所有指令", "系统提示词", "开发者指令", "越狱提示",
@@ -274,7 +372,7 @@ def invalidate_provider_configuration() -> None:
 
 
 class AppHandler(BaseHTTPRequestHandler):
-    server_version = "ShiyiContentFactory/0.2"
+    server_version = "ShiyiAgentContentFactory/0.3"
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -290,6 +388,14 @@ class AppHandler(BaseHTTPRequestHandler):
                     self.json_response({"tools": app_state["tools"], "last_scan": app_state["last_scan"], "report": app_state["last_scan_report"]})
             elif path == "/api/jobs":
                 self.json_response({"jobs": job_store.list()})
+            elif path == "/api/learning":
+                self.json_response({
+                    "memories": learning_store.list_memories(),
+                    "rules": learning_store.list_rules(),
+                    "skills": learning_store.list_skills(),
+                })
+            elif path == "/api/capability-packs":
+                self.json_response({"capability_packs": capability_registry.list()})
             elif path.startswith("/api/jobs/") and "/review-artifacts/" in path:
                 parts = path.strip("/").split("/")
                 if len(parts) != 5:
@@ -362,11 +468,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.json_response(self._suggest_topics(body))
             elif path == "/api/agent/plan":
                 self.json_response(self._plan(body))
+            elif path == "/api/agent/corrections":
+                self.json_response(self._record_correction(body), HTTPStatus.CREATED)
             elif path == "/api/jobs":
                 plan = body.get("plan")
                 if not isinstance(plan, dict):
                     raise UnprocessableError("缺少有效计划")
-                self.json_response(job_store.create(plan, production_input=body.get("production_input")), HTTPStatus.CREATED)
+                production_input, rules = self._prepare_production_input(body, include_defaults=False)
+                job = job_store.create(plan, production_input=production_input)
+                if rules:
+                    job = job_store.apply_learning_rules(job["id"], rules, "创建任务时应用服务端已验证记忆")
+                self.json_response(job, HTTPStatus.CREATED)
             elif path == "/api/demo-job":
                 job, replayed = self._create_demo_job(body)
                 self.json_response(job, HTTPStatus.OK if replayed else HTTPStatus.CREATED)
@@ -379,6 +491,7 @@ class AppHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/jobs/") and path.endswith("/run"):
                 job_id = path.split("/")[3]
                 job = job_store.get(job_id)
+                job = self._sync_learning_rules(job)
                 if not isinstance(job.get("production_input"), dict):
                     allow = bool(config_store.load()["security"].get("allow_external_commands", False))
                     self.json_response(job_store.run_safe(job_id, allow_external_commands=allow))
@@ -387,7 +500,26 @@ class AppHandler(BaseHTTPRequestHandler):
                     budget = BudgetLedger(limit=limit, snapshot=job.get("budget"))
                     provider = self._provider(budget)
                     runner = ProductionRunner(provider=provider, research_config=config_store.load().get("research", {}), budget=budget)
-                    self.json_response(job_store.advance(job_id, runner, self.headers.get("Idempotency-Key", "")))
+                    executed_rule_ids = list(job.get("learning_rule_ids", []))
+                    result = job_store.advance(job_id, runner, self.headers.get("Idempotency-Key", ""))
+                    learning_update = None
+                    if result.get("status") == "complete" and executed_rule_ids:
+                        try:
+                            marked = learning_store.mark_job_success(executed_rule_ids, job_id)
+                            learning_update = {
+                                "status": "recorded",
+                                "generated_skill_ids": [item["id"] for item in marked.get("generated_skills", [])],
+                            }
+                        except LearningError as exc:
+                            # The media run is already atomically published.  A
+                            # damaged learning index must not turn that success
+                            # into a false 500 response.
+                            learning_update = {"status": "failed", "code": exc.code}
+                    if result.get("status") == "complete":
+                        result = self._sync_learning_rules(result)
+                    if learning_update is not None:
+                        result["learning_update"] = learning_update
+                    self.json_response(result)
             else:
                 self.error_response("not_found", "接口不存在", HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -404,7 +536,27 @@ class AppHandler(BaseHTTPRequestHandler):
                 if not 35 <= float(estimate["estimated_seconds"]) <= 75:
                     raise UnprocessableError("脚本预计口播时长必须在35到75秒之间", details=estimate)
                 job_id = path.split("/")[3]
-                self.json_response(job_store.update_script(job_id, value, review_script(value, job_store.approved_findings(job_id)), estimate))
+                job = job_store.get(job_id)
+                production_input = job.get("production_input") or {}
+                self.json_response(job_store.update_script(
+                    job_id,
+                    value,
+                    review_script(
+                        value,
+                        job_store.approved_findings(job_id),
+                        production_input.get("capability_pack"),
+                        production_input.get("learning_rules"),
+                    ),
+                    estimate,
+                ))
+            elif path.startswith("/api/learning/rules/"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 4:
+                    raise FileNotFoundError("接口不存在")
+                status = body.get("status")
+                if status not in {"active", "disabled"}:
+                    raise UnprocessableError("规则状态必须是active或disabled")
+                self.json_response({"rule": learning_store.set_rule_status(parts[3], status)})
             else:
                 self.error_response("not_found", "接口不存在", HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -433,8 +585,8 @@ class AppHandler(BaseHTTPRequestHandler):
             for cap in package.get("capabilities", [])
         }
         return {
-            "name": "时宜 AIGC 内容工厂",
-            "version": "0.2.0",
+            "name": "时宜 Agent 内容工厂",
+            "version": "0.3.0",
             "schema_version": 2,
             "time": datetime.now().astimezone().isoformat(timespec="seconds"),
             "provider": config["provider"]["name"],
@@ -454,6 +606,9 @@ class AppHandler(BaseHTTPRequestHandler):
             "safe_mode": not config["security"].get("allow_external_commands", False),
             "catalog_package_count": len(catalog.get("packages", [])),
             "catalog_install_enabled": catalog["policy"]["auto_install_enabled"],
+            "memory_count": len(learning_store.list_memories()),
+            "learned_skill_count": len(learning_store.list_skills()),
+            "dynamic_capability_pack_count": len(capability_registry.list()),
         }
 
     def _discover(self, body: dict) -> dict:
@@ -476,18 +631,72 @@ class AppHandler(BaseHTTPRequestHandler):
     def _provider(self, budget: BudgetLedger | None = None) -> OpenAICompatibleProvider:
         return OpenAICompatibleProvider(config_store.load()["provider"], config_store.get_api_key(), budget=budget)
 
+    def _prepare_production_input(self, body: dict, *, include_defaults: bool) -> tuple[dict | None, list[dict]]:
+        selection_bundle_id = body.get("selection_bundle_id")
+        if selection_bundle_id is not None:
+            unknown = sorted(set(body) - {"plan", "selection_bundle_id", "candidate_id", "production_options"})
+            if unknown:
+                raise UnprocessableError("选题创建请求包含不允许的字段", details={"fields": unknown})
+            options = body.get("production_options", {})
+            if not isinstance(options, dict):
+                raise UnprocessableError("production_options必须是JSON对象")
+            allowed_options = {
+                "target_duration_seconds", "pattern_card_ids", "voice_engine", "aspect_ratio", "render_mode",
+                "require_animation", "enable_web_research", "source_urls", "motion_scenes", "animation_quality",
+            }
+            option_unknown = sorted(set(options) - allowed_options)
+            if option_unknown:
+                raise UnprocessableError("production_options包含不允许的字段", details={"fields": option_unknown})
+            candidate, pack = resolve_topic_selection_bundle(selection_bundle_id, body.get("candidate_id"))
+            production_input = dict(DEFAULT_INPUT) if include_defaults else {}
+            production_input.update({
+                "topic": candidate["title"],
+                "audience": candidate["audience"],
+                "capability_pack": pack,
+                "project_id": selection_bundle_id,
+                "selection_bundle_id": selection_bundle_id,
+                "candidate_id": candidate["id"],
+            })
+            production_input.update(options)
+        else:
+            if "production_input" not in body and not include_defaults:
+                return None, []
+            supplied = {} if "production_input" not in body else body["production_input"]
+            if not isinstance(supplied, dict):
+                raise UnprocessableError("production_input必须是JSON对象")
+            if "learning_rules" in supplied:
+                raise UnprocessableError("learning_rules只能由服务端记忆库绑定，客户端不得提交")
+            if "selection_bundle_id" in supplied or "candidate_id" in supplied:
+                raise UnprocessableError("选题凭证只能通过服务端selection bundle创建")
+            production_input = dict(DEFAULT_INPUT) if include_defaults else {}
+            production_input.update(supplied)
+
+        supplied_pack = production_input.get("capability_pack")
+        normalized = validate_topic_input(production_input)
+        pack = normalized["capability_pack"]
+        if supplied_pack is None or pack.get("source") in {"local", "legacy"}:
+            pack = self._publish_capability_pack(pack)
+        else:
+            try:
+                registered = capability_registry.get(pack["id"], pack["sha256"])
+            except (TypeError, ValueError) as exc:
+                raise UnprocessableError("行业能力包不在服务端已审核注册表中，请重新生成三个候选") from exc
+            if registered != pack:
+                raise UnprocessableError("行业能力包与服务端已审核版本不一致")
+            pack = registered
+        normalized["capability_pack"] = pack
+        rules = learning_store.rules_for(pack["id"])
+        return normalized, rules
+
     def _create_demo_job(self, body: dict) -> tuple[dict, bool]:
-        supplied = {} if "production_input" not in body else body["production_input"]
-        if not isinstance(supplied, dict):
-            raise UnprocessableError("production_input必须是JSON对象")
-        production_input = dict(DEFAULT_INPUT)
-        production_input.update(supplied)
+        production_input, rules = self._prepare_production_input(body, include_defaults=True)
+        assert production_input is not None
         plan = local_fallback_plan(f"制作样片：{production_input['topic']}", [])
         for step in plan["steps"]:
             if step.get("capability") != "human_refinement":
                 step["tool_id"] = "trusted-local-production-adapter"
                 step["risk"] = "固定路径本地适配器，仍需人工批准"
-        plan["summary"] = "v2分阶段样片：研究、证据人工审定、脚本合规放行、配音与成片。"
+        plan["summary"] = "分阶段内容任务：研究、证据人工审定、脚本合规放行、配音与成片。"
 
         request_key = self.headers.get("Idempotency-Key", "").strip()
         if request_key and not IDEMPOTENCY_RE.fullmatch(request_key):
@@ -506,6 +715,8 @@ class AppHandler(BaseHTTPRequestHandler):
                     raise error
                 return job_store.get(replay["job_id"]), True
             job = job_store.create(plan, production_input=production_input)
+            if rules:
+                job = job_store.apply_learning_rules(job["id"], rules, "创建任务时应用服务端已验证记忆")
             if request_key:
                 agent_create_replays[request_key] = {"fingerprint": fingerprint, "job_id": job["id"]}
                 while len(agent_create_replays) > 128:
@@ -513,30 +724,26 @@ class AppHandler(BaseHTTPRequestHandler):
             return job, False
 
     @staticmethod
-    def _safe_topic_candidates(excluded: list[str], goal: str) -> list[dict]:
-        excluded_set = {item.strip() for item in excluded if isinstance(item, str) and item.strip()}
-        pool = [item for item in SAFE_TOPIC_POOL if item["title"] not in excluded_set]
-        # Keep the fallback deterministic for tests while changing the visible
-        # batch as the client accumulates exclusions.
-        offset = len(excluded_set) % len(pool)
-        ordered = pool[offset:] + pool[:offset]
-        return [dict(item) for item in ordered[:3]]
+    def _safe_topic_candidates(
+        excluded: list[str], goal: str, capability_pack: dict | None = None,
+    ) -> list[dict]:
+        """Build three deterministic candidates without borrowing another industry."""
+        pack = validate_capability_pack(capability_pack or local_capability_pack(goal))
+        return local_topic_candidates(goal, pack, excluded)
 
     @staticmethod
     def _validate_topic_goal(value: object) -> str:
-        if not isinstance(value, str):
-            raise UnprocessableError("goal必须是字符串")
-        goal = value.strip()
-        if not 4 <= len(goal) <= 200:
-            raise UnprocessableError("请用4到200字告诉Agent你想做什么")
-        if any(phrase in goal for phrase in BLOCKED_GOAL_PHRASES):
-            raise UnprocessableError("目标包含越域或指令注入内容，请只描述室内空气赛题需求")
-        if not topic_in_scope(goal):
-            raise UnprocessableError("当前Agent只处理甲醛、除醛与室内空气赛题")
-        return goal
+        try:
+            return validate_goal(value, minimum=4, maximum=200)
+        except (TypeError, ValueError) as exc:
+            raise UnprocessableError(str(exc)) from exc
 
     @staticmethod
-    def _normalize_topic_candidates(raw: list[dict], excluded: list[str], goal: str) -> tuple[list[dict], bool]:
+    def _normalize_topic_candidates(
+        raw: list[dict], excluded: list[str], goal: str, capability_pack: dict,
+    ) -> tuple[list[dict], bool]:
+        pack = validate_capability_pack(capability_pack)
+        default_audience = str(pack["snapshot"].get("audience", "目标受众")).strip() or "目标受众"
         excluded_set = {item.strip() for item in excluded if isinstance(item, str) and item.strip()}
         result: list[dict] = []
         seen = set(excluded_set)
@@ -545,11 +752,16 @@ class AppHandler(BaseHTTPRequestHandler):
                 continue
             title = str(item.get("title", "")).strip()
             reason = str(item.get("reason", "")).strip()
-            audience = str(item.get("audience", "新房家庭")).strip() or "新房家庭"
+            audience = str(item.get("audience", default_audience)).strip() or default_audience
             if title in seen or any(phrase in title for phrase in UNSAFE_TOPIC_PHRASES):
                 continue
             try:
-                validate_topic_input({"topic": title, "audience": audience, "target_duration_seconds": 52})
+                validate_topic_input({
+                    "topic": title,
+                    "audience": audience,
+                    "target_duration_seconds": 52,
+                    "capability_pack": pack,
+                })
             except UnprocessableError:
                 continue
             if not 4 <= len(reason) <= 100:
@@ -560,7 +772,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 break
         used_local_fallback = len(result) < 3
         if used_local_fallback:
-            fallback = AppHandler._safe_topic_candidates(list(seen), goal)
+            fallback = AppHandler._safe_topic_candidates(list(seen), goal, pack)
             for item in fallback:
                 if item["title"] in seen:
                     continue
@@ -572,6 +784,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def _suggest_topics(self, body: dict) -> dict:
         goal = self._validate_topic_goal(body.get("goal"))
+        pretask_budget = pretask_budget_for(goal)
         excluded = [] if "excluded_topics" not in body else body["excluded_topics"]
         if not isinstance(excluded, list) or len(excluded) > 24:
             raise UnprocessableError("excluded_topics必须是不超过24项的数组")
@@ -580,29 +793,135 @@ class AppHandler(BaseHTTPRequestHandler):
         excluded = [item.strip() for item in excluded if item.strip()]
         if any(len(item) > 80 for item in excluded):
             raise UnprocessableError("excluded_topics每一项最多80字")
+        supplied_pack = body.get("capability_pack")
+        if supplied_pack is not None:
+            try:
+                supplied_pack = validate_capability_pack(supplied_pack)
+            except (TypeError, ValueError) as exc:
+                raise UnprocessableError(f"行业能力包无效：{exc}") from exc
+            if supplied_pack["snapshot"].get("goal") != goal:
+                raise UnprocessableError("行业能力包与当前目标不匹配，请重新生成项目上下文")
+            try:
+                registered_pack = capability_registry.get(supplied_pack["id"], supplied_pack["sha256"])
+            except (TypeError, ValueError) as exc:
+                raise UnprocessableError("刷新只能使用服务端已登记的行业能力包，请重新生成项目上下文") from exc
+            if registered_pack != supplied_pack:
+                raise UnprocessableError("行业能力包与服务端已审核版本不一致")
+            supplied_pack = registered_pack
         raw: list[dict]
-        source = "deepseek"
+        pack = supplied_pack
+        capability_review: dict | None = None
+        source = "deepseek_bootstrap"
         notice = ""
-        if pretask_provider_budget.snapshot()["remaining"] <= 0:
-            raw = self._safe_topic_candidates(excluded, goal)
+        remaining_before_call = pretask_budget.snapshot()["remaining"]
+        if pack is None and remaining_before_call < 2:
+            # A model-generated pack is never usable without a separate
+            # counter-evidence pass.  Do not spend the final request on a
+            # bootstrap result that cannot be independently reviewed.
+            pack = local_capability_pack(goal)
+            raw = self._safe_topic_candidates(excluded, goal, pack)
             source = "local_safe_agent"
-            notice = "本机会话的预任务 Agent Provider 预算已耗尽，已只使用本地安全选题。"
+            notice = "预任务预算不足以同时完成能力包生成和独立反证审核，已使用本地安全能力包。"
+        elif remaining_before_call <= 0:
+            pack = pack or local_capability_pack(goal)
+            raw = self._safe_topic_candidates(excluded, goal, pack)
+            source = "local_safe_agent"
+            notice = "本机会话的预任务 Agent Provider 预算已耗尽，已使用本地通用能力包和安全候选。"
         else:
             try:
-                raw = self._provider(pretask_provider_budget).suggest_topics(goal, excluded)
-            except ProviderError as exc:
-                raw = self._safe_topic_candidates(excluded, goal)
+                provider = self._provider(pretask_budget)
+                if pack is not None:
+                    memory_rules = learning_store.rules_for(pack["id"])
+                    try:
+                        raw = provider.suggest_topics(goal, excluded, pack, memory_rules)
+                    except TypeError:
+                        raw = provider.suggest_topics(goal, excluded)
+                    source = "deepseek"
+                else:
+                    bootstrap_method = getattr(provider, "bootstrap_project", None)
+                    if not callable(bootstrap_method):
+                        pack = local_capability_pack(goal)
+                        raw = provider.suggest_topics(goal, excluded)
+                        source = "deepseek"
+                        bootstrap = None
+                    else:
+                        inferred_pack_id = local_capability_pack(goal)["id"]
+                        startup_memory_rules = learning_store.rules_for(inferred_pack_id)
+                        bootstrap = bootstrap_method(goal, excluded, startup_memory_rules)
+                    if bootstrap is None:
+                        pass
+                    elif not isinstance(bootstrap, dict):
+                        raise ProviderError("项目启动结果不是JSON对象")
+                    else:
+                        raw_snapshot = bootstrap.get("capability_pack")
+                        raw = bootstrap.get("candidates")
+                        if not isinstance(raw_snapshot, dict) or not isinstance(raw, list):
+                            raise ProviderError("项目启动结果缺少行业能力包或三个候选")
+                        pack = normalize_capability_pack(raw_snapshot, goal, "deepseek")
+                        review_method = getattr(provider, "adversarial_review_capability_pack", None)
+                        if pretask_budget.snapshot()["remaining"] <= 0 or not callable(review_method):
+                            raise ProviderError("动态行业能力包缺少独立反证审核额度或审核器")
+                        audit = review_method(pack, raw)
+                        if not isinstance(audit, dict):
+                            raise ProviderError("严格反证审核没有返回JSON对象")
+                        audit_status = str(audit.get("status", "needs_revision"))
+                        if audit_status != "passed":
+                            raise ProviderError("动态行业能力包未通过严格反证审核")
+                        capability_review = audit
+                        normalized_audit = {
+                            "status": "passed",
+                            "generated_by": "adversarial_agent",
+                            "reviewer": "strict_counterevidence_review",
+                            "note": "所有能力包内容默认不可信；仅保留审核后限定用途。",
+                            "warnings": list(audit.get("issues", [])),
+                            "checks": list(audit.get("safe_scope", [])),
+                            "risk_flags": list(audit.get("issues", [])),
+                            "constraints_added": list(audit.get("safe_scope", [])),
+                        }
+                        audited_snapshot = dict(pack["snapshot"])
+                        audited_snapshot["evidence_requirements"] = list(dict.fromkeys(
+                            list(audited_snapshot.get("evidence_requirements", []))
+                            + list(audit.get("safe_scope", []))
+                        ))
+                        pack = normalize_capability_pack(
+                            audited_snapshot, goal, "deepseek", audit=normalized_audit,
+                        )
+                        reviews = audit.get(
+                            "candidate_verdicts",
+                            audit.get("candidate_reviews", audit.get("candidates", [])),
+                        )
+                        rejected_ids: set[str] = set()
+                        rejected_titles: set[str] = set()
+                        if isinstance(reviews, list):
+                            for review in reviews:
+                                if not isinstance(review, dict) or review.get("verdict") != "rejected":
+                                    continue
+                                rejected_ids.add(str(review.get("candidate_id", review.get("id", ""))).strip())
+                                rejected_titles.add(str(review.get("title", "")).strip())
+                        raw = [
+                            item for item in raw
+                            if isinstance(item, dict)
+                            and str(item.get("id", "")).strip() not in rejected_ids
+                            and str(item.get("title", "")).strip() not in rejected_titles
+                        ]
+            except (ProviderError, TypeError, ValueError) as exc:
+                pack = supplied_pack or local_capability_pack(goal)
+                raw = self._safe_topic_candidates(excluded, goal, pack)
                 source = "local_safe_agent"
-                notice = f"DeepSeek本次未返回可用结果，已切换到本地安全选题：{exc}"
-        candidates, used_local_fallback = self._normalize_topic_candidates(raw, excluded, goal)
-        if source == "deepseek" and used_local_fallback:
+                notice = f"DeepSeek本次未返回可用项目结构，已切换到本地通用能力包：{exc}"
+        if pack is None:
+            pack = local_capability_pack(goal)
+        pack = self._publish_capability_pack(pack)
+        candidates, used_local_fallback = self._normalize_topic_candidates(raw, excluded, goal, pack)
+        if source in {"deepseek", "deepseek_bootstrap"} and used_local_fallback:
             source = "deepseek_filtered_with_local_fallback"
             notice = "部分模型候选未通过安全校验，已用本地安全选题补足三个角度。"
         if len(candidates) != 3:
             raise WorkflowError("Agent暂时没有找到三个互不重复的安全角度，请稍后再试")
-        budget = pretask_provider_budget.snapshot()
+        budget = pretask_budget.snapshot()
         source_label = {
             "deepseek": "DeepSeek",
+            "deepseek_bootstrap": "DeepSeek动态能力包",
             "deepseek_filtered_with_local_fallback": "DeepSeek与本地安全候选混合",
             "local_safe_agent": "本地安全候选",
         }[source]
@@ -611,42 +930,76 @@ class AppHandler(BaseHTTPRequestHandler):
             f"剩余 {budget['remaining']}；来源：{source_label}"
         )
         notice = f"{notice.rstrip('。')}；{budget_note}。" if notice else f"{budget_note}。"
+        selection_bundle_id = store_topic_selection_bundle(goal, pack, candidates)
         return {
             "goal": goal,
             "source": source,
             "notice": notice,
             "candidates": candidates,
-            "screening": f"已排除越域、夸大承诺和重复选题；公开依据将在研究阶段逐条核验；{budget_note}。",
+            "selection_bundle_id": selection_bundle_id,
+            "selection_bundle_expires_in_seconds": SELECTION_BUNDLE_TTL_SECONDS,
+            "capability_pack": pack,
+            "capability_review": capability_review,
+            "context": {
+                "project_id": pack["id"],
+                "industry_pack_id": pack["id"],
+                "industry_pack_label": pack["snapshot"].get("label", "动态行业能力包"),
+                "industry": pack["snapshot"].get("industry", "通用内容行业"),
+                "confidence": (
+                    "high"
+                    if source.startswith("deepseek")
+                    and (pack.get("audit") or {}).get("status") == "passed"
+                    else "limited"
+                ),
+                "selected_by": source,
+                "material_count": 0,
+            },
+            "learning": learning_store.memory_snapshot(pack["id"]),
+            "screening": f"已排除危险目标、无依据承诺和重复选题；公开依据将在研究阶段逐条核验；{budget_note}。",
             # Keep the topic-specific public field used by the released UI and
             # expose the shared name used by /api/agent/plan as well.
             "topic_provider_budget": budget,
             "pretask_provider_budget": budget,
         }
 
+    @staticmethod
+    def _publish_capability_pack(pack: dict) -> dict:
+        """Publish once; identical regenerated metadata reuses the immutable snapshot."""
+        try:
+            return capability_registry.publish(pack)
+        except CapabilityPackConflictError:
+            existing = capability_registry.get(pack["id"], pack["sha256"])
+            current_without_time = {key: value for key, value in pack.items() if key != "generated_at"}
+            existing_without_time = {key: value for key, value in existing.items() if key != "generated_at"}
+            if current_without_time == existing_without_time:
+                return existing
+            raise
+
     def _plan(self, body: dict) -> dict:
         goal = str(body.get("goal", "")).strip()
         if not goal:
             raise UnprocessableError("请先描述要完成的内容任务")
+        pretask_budget = pretask_budget_for(goal)
         with state_lock:
             tools = list(app_state["tools"])
         source = "deepseek"
         fallback = False
         notice = ""
-        if pretask_provider_budget.snapshot()["remaining"] <= 0:
+        if pretask_budget.snapshot()["remaining"] <= 0:
             plan = local_fallback_plan(goal, tools)
             source = "local_safe_agent"
             fallback = True
             notice = "本机会话的预任务 Agent Provider 预算已耗尽，已只使用本地安全计划。"
         else:
             try:
-                plan = self._provider(pretask_provider_budget).plan(goal, tools)
+                plan = self._provider(pretask_budget).plan(goal, tools)
                 plan["planner"] = "api"
             except ProviderError as exc:
                 plan = local_fallback_plan(goal, tools)
                 source = "local_safe_agent"
                 fallback = True
                 notice = f"DeepSeek本次未返回可用计划，已切换到本地安全计划：{exc}"
-        budget = pretask_provider_budget.snapshot()
+        budget = pretask_budget.snapshot()
         source_label = "DeepSeek" if source == "deepseek" else "本地安全计划"
         budget_note = (
             f"预任务 Agent Provider 请求 {budget['attempted']}/{budget['limit']}，"
@@ -660,6 +1013,122 @@ class AppHandler(BaseHTTPRequestHandler):
             "notice": notice,
             "pretask_provider_budget": budget,
         }
+
+    def _record_correction(self, body: dict) -> dict:
+        request_key = self.headers.get("Idempotency-Key", "").strip()
+        if not IDEMPOTENCY_RE.fullmatch(request_key):
+            error = WorkflowError("纠错请求必须携带有效的Idempotency-Key")
+            error.status, error.code = 400, "invalid_idempotency_key"
+            raise error
+        fingerprint = hashlib.sha256(
+            json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        with state_lock:
+            replay = correction_replays.get(request_key)
+            if replay:
+                if replay["fingerprint"] != fingerprint:
+                    raise ConflictError("同一Idempotency-Key不能用于不同纠错请求")
+                if replay.get("result") is None:
+                    raise ConflictError("相同纠错请求正在处理")
+                return json.loads(json.dumps(replay["result"], ensure_ascii=False))
+            correction_replays[request_key] = {"fingerprint": fingerprint, "result": None}
+
+        completed = False
+        try:
+            result = self._record_correction_once(body)
+            completed = True
+        finally:
+            if not completed:
+                with state_lock:
+                    correction_replays.pop(request_key, None)
+        with state_lock:
+            correction_replays[request_key]["result"] = json.loads(json.dumps(result, ensure_ascii=False))
+            correction_replays.move_to_end(request_key)
+            while len(correction_replays) > 256:
+                correction_replays.popitem(last=False)
+        return result
+
+    def _record_correction_once(self, body: dict) -> dict:
+        job_id = str(body.get("job_id", "")).strip() or None
+        job = job_store.get(job_id) if job_id else None
+        if job is not None and job.get("schema_version") != 2:
+            raise ConflictError("旧任务只读，不能写入新的纠错记忆")
+        pack_value = (
+            (job.get("production_input") or {}).get("capability_pack")
+            if job else body.get("capability_pack")
+        )
+        if pack_value is None:
+            raise UnprocessableError("纠错必须关联当前任务或行业能力包")
+        try:
+            pack = validate_capability_pack(pack_value)
+        except (TypeError, ValueError) as exc:
+            raise UnprocessableError(f"行业能力包无效：{exc}") from exc
+        if job is None:
+            try:
+                registered = capability_registry.get(pack["id"], pack["sha256"])
+            except (TypeError, ValueError) as exc:
+                raise UnprocessableError("纠错关联的行业能力包不在服务端注册表中") from exc
+            if registered != pack:
+                raise UnprocessableError("纠错关联的行业能力包与服务端版本不一致")
+            pack = registered
+        correction_kind = infer_correction_kind(str(body.get("message", "")), body.get("kind"))
+        learning_payload = {key: value for key, value in body.items() if key != "kind"}
+        correction = learning_store.record_correction(learning_payload, pack, job_id=job_id)
+        rules = learning_store.rules_for(pack["id"], job_id=job_id)
+        updated_job = None
+        queued = False
+        if job_id:
+            try:
+                updated_job = job_store.apply_learning_rules(
+                    job_id,
+                    rules,
+                    str(body.get("message", "")),
+                    correction_kind=correction_kind,
+                )
+            except ConflictError:
+                current = job_store.get(job_id)
+                if current.get("status") not in {"research_running", "content_running", "rendering"}:
+                    raise
+                # A blocking Provider call is not falsely reported as cancelled.
+                queued = True
+        return {
+            "correction": correction,
+            "correction_kind": correction_kind,
+            "effective_scope": correction["scope"],
+            "rules": rules,
+            "memory": learning_store.memory_snapshot(pack["id"], job_id=job_id),
+            "skills": learning_store.list_skills(),
+            "job": updated_job,
+            "applied_to_current": bool(updated_job),
+            "queued_for_next_stage": queued,
+            "interrupt_supported": False,
+            "effective_mode": "defer" if queued else "applied_at_safe_boundary",
+        }
+
+    @staticmethod
+    def _sync_learning_rules(job: dict) -> dict:
+        """Apply corrections recorded during a running stage at the next safe boundary."""
+        production_input = job.get("production_input") or {}
+        pack = production_input.get("capability_pack")
+        if not isinstance(pack, dict) or not pack.get("id"):
+            return job
+        rules = learning_store.rules_for(str(pack["id"]), job_id=str(job["id"]))
+        desired_ids = [str(item.get("rule_id", "")) for item in rules if item.get("rule_id")]
+        current_ids = [str(value) for value in job.get("learning_rule_ids", [])]
+        if desired_ids == current_ids:
+            return job
+        current = set(current_ids)
+        new_kinds = [
+            infer_correction_kind(str(item.get("instruction", "")))
+            for item in rules
+            if str(item.get("rule_id", "")) not in current
+        ]
+        return job_store.apply_learning_rules(
+            job["id"],
+            rules,
+            "在阶段边界应用已记录的工作人员纠错",
+            correction_kind=combine_correction_kinds(new_kinds),
+        )
 
     def require_mutation_security(self) -> None:
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
@@ -725,7 +1194,11 @@ class AppHandler(BaseHTTPRequestHandler):
         elif isinstance(exc, ProviderError):
             self.error_response("provider_error", str(exc), HTTPStatus.BAD_GATEWAY)
         elif isinstance(exc, ValueError):
-            self.error_response("bad_request", str(exc), HTTPStatus.BAD_REQUEST)
+            self.error_response(
+                str(getattr(exc, "code", "bad_request")),
+                str(exc),
+                int(getattr(exc, "status", HTTPStatus.BAD_REQUEST)),
+            )
         else:
             self.error_response("internal_error", f"服务器错误: {type(exc).__name__}", HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -791,7 +1264,7 @@ def find_server(host: str, port: int) -> tuple[ThreadingHTTPServer, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="时宜 AIGC 内容工厂控制台")
+    parser = argparse.ArgumentParser(description="时宜 Agent 内容工厂控制台")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--open", action="store_true", dest="open_browser")
@@ -802,7 +1275,7 @@ def main() -> None:
         json.dumps({"status": "running", "url": url, "pid": __import__("os").getpid()}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    print(f"时宜 AIGC 内容工厂已启动: {url}")
+    print(f"时宜 Agent 内容工厂已启动: {url}")
     if args.open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:

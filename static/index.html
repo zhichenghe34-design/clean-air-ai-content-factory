@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>净界 AI 内容工厂</title>
+  <title>时宜 Agent 内容工厂</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
       <button id="homeButton" class="brand" type="button" aria-label="返回 Agent 工作台">
-        <span class="brand-mark" aria-hidden="true">净</span>
-        <span class="brand-copy"><strong>净界 AI 内容工厂</strong><small>本地生成 · 合规先行 · 可举证 · 可追溯</small></span>
-        <span class="edition-badge">本地专属版</span>
+        <span class="brand-mark" aria-hidden="true">时</span>
+        <span class="brand-copy"><strong>时宜 Agent 内容工厂</strong><small>动态行业能力 · 持续纠错 · 可举证 · 可追溯</small></span>
+        <span class="edition-badge">通用内核预览</span>
       </button>
       <div class="top-actions">
         <button id="providerQuickButton" class="control-plate provider-control" type="button" data-view="settings">
@@ -42,17 +42,17 @@
               <article class="message-row user-message">
                 <span class="message-avatar user-avatar"><img src="/icons/user-round.svg" alt="用户"></span>
                 <div class="message-surface">
-                  <p id="userGoalText">帮我做一条面向新房家庭的除甲醛科普短视频。</p>
+                  <p id="userGoalText">帮我为一家本地服务企业制作一条面向潜在客户的竖屏短视频。</p>
                   <time id="userMessageTime">现在</time>
                 </div>
               </article>
 
               <article class="message-row agent-message">
-                <span class="message-avatar agent-avatar" aria-label="净界 Agent">净</span>
+                <span class="message-avatar agent-avatar" aria-label="时宜 Agent">时</span>
                 <div class="message-surface agent-surface">
                   <div id="topicLoading" class="agent-loading" hidden>
                     <img class="ui-icon spinning" src="/icons/loader-circle.svg" alt="">
-                    <div><strong>Agent 正在筛选角度…</strong><span>会先排除重复、越域和明显夸大；公开依据将在研究阶段核验。</span></div>
+                    <div><strong>Agent 正在建立项目能力…</strong><span>先现场生成行业能力包，再以“默认不可信”为前提反证审核并筛选角度。</span></div>
                   </div>
 
                   <div id="topicChoicePanel">
@@ -60,7 +60,7 @@
                       <p><strong>我先替你筛了一轮，留下 3 个值得做的角度。</strong></p>
                       <p>任选一个；不满意就换一批，也可以直接告诉我你的想法。</p>
                     </div>
-                    <p id="topicScreening" class="screening-note"><img class="ui-icon" src="/icons/shield-check.svg" alt="">已排除越域、夸大承诺和重复选题；公开依据将在研究阶段逐条核验。</p>
+                    <p id="topicScreening" class="screening-note"><img class="ui-icon" src="/icons/shield-check.svg" alt="">已排除危险目标、无依据承诺和重复选题；公开依据将在研究阶段逐条核验。</p>
                     <div id="topicCandidates" class="topic-candidates" role="radiogroup" aria-label="Agent 推荐的三个选题"></div>
                     <div class="choice-actions">
                       <button id="startSelectedTopic" class="primary choice-primary" type="button"><img class="ui-icon" src="/icons/check.svg" alt="">就做这个</button>
@@ -78,7 +78,7 @@
             <form id="agentComposer" class="agent-composer">
               <img class="ui-icon composer-icon" src="/icons/paperclip.svg" alt="">
               <label class="sr-only" for="goalInput">告诉 Agent 你想做什么</label>
-              <textarea id="goalInput" rows="1" maxlength="200" placeholder="告诉 Agent 你想做什么…">帮我做一条面向新房家庭的除甲醛科普短视频。</textarea>
+              <textarea id="goalInput" rows="1" maxlength="200" placeholder="告诉 Agent 你的行业、受众和想完成的内容…">帮我为一家本地服务企业制作一条面向潜在客户的竖屏短视频。</textarea>
               <button id="sendGoalBtn" class="send-button" type="submit" aria-label="发送给 Agent"><img class="ui-icon" src="/icons/send.svg" alt=""></button>
             </form>
 
@@ -91,7 +91,7 @@
           <aside class="latest-pane" aria-label="最新成片">
             <div class="latest-head"><img class="ui-icon" src="/icons/sparkles.svg" alt=""><strong>最新成片</strong></div>
             <div id="latestArtifact" class="latest-artifact">
-              <div class="video-empty"><img class="ui-icon" src="/icons/play.svg" alt=""><strong>还没有 v2 成片</strong><span>任务完成后，视频会自动出现在这里。</span></div>
+              <div class="video-empty"><img class="ui-icon" src="/icons/play.svg" alt=""><strong>还没有成片</strong><span>任务完成后，视频会自动出现在这里。</span></div>
             </div>
           </aside>
         </div>
@@ -106,7 +106,7 @@
           <div id="jobList" class="job-list"></div>
         </article>
         <article class="panel job-detail" id="jobDetailPanel" hidden>
-          <div class="panel-head"><div><p class="eyebrow">V2 人工门禁</p><h3>证据审定、脚本精修与产物</h3></div><span id="jobDetailBadge" class="pill"></span></div>
+          <div class="panel-head"><div><p class="eyebrow">人工复核详情</p><h3>证据审定、脚本精修与产物</h3></div><span id="jobDetailBadge" class="pill"></span></div>
           <div id="jobSummary" class="job-summary"></div>
           <section id="researchApprovalPanel" class="approval-panel" hidden>
             <h3>研究证据审核</h3><p class="lead">严格审核 Agent 以“所有内容默认虚假”为前提反向举证；最终采用与否仍由你决定。</p>
@@ -166,9 +166,9 @@
         <div class="secondary-head"><button class="back-home" type="button"><img class="ui-icon" src="/icons/arrow-left.svg" alt="">返回 Agent</button><div><p class="eyebrow">TRUSTED CAPABILITIES</p><h2>能力目录</h2><p>能力可以扩展，来源、许可和版本必须说得清。</p></div></div>
         <div class="catalog-summary">
           <article class="panel hardware-panel"><div class="panel-head"><div><p class="eyebrow">本机档位</p><h3 id="hardwareProfile">正在检测电脑…</h3></div><span id="installPolicyBadge" class="pill muted">受控安装</span></div><div id="hardwareFacts" class="hardware-facts"></div><div id="diskWarnings" class="notice" hidden></div></article>
-          <article class="panel"><p class="eyebrow">信任策略</p><h3>模型只能选择，不能乱下</h3><div class="safety-list"><div><strong>网上搜索安装源</strong><span>禁止</span></div><div><strong>提交任意网址/命令</strong><span>禁止</span></div><div><strong>按能力包 ID 推荐</strong><span>允许</span></div><div><strong>固定版本与 SHA-256</strong><span>必须</span></div></div></article>
+          <article class="panel"><p class="eyebrow">信任策略</p><h3>模型只能选择，不能乱下</h3><div class="safety-list"><div><strong>网上搜索安装源</strong><span>禁止</span></div><div><strong>提交任意网址/命令</strong><span>禁止</span></div><div><strong>按组件 ID 推荐</strong><span>允许</span></div><div><strong>固定版本与 SHA-256</strong><span>必须</span></div></div></article>
         </div>
-        <div class="catalog-head"><h3>已审核来源</h3><span id="catalogCount" class="pill muted">0 个能力包</span></div>
+        <div class="catalog-head"><h3>已审核运行组件</h3><span id="catalogCount" class="pill muted">0 个组件</span></div>
         <div id="packageGrid" class="tool-grid package-grid"></div>
       </section>
 

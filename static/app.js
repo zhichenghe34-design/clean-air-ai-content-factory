@@ -1,4 +1,4 @@
-const DEFAULT_GOAL = "帮我做一条面向新房家庭的除甲醛科普短视频。";
+const DEFAULT_GOAL = "帮我为一家本地服务企业制作一条面向潜在客户的竖屏短视频。";
 
 const state = {
   config: null,
@@ -161,7 +161,7 @@ function setHomeJobId(value) {
 function switchView(viewName) {
   const selected = document.getElementById(`view-${viewName}`) ? viewName : "workbench";
   document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === `view-${selected}`));
-  document.getElementById("pageTitle").textContent = selected === "workbench" ? "Agent 内容工作台" : document.querySelector(`#view-${selected} h2`)?.textContent || "净界 AI 内容工厂";
+  document.getElementById("pageTitle").textContent = selected === "workbench" ? "Agent 内容工作台" : document.querySelector(`#view-${selected} h2`)?.textContent || "时宜 Agent 内容工厂";
   document.body.dataset.view = selected;
   closeMenu();
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -220,7 +220,13 @@ function renderStatus() {
 
 async function loadTopics(goal = state.currentGoal, { resetSeen = false } = {}) {
   const normalized = String(goal || "").trim();
-  if (resetSeen) state.seenTopics = [];
+  const reusablePack = !resetSeen && state.topicResponse?.goal === normalized
+    ? state.topicResponse.capability_pack
+    : null;
+  if (resetSeen) {
+    state.seenTopics = [];
+    state.topicResponse = null;
+  }
   state.currentGoal = normalized;
   setHomeJobId(null);
   document.getElementById("userGoalText").textContent = normalized;
@@ -232,7 +238,11 @@ async function loadTopics(goal = state.currentGoal, { resetSeen = false } = {}) 
   try {
     const result = await api("/api/agent/topics", {
       method: "POST",
-      body: JSON.stringify({ goal: normalized, excluded_topics: state.seenTopics.slice(-24) }),
+      body: JSON.stringify({
+        goal: normalized,
+        excluded_topics: state.seenTopics.slice(-24),
+        ...(reusablePack ? { capability_pack: reusablePack } : {}),
+      }),
     });
     state.topicCandidates = result.candidates || [];
     state.topicResponse = result;
@@ -250,12 +260,14 @@ function renderTopicChoices(result = state.topicResponse || {}) {
   const panel = document.getElementById("topicChoicePanel");
   panel.hidden = false;
   document.getElementById("activeJobPanel").hidden = true;
-  const source = result.source === "deepseek"
+  const source = result.source === "deepseek_bootstrap"
+    ? "DeepSeek 动态能力包 Agent"
+    : result.source === "deepseek"
     ? "DeepSeek Agent"
     : result.source === "deepseek_filtered_with_local_fallback"
       ? "DeepSeek + 本地安全 Agent"
       : "本地安全 Agent";
-  document.getElementById("topicScreening").innerHTML = `<img class="ui-icon" src="/icons/shield-check.svg" alt="">${escapeHtml(result.screening || "已排除越域、夸大承诺和重复选题；公开依据将在研究阶段逐条核验。")}<span class="sr-only">${source}</span>`;
+  document.getElementById("topicScreening").innerHTML = `<img class="ui-icon" src="/icons/shield-check.svg" alt="">${escapeHtml(result.screening || "已排除危险目标、无依据承诺和重复选题；公开依据将在研究阶段逐条核验。")}<span class="sr-only">${source}</span>`;
   document.getElementById("topicCandidates").innerHTML = state.topicCandidates.map((item, index) => `
     <button class="topic-option${index === state.selectedTopicIndex ? " selected" : ""}" type="button" role="radio" aria-checked="${index === state.selectedTopicIndex}" data-topic-index="${index}">
       <span class="topic-index">${String(index + 1).padStart(2, "0")}</span>
@@ -264,7 +276,8 @@ function renderTopicChoices(result = state.topicResponse || {}) {
     </button>`).join("");
   document.getElementById("processLabel").textContent = "选题 → 证据 → 脚本 → 合规 → 成片";
   document.getElementById("processBudget").textContent = "待选择";
-  document.getElementById("processDetails").innerHTML = `<p>${source} 已给出三个候选角度。选中后，这一次确认同时记录为任务执行授权。</p>`;
+  const packLabel = result.context?.industry_pack_label || "动态行业能力包";
+  document.getElementById("processDetails").innerHTML = `<p>${source} 已现场生成“${escapeHtml(packLabel)}”并给出三个候选角度。选中后，这一次确认同时记录为任务执行授权。</p>`;
 }
 
 async function startSelectedTopic() {
@@ -278,16 +291,19 @@ async function startSelectedTopic() {
   active.innerHTML = renderRunningCard(candidate.title, "正在建立任务并记录执行授权…", 10);
   let job = null;
   try {
-    const production_input = {
-      topic: candidate.title,
-      audience: candidate.audience || "新房家庭",
+    const createPayload = {
+      selection_bundle_id: state.topicResponse?.selection_bundle_id,
+      candidate_id: candidate.id,
+      production_options: {
       target_duration_seconds: 52,
-      pattern_card_ids: ["03", "06"],
+      pattern_card_ids: [],
       voice_engine: "voxcpm2",
       enable_web_research: true,
+      },
     };
-    const body = JSON.stringify({ production_input });
-    const fingerprint = JSON.stringify(production_input);
+    if (!createPayload.selection_bundle_id) throw new Error("选题凭证已失效，请重新生成三个候选");
+    const body = JSON.stringify(createPayload);
+    const fingerprint = JSON.stringify(createPayload);
     const createKey = pendingCreateKey(fingerprint);
     const createOnce = () => api("/api/demo-job", {
       method: "POST",
@@ -498,7 +514,7 @@ function renderLatestArtifact() {
   const latest = state.jobs.find(job => job.current_run_id && (job.artifacts || []).includes("final.mp4"));
   const target = document.getElementById("latestArtifact");
   if (!latest) {
-    target.innerHTML = `<div class="video-empty"><img class="ui-icon" src="/icons/play.svg" alt=""><strong>还没有 v2 成片</strong><span>任务完成后，视频会自动出现在这里。</span></div>`;
+    target.innerHTML = `<div class="video-empty"><img class="ui-icon" src="/icons/play.svg" alt=""><strong>还没有成片</strong><span>任务完成后，视频会自动出现在这里。</span></div>`;
     return;
   }
   target.innerHTML = `<video id="latestVideo" class="latest-video" src="/api/jobs/${latest.id}/artifacts/final.mp4" preload="metadata" playsinline></video>
@@ -560,7 +576,7 @@ function renderCatalog() {
   const recommended = new Set(result.recommended_package_ids || []);
   document.getElementById("hardwareProfile").textContent = result.profile?.label || "未匹配硬件档位";
   document.getElementById("installPolicyBadge").textContent = result.auto_install_enabled ? "自动安装已开放" : "安装尚未开放";
-  document.getElementById("catalogCount").textContent = `${catalog.packages.length} 个能力包`;
+  document.getElementById("catalogCount").textContent = `${catalog.packages.length} 个组件`;
   document.getElementById("hardwareFacts").innerHTML = `<div><span>显卡</span><strong>${escapeHtml(hardware.gpu?.name || "未检测到")}</strong></div><div><span>显存</span><strong>${escapeHtml(hardware.gpu?.vram_gb ?? 0)} GB</strong></div><div><span>内存</span><strong>${escapeHtml(hardware.memory?.total_gb ?? "未知")} GB</strong></div><div><span>建议路线</span><strong>${escapeHtml(result.profile?.default_route || "待判断")}</strong></div><div class="wide"><span>默认安装位置</span><strong>${escapeHtml(result.storage?.root || "未设置")}</strong></div>`;
   const threshold = Number(catalog.policy?.blocked_install_drives_when_free_gb_below || 20);
   const blocked = (hardware.disks || []).filter(disk => Number(disk.free_gb) < threshold);
@@ -735,6 +751,38 @@ document.getElementById("agentComposer").addEventListener("submit", async event 
     if (job && ["awaiting_research_approval", "awaiting_compliance_approval"].includes(job.status) && /^(继续|确认|可以|通过)[。！!]?$/u.test(message)) {
       if (job.status === "awaiting_research_approval") await approveHomeResearch(job.id);
       else await approveHomeCompliance(job.id);
+      return;
+    }
+    if (job) {
+      const correctionBody = JSON.stringify({
+        job_id: job.id,
+        message,
+        actor: "本机会话用户",
+        mode: "defer",
+      });
+      const correctionKey = newIdempotencyKey();
+      const recordOnce = () => api("/api/agent/corrections", {
+        method: "POST",
+        headers: { "Idempotency-Key": correctionKey },
+        body: correctionBody,
+      });
+      let learned;
+      try {
+        learned = await recordOnce();
+      } catch (error) {
+        if (!error.networkUncertain) throw error;
+        learned = await recordOnce();
+      }
+      input.value = "";
+      if (learned.job) {
+        const index = state.jobs.findIndex(item => item.id === learned.job.id);
+        if (index >= 0) state.jobs[index] = learned.job;
+        else state.jobs.unshift(learned.job);
+        await renderHomeJob(learned.job);
+      }
+      toast(learned.queued_for_next_stage
+        ? "纠错已记住，将在当前阶段结束后的安全边界应用。"
+        : `纠错已记住并应用到当前任务（${learned.effective_scope || "task"}）；旧的成功产物仍然保留。`);
       return;
     }
     if (!job && /^[123]$/u.test(message) && state.topicCandidates.length) {

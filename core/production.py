@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import math
 import os
 import re
@@ -50,10 +51,10 @@ FONT_REGULAR = _configured_path("FONT_REGULAR", r"C:\Windows\Fonts\msyh.ttc")
 FONT_BOLD = _configured_path("FONT_BOLD", r"C:\Windows\Fonts\msyhbd.ttc")
 
 DEFAULT_INPUT: dict[str, Any] = {
-    "topic": "99%除醛率为什么必须看检测条件？",
-    "audience": "新房装修、租房、母婴家庭",
+    "topic": "怎样把一个真实客户问题讲清楚？",
+    "audience": "需要快速制作竖屏内容的业务团队",
     "target_duration_seconds": 52,
-    "pattern_card_ids": ["03", "06"],
+    "pattern_card_ids": [],
     "voice_engine": "voxcpm2",
     "aspect_ratio": "9:16",
     "render_mode": "animated",
@@ -62,7 +63,15 @@ DEFAULT_INPUT: dict[str, Any] = {
     "source_urls": [],
 }
 
-DEFAULT_SCRIPT = (
+LEGACY_CLEAN_AIR_INPUT: dict[str, Any] = {
+    **DEFAULT_INPUT,
+    "topic": "99%除醛率为什么必须看检测条件？",
+    "audience": "新房装修、租房、母婴家庭",
+    "pattern_card_ids": ["03", "06"],
+    "capability_pack": {"id": "legacy-clean-air-v2", "version": 2},
+}
+
+LEGACY_DEFAULT_SCRIPT = (
     "看到“除醛率百分之九十九”，先别急着下结论。真正决定这个数字能不能参考的，往往是旁边那行小字。"
     "第一，看用了多少产品；第二，看测试舱有多大；第三，看作用了多久；第四，看初始浓度和检测方法。"
     "小空间、大剂量、长时间得出的结果，不能直接等同于你家的整屋效果。"
@@ -72,11 +81,11 @@ DEFAULT_SCRIPT = (
     "涉及具体产品时，还要回到它自己的检测报告，并由专业人员结合真实房屋情况判断。"
 )
 
-LOCAL_VARIANTS = [
+LEGACY_LOCAL_VARIANTS = [
     {
         "id": "A",
         "hook_type": "反常识",
-        "script": DEFAULT_SCRIPT,
+        "script": LEGACY_DEFAULT_SCRIPT,
         "reason": "大字主张与小字条件形成反差，证据边界最清楚。",
     },
     {
@@ -117,6 +126,10 @@ LOCAL_VARIANTS = [
     },
 ]
 
+# Kept as public aliases for read-only v2 jobs and their committed evidence.
+DEFAULT_SCRIPT = LEGACY_DEFAULT_SCRIPT
+LOCAL_VARIANTS = LEGACY_LOCAL_VARIANTS
+
 BANNED_PHRASES = [
     "绝对安全", "彻底去除", "完全去除", "零甲醛", "立即入住", "母婴零风险",
     "百分百安全", "永久有效", "国家级", "最高级", "最佳",
@@ -131,6 +144,52 @@ MEDICAL_CLAIM_PATTERNS = [
     r"(?:甲醛|除醛产品).{0,12}(?:导致|诱发|造成).{0,8}(?:癌症|白血病|哮喘|肺损伤|不孕)",
     r"(?:孕妇|婴儿|儿童|母婴).{0,10}(?:绝对安全|没有风险|放心入住)",
 ]
+
+FINANCIAL_GUARANTEE_PATTERNS = [
+    r"(?:保证|承诺|确保).{0,8}(?:收益|回报|赚钱|盈利)",
+    r"(?:稳赚不赔|保本保收益|零风险收益|必赚|躺赚)",
+]
+
+LEGAL_GUARANTEE_PATTERNS = [
+    r"(?:保证|承诺|确保|百分之百|100%).{0,8}(?:胜诉|赢官司)",
+    r"(?:包赢官司|必然胜诉|一定胜诉)",
+]
+
+ABSOLUTE_GUARANTEE_PATTERNS = [
+    r"(?:保证|承诺|确保).{0,8}(?:有效|成交|成功|达标|解决|见效)",
+    r"(?:百分之百|100%)\s*(?:有效|成功|安全|保证)",
+    r"(?:毫无风险|零风险|永不失败|一定能|必然会)",
+]
+
+TESTIMONIAL_CERTIFICATION_RANKING_PATTERNS = [
+    r"(?:所有|全部|广大)?(?:用户|客户).{0,6}(?:一致好评|都说|亲测有效)",
+    r"(?:权威|官方|国家|国际).{0,4}(?:认证|背书)",
+    r"(?:销量|行业|全国|平台|品类).{0,4}(?:第一|冠军|领先)",
+    r"(?:排名第一|第一品牌|唯一指定|首选品牌)",
+]
+
+GENERIC_NUMERIC_CLAIM_PATTERNS = [
+    r"(?:[¥￥$]\s*)?\d+(?:\.\d+)?\s*(?:元|块|万元|亿元|美元|美金)(?:\b|起|以内|以上|以下)?",
+    r"\d+(?:\.\d+)?\s*(?:单|客户|用户|粉丝|播放|销量|成交|业绩|营收|收入)(?:\b|以上|以下|起)?",
+    r"(?:提升|增长|增加|降低|减少|转化率|成功率|准确率|复购率|完播率|去除率|收益率|回报率|ROI).{0,8}(?:\d+(?:\.\d+)?\s*%|百分之[零一二三四五六七八九十百]+)",
+    r"(?:\d+(?:\.\d+)?\s*%|百分之[零一二三四五六七八九十百]+).{0,8}(?:提升|增长|增加|降低|减少|转化|成功|准确|复购|完播|去除|收益|回报)",
+]
+
+# This is intentionally conservative rather than an industry fact dictionary.
+# It catches common declarative provenance, credential and outcome predicates;
+# anything it catches must be bound to a strictly usable finding.
+QUALITATIVE_FACT_PATTERNS = [
+    r"[^，。！？；\n]{2,40}(?:来自|源自|产自|位于|成立于|创立于|总部设在|隶属于|获得了?|通过了?|荣获|采用了?|包含|含有|拥有)[^，。！？；\n]{1,60}",
+    r"(?:产品|服务|方案|技术|设备|原料|食材|咖啡豆|成分|课程|平台|软件|系统|材料|品牌)[^，。！？；\n]{0,40}(?:能够|可以|有助于|导致|带来|提升|降低|改善|减少|增加|更(?:好|快|强|高|低|安全|健康|有效|稳定|优质|明亮))[^，。！？；\n]{0,40}",
+    r"(?:因此|所以|从而)[^，。！？；\n]{0,30}(?:更|会|能|可以|有助于|导致|带来|提升|降低|改善)[^，。！？；\n]{0,40}",
+    r"(?:品牌|公司|企业|门店|产品|服务)[^，。！？；\n]{0,30}(?:覆盖|服务了|认证|销量|客户数量|市场份额)[^，。！？；\n]{0,40}",
+]
+
+STRICT_FINDING_STATUSES = {
+    "proven_for_limited_use", "supported_limited", "passed", "approved", "eligible", "evidence_bound",
+}
+
+LEGACY_DOMAIN_TERMS = ("甲醛", "除醛", "测醛", "新房", "入住", "检测报告", "试验舱", "实验舱")
 
 
 class ScriptRevisionRequired(RuntimeError):
@@ -151,26 +210,185 @@ def estimate_narration_duration(script: str) -> dict[str, Any]:
     }
 
 
-def build_local_variants(
+def _pack_snapshot(capability_pack: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(capability_pack, dict):
+        return {}
+    snapshot = capability_pack.get("snapshot")
+    return dict(snapshot) if isinstance(snapshot, dict) else dict(capability_pack)
+
+
+def _pack_id(capability_pack: dict[str, Any] | None) -> str:
+    return str((capability_pack or {}).get("id", "")).strip() if isinstance(capability_pack, dict) else ""
+
+
+def _pack_report(capability_pack: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(capability_pack, dict):
+        return {"id": "", "version": None, "sha256": ""}
+    return {
+        "id": str(capability_pack.get("id", "")),
+        "version": capability_pack.get("version"),
+        "sha256": str(capability_pack.get("sha256", "")),
+    }
+
+
+def _is_legacy_pack(capability_pack: dict[str, Any] | None) -> bool:
+    return _pack_id(capability_pack) == "legacy-clean-air-v2"
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _normalized_learning_rules(learning_rules: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return [dict(item) for item in (learning_rules or []) if isinstance(item, dict)]
+
+
+def _call_with_optional_policy(callable_value: Any, *args: Any, **policy: Any) -> Any:
+    """Pass v3 policy context while preserving adapters that still expose the v2 signature."""
+    try:
+        parameters = inspect.signature(callable_value).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_kwargs = any(item.kind == inspect.Parameter.VAR_KEYWORD for item in parameters.values())
+    kwargs = policy if accepts_kwargs else {key: value for key, value in policy.items() if key in parameters}
+    return callable_value(*args, **kwargs)
+
+
+def _finding_is_strictly_usable(item: dict[str, Any]) -> bool:
+    decision = str(item.get("decision", "")).strip().lower()
+    if decision and decision not in {"approved", "approve", "accepted"}:
+        return False
+    if item.get("script_eligible") is False:
+        return False
+    strict_statuses = [
+        str(item.get(name, "")).strip().lower()
+        for name in ("strict_review_status", "final_verdict")
+        if str(item.get(name, "")).strip()
+    ]
+    if strict_statuses and not any(status in STRICT_FINDING_STATUSES for status in strict_statuses):
+        return False
+    fallback_statuses = [
+        str(item.get(name, "")).strip().lower()
+        for name in ("review_status", "auto_review_status")
+        if str(item.get(name, "")).strip()
+    ]
+    if not strict_statuses and fallback_statuses and not any(
+        status in STRICT_FINDING_STATUSES for status in fallback_statuses
+    ):
+        return False
+    evidence = item.get("evidence")
+    return bool(item.get("claim") or item.get("allowed_use") or (isinstance(evidence, list) and evidence))
+
+
+def _strict_findings(approved_findings: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return [
+        dict(item)
+        for item in (approved_findings or [])
+        if isinstance(item, dict) and _finding_is_strictly_usable(item)
+    ]
+
+
+def _finding_statement(item: dict[str, Any], max_chars: int = 96) -> str:
+    value = str(item.get("claim") or item.get("safe_scope") or item.get("allowed_use") or "").strip()
+    if not value:
+        for evidence in item.get("evidence", []):
+            if isinstance(evidence, dict):
+                value = str(evidence.get("excerpt") or evidence.get("quote") or "").strip()
+                if value:
+                    break
+    value = re.sub(r"\s+", "", value).strip("。；;，,")
+    if len(value) > max_chars:
+        value = value[:max_chars].rstrip("，,；;：:") + "，具体范围仍以原证据为准"
+    return value
+
+
+def _additional_banned_phrases(
+    capability_pack: dict[str, Any] | None,
+    learning_rules: list[dict[str, Any]] | None,
+) -> list[tuple[str, str, str]]:
+    output: list[tuple[str, str, str]] = []
+    snapshot = _pack_snapshot(capability_pack)
+    for field in ("avoided_terms", "prohibited_claims"):
+        output.extend((phrase, "capability_pack", "") for phrase in _string_list(snapshot.get(field)))
+    for rule in _normalized_learning_rules(learning_rules):
+        rule_id = str(rule.get("rule_id", "")).strip()
+        for field in ("banned_phrases", "avoided_terms", "terms"):
+            output.extend((phrase, "learning_rule", rule_id) for phrase in _string_list(rule.get(field)))
+        instruction = str(rule.get("instruction", "")).strip()
+        quoted = re.findall(r"[“‘\"']([^”’\"']{1,40})[”’\"']", instruction)
+        output.extend((phrase.strip(), "learning_rule", rule_id) for phrase in quoted if phrase.strip())
+        for match in re.finditer(
+            r"(?:不要(?:再)?(?:出现|使用|说)?|禁止(?:使用|出现)?|避免(?:使用|出现)?|禁用|不得(?:使用|出现)?)[：:\s]*([^，。；;]{1,40})",
+            instruction,
+        ):
+            phrase = re.sub(r"^(?:词|表述|说法)[：:\s]*", "", match.group(1)).strip(" “”—-：:")
+            if phrase:
+                output.append((phrase, "learning_rule", rule_id))
+    deduplicated: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for phrase, source, rule_id in output:
+        if phrase and phrase not in seen:
+            seen.add(phrase)
+            deduplicated.append((phrase, source, rule_id))
+    return deduplicated
+
+
+def _sanitize_topic(
+    topic: str,
+    capability_pack: dict[str, Any] | None,
+    learning_rules: list[dict[str, Any]] | None,
+) -> str:
+    value = str(topic or "").strip()
+    value = re.sub(r"\d+(?:\.\d+)?\s*%|百分之[零一二三四五六七八九十百]+", "相关比例主张", value)
+    value = re.sub(r"(?:[¥￥$]\s*)?\d+(?:\.\d+)?\s*(?:元|块|万元|亿元|美元|美金)", "相关价格主张", value)
+    for phrase, _, _ in _additional_banned_phrases(capability_pack, learning_rules):
+        value = value.replace(phrase, "相关表述")
+    return value.strip() or "当前业务问题"
+
+
+def _pad_safe_script(script: str, minimum_seconds: float = 35.0) -> str:
+    additions = (
+        "复核时还要保留来源和修改记录，避免把未确认信息重新带回正文。",
+        "如果关键材料仍然缺失，就明确标注未知，不用听起来确定的话替代证据。",
+        "发布前再由工作人员检查一次对象、语境和限制，确认表达没有超出材料边界。",
+    )
+    value = script
+    for addition in additions:
+        if estimate_narration_duration(value)["estimated_seconds"] >= minimum_seconds:
+            break
+        value += addition
+    return value
+
+
+def _build_legacy_local_variants(
     topic: str,
     audience: str,
-    approved_findings: list[dict[str, Any]] | None = None,
+    approved_findings: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
-    topic = str(topic).strip()
-    audience = str(audience).strip()
     safe_topic = re.sub(r"\d+(?:\.\d+)?\s*%|百分之[零一二三四五六七八九十百]+", "高比例", topic)
-    safe_topic = re.sub(r"\d+(?:\.\d+)?\s*(?:m[³3]|立方米|平方米|mg(?:/m[³3])?|毫克(?:每立方米)?|罐|倍|小时|分钟|年)", "具体条件", safe_topic, flags=re.IGNORECASE)
-    evidence_rows = [dict(item) for item in (approved_findings or []) if isinstance(item, dict)]
+    safe_topic = re.sub(
+        r"\d+(?:\.\d+)?\s*(?:m[³3]|立方米|平方米|mg(?:/m[³3])?|毫克(?:每立方米)?|罐|倍|小时|分钟|年)",
+        "具体条件",
+        safe_topic,
+        flags=re.IGNORECASE,
+    )
+    evidence_rows = _strict_findings(approved_findings)
     if evidence_rows:
         source_priority = {"media_original": 0, "government_law": 1, "government_standard_metadata": 2}
         evidence_rows.sort(key=lambda item: source_priority.get(
             str((item.get("evidence") or [{}])[0].get("source_type", "")), 9
         ))
-        summaries = [str(item.get("review_summary", "")).strip() for item in evidence_rows]
-        summaries = [value for value in summaries if value][:2]
-        core = "".join(summaries) + (
-            "所以看除醛率，不只看百分比，还要核对剂量、空间体积、作用时间、初始浓度、检测方法和报告来源。"
-            "实验条件与真实房间不同，结果就不能直接照搬。数字不是不能看，而是必须连同来源、条件和适用范围一起看。"
+        statements = [_finding_statement(item, max_chars=86) for item in evidence_rows]
+        statements = [value for value in statements if value][:2]
+        evidence_copy = "；".join(statements).rstrip("。") + "。"
+        core = evidence_copy + (
+            "这些内容只能在原来源和限定范围内使用，不能外推成所有产品或所有场景的结论。"
+            "所以看除醛率，仍要核对剂量、空间体积、作用时间、初始浓度、检测方法和报告来源。"
+            "实验条件与真实房间不同，结果就不能直接照搬；没有完整证据时，也不能把数字理解成入住保证。"
         )
         openings = [
             ("A", "证据反查", "看到一条高比例除醛率宣传，先问一句：这个数字是在什么条件下得到的？"),
@@ -183,8 +401,8 @@ def build_local_variants(
             {
                 "id": item_id,
                 "hook_type": hook,
-                "script": opening + core,
-                "reason": "只组合人工批准且通过严格反证审核的限定说法。",
+                "script": _pad_safe_script(opening + core, minimum_seconds=45),
+                "reason": "只组合人工批准且通过严格反证审核的证据原意。",
                 "source": "local_evidence_bound",
                 "evidence_finding_ids": finding_ids,
             }
@@ -204,7 +422,89 @@ def build_local_variants(
         ("D", "行动建议", "遇到这类问题，可以按证据、条件、场景三步判断。"),
     ]
     return [
-        {"id": item_id, "hook_type": hook, "script": opening + core, "reason": f"围绕实际选题“{topic}”生成的本地安全模板。"}
+        {"id": item_id, "hook_type": hook, "script": _pad_safe_script(opening + core, minimum_seconds=45), "reason": f"围绕实际选题“{topic}”生成的本地安全模板。"}
+        for item_id, hook, opening in openings
+    ]
+
+
+def build_local_variants(
+    topic: str,
+    audience: str,
+    approved_findings: list[dict[str, Any]] | None = None,
+    capability_pack: dict[str, Any] | None = None,
+    learning_rules: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    topic = str(topic).strip()
+    audience = str(audience).strip()
+    if _is_legacy_pack(capability_pack) or (
+        capability_pack is None and any(term in topic for term in ("甲醛", "除醛", "测醛"))
+    ):
+        return _build_legacy_local_variants(topic, audience, approved_findings)
+
+    safe_topic = _sanitize_topic(topic, capability_pack, learning_rules)[:80]
+    safe_audience = audience[:24] or "相关业务人员"
+    evidence_rows = _strict_findings(approved_findings)
+    added_bans = [phrase for phrase, _, _ in _additional_banned_phrases(capability_pack, learning_rules)]
+    evidence_rows = [
+        row for row in evidence_rows
+        if not any(phrase in _finding_statement(row) for phrase in added_bans)
+    ]
+    if evidence_rows:
+        statements: list[str] = []
+        used_rows: list[dict[str, Any]] = []
+        for row in evidence_rows:
+            statement = _finding_statement(row, max_chars=45)
+            if statement:
+                statements.append(statement)
+                used_rows.append(row)
+                break
+        evidence_copy = "；".join(statements).rstrip("。") + "。"
+        core = (
+            f"这次讨论“{safe_topic}”。当前只使用人工批准且严格通过的材料：{evidence_copy}"
+            "这项结论只适用于原证据的对象、时间和范围，不能外推。"
+            "其他说法继续核对来源和限制；未经批准的数字、功效、价格、业绩、保证、证言、认证和排名都不写入正文。"
+            f"最后列出已证实、待确认和禁用内容，交给{safe_audience}复核。"
+        )
+        openings = [
+            ("A", "证据反查", "先别急着下结论，先看哪些内容已经被证据支持。"),
+            ("B", "边界核验", "同一句话换了对象或场景，适用范围可能完全不同。"),
+            ("C", "风险提醒", "听起来确定，不等于已经得到可靠材料证明。"),
+            ("D", "核验清单", "可以按来源、对象、条件和限制四步复核这件事。"),
+        ]
+        finding_ids = [str(item.get("finding_id", "")) for item in used_rows if item.get("finding_id")]
+        return [
+            {
+                "id": item_id,
+                "hook_type": hook,
+                "script": _pad_safe_script(opening + core),
+                "reason": "只使用人工批准且通过严格反证审核的claim或有限表述。",
+                "source": "local_evidence_bound",
+                "evidence_finding_ids": finding_ids,
+            }
+            for item_id, hook, opening in openings
+        ]
+    core = (
+        f"这次要讨论的是“{safe_topic}”，主要面向{safe_audience}。"
+        "先把问题拆成目标、对象、使用场景和限制，不急着给答案。"
+        "再把现有资料分成可核验证据、待确认假设和个人经验；只有能追溯到来源、时间与适用范围的内容，才进入正文。"
+        "功效、价格、业绩数字以及保证性、证言、认证或排名说法，如果没有批准证据，就先删除。"
+        "最后列出已确认结论、仍缺材料和下一步核验动作，让每一句都能复查，也让后续修改有依据。"
+    )
+    openings = [
+        ("A", "问题拆解", "先别急着给答案，把真正的问题说清楚。"),
+        ("B", "核验流程", "先记住一个原则：有材料才下结论，没有材料就标未知。"),
+        ("C", "风险提醒", "最容易出错的地方，是把经验或口号直接当成事实。"),
+        ("D", "行动建议", "遇到这类问题，可以按问题、证据、边界、行动四步推进。"),
+    ]
+    return [
+        {
+            "id": item_id,
+            "hook_type": hook,
+            "script": _pad_safe_script(opening + core),
+            "reason": f"围绕实际选题“{topic}”生成的通用核验流程；未补写任何行业事实。",
+            "source": "local_process_only",
+            "evidence_finding_ids": [],
+        }
         for item_id, hook, opening in openings
     ]
 
@@ -223,59 +523,175 @@ def load_pattern_cards() -> list[dict[str, Any]]:
     return cards
 
 
-def review_script(script: str, approved_findings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def review_script(
+    script: str,
+    approved_findings: list[dict[str, Any]] | None = None,
+    capability_pack: dict[str, Any] | None = None,
+    learning_rules: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    script = str(script or "")
+    strict_findings = _strict_findings(approved_findings)
+    evidence_text = re.sub(r"\s+", "", json.dumps(strict_findings, ensure_ascii=False))
+    evidence_context_supplied = approved_findings is not None
+    legacy_trusted_template = script.strip() == LEGACY_DEFAULT_SCRIPT
+
+    def evidence_supports(value: str) -> bool:
+        normalized = re.sub(r"\s+", "", value)
+        number_tokens = re.findall(
+            r"(?:[¥￥$]\s*)?\d+(?:\.\d+)?\s*(?:%|元|块|万元|亿元|美元|美金|m[³3]|立方米|平方米|mg(?:/m[³3])?|毫克(?:每立方米)?|罐|倍|单|客户|用户|粉丝|播放)?|百分之[零一二三四五六七八九十百]+",
+            value,
+            flags=re.IGNORECASE,
+        )
+        if number_tokens:
+            return bool(strict_findings) and all(re.sub(r"\s+", "", token) in evidence_text for token in number_tokens)
+        return bool(strict_findings) and normalized in evidence_text
+
     hits = [phrase for phrase in BANNED_PHRASES if phrase in script]
     generalizations = [phrase for phrase in UNSUPPORTED_GENERALIZATIONS if phrase in script]
-    percentages = re.findall(r"\d+(?:\.\d+)?\s*%|百分之[零一二三四五六七八九十百]+", script)
-    measurements = re.findall(
+    percentages = list(dict.fromkeys(re.findall(
+        r"\d+(?:\.\d+)?\s*%|百分之[零一二三四五六七八九十百]+", script
+    )))
+    measurements = list(dict.fromkeys(re.findall(
         r"\d+(?:\.\d+)?\s*(?:m[³3]|立方米|平方米|mg(?:/m[³3])?|毫克(?:每立方米)?|罐|倍|小时|分钟|年)",
         script,
         flags=re.IGNORECASE,
-    )
+    )))
+    numeric_claims = list(dict.fromkeys(
+        match.group(0)
+        for pattern in GENERIC_NUMERIC_CLAIM_PATTERNS
+        for match in re.finditer(pattern, script, flags=re.IGNORECASE)
+    ))
     conditions = [name for name in ("剂量", "空间", "作用时间", "初始浓度", "检测方法", "报告来源") if name in script]
     medical_claims = [match.group(0) for pattern in MEDICAL_CLAIM_PATTERNS for match in re.finditer(pattern, script)]
+    financial_guarantees = [match.group(0) for pattern in FINANCIAL_GUARANTEE_PATTERNS for match in re.finditer(pattern, script)]
+    legal_guarantees = [match.group(0) for pattern in LEGAL_GUARANTEE_PATTERNS for match in re.finditer(pattern, script)]
+    absolute_guarantees = [match.group(0) for pattern in ABSOLUTE_GUARANTEE_PATTERNS for match in re.finditer(pattern, script)]
+    social_proof_claims = [
+        match.group(0)
+        for pattern in TESTIMONIAL_CERTIFICATION_RANKING_PATTERNS
+        for match in re.finditer(pattern, script)
+    ]
+    strict_statements = [
+        re.sub(r"\s+", "", _finding_statement(item, max_chars=1000)).strip("。；;，,")
+        for item in strict_findings
+    ]
+    strict_statements = [value for value in strict_statements if value]
+
+    def qualitative_clause_supported(clause: str) -> bool:
+        normalized = re.sub(r"\s+", "", clause).strip("。；;，,")
+        return bool(normalized) and any(
+            statement in normalized or normalized in statement for statement in strict_statements
+        )
+
+    qualitative_claims: list[str] = []
+    for clause in re.split(r"[。！？；;\n]+", script):
+        clean_clause = clause.strip(" ，,")
+        if not clean_clause or not any(re.search(pattern, clean_clause) for pattern in QUALITATIVE_FACT_PATTERNS):
+            continue
+        if not qualitative_clause_supported(clean_clause) and clean_clause not in qualitative_claims:
+            qualitative_claims.append(clean_clause)
     warnings: list[dict[str, Any]] = []
+
     if percentages:
         warnings.append({
             "type": "numeric_claim_context",
             "level": "review",
-            "message": "出现百分比，但脚本将其作为待核查的广告主张而非产品承诺。",
+            "message": "出现百分比，必须确认它只是证据支持的有限表述，没有被写成效果承诺。",
             "matches": percentages,
         })
     if measurements:
-        evidence_bound = approved_findings is not None
-        warnings.append({
-            "type": "evidence_bound_measurement" if evidence_bound else "unsupported_measurement",
-            "level": "review" if evidence_bound else "block",
-            "message": (
-                "具体测量数字已在批准证据中找到，仍需人工确认没有扩大适用范围。"
-                if evidence_bound else "通用科普稿包含没有批准证据的具体测量数字。"
-            ),
-            "matches": measurements,
-        })
-    if approved_findings is not None and (percentages or measurements):
-        evidence_text = json.dumps(approved_findings, ensure_ascii=False)
-        unsupported = [value for value in percentages + measurements if re.sub(r"\s+", "", value) not in re.sub(r"\s+", "", evidence_text)]
-        if unsupported:
+        supported_measurements = [value for value in measurements if evidence_supports(value)]
+        unsupported_measurements = [value for value in measurements if value not in supported_measurements]
+        if supported_measurements:
             warnings.append({
-                "type": "unsupported_efficacy_number",
-                "level": "block",
-                "message": "具体功效或测量数字没有已批准finding的证据支持。",
-                "matches": unsupported,
+                "type": "evidence_bound_measurement",
+                "level": "review",
+                "message": "具体测量数字已在批准证据中找到，仍需人工确认没有扩大适用范围。",
+                "matches": supported_measurements,
             })
-    if (percentages or measurements) and len(conditions) < 6:
+        if unsupported_measurements and not legacy_trusted_template:
+            warnings.append({
+                "type": "unsupported_measurement",
+                "level": "block",
+                "message": "脚本包含没有批准证据的具体测量数字。",
+                "matches": unsupported_measurements,
+            })
+
+    checked_numbers = list(dict.fromkeys(percentages + measurements + numeric_claims))
+    unsupported_numbers = [value for value in checked_numbers if not evidence_supports(value)]
+    if unsupported_numbers and (evidence_context_supplied or numeric_claims) and not legacy_trusted_template:
+        warnings.append({
+            "type": "unsupported_numeric_claim",
+            "level": "block",
+            "message": "功效、价格或业绩数字没有人工批准且严格通过的finding支持。",
+            "matches": unsupported_numbers,
+        })
+
+    legacy_numeric_context = _is_legacy_pack(capability_pack) or any(
+        term in script for term in ("甲醛", "除醛", "检测报告", "试验舱", "实验舱")
+    )
+    if legacy_numeric_context and checked_numbers and len(conditions) < 6 and not legacy_trusted_template:
         warnings.append({
             "type": "missing_conditions",
             "level": "block",
-            "message": "数值功效语境没有覆盖六项内部审核条件。",
+            "message": "净界legacy数值功效语境没有覆盖六项内部审核条件。",
             "present": conditions,
         })
+
     for phrase in hits:
-        warnings.append({"type": "banned_phrase", "level": "block", "message": f"命中高风险表达：{phrase}"})
+        warnings.append({"type": "banned_phrase", "level": "block", "message": f"命中不可变高风险表达：{phrase}"})
     for phrase in generalizations:
         warnings.append({"type": "unsupported_generalization", "level": "block", "message": f"命中无来源行业泛化：{phrase}"})
     for phrase in medical_claims:
-        warnings.append({"type": "unsupported_medical_causality", "level": "block", "message": f"命中无证据医学因果：{phrase}"})
+        warnings.append({"type": "unsupported_medical_causality", "level": "block", "message": f"命中医学因果或健康保证：{phrase}"})
+    for phrase in financial_guarantees:
+        warnings.append({"type": "financial_return_guarantee", "level": "block", "message": f"命中金融收益保证：{phrase}"})
+    for phrase in legal_guarantees:
+        warnings.append({"type": "legal_outcome_guarantee", "level": "block", "message": f"命中法律结果保证：{phrase}"})
+    for phrase in absolute_guarantees:
+        warnings.append({"type": "absolute_guarantee", "level": "block", "message": f"命中保证性或绝对化表达：{phrase}"})
+    for phrase in social_proof_claims:
+        supported = evidence_supports(phrase)
+        warnings.append({
+            "type": "evidence_bound_social_proof" if supported else "fabricated_testimonial_certification_ranking",
+            "level": "review" if supported else "block",
+            "message": (
+                f"证言、认证或排名表述已绑定批准证据，仍需人工确认：{phrase}"
+                if supported else f"证言、认证或排名表述没有批准证据：{phrase}"
+            ),
+        })
+    if qualitative_claims and not legacy_trusted_template:
+        warnings.append({
+            "type": "unsupported_qualitative_claim",
+            "level": "block",
+            "message": "脚本包含没有人工批准且严格通过的定性事实、来源或因果表述。",
+            "matches": qualitative_claims,
+        })
+
+    for phrase, source, rule_id in _additional_banned_phrases(capability_pack, learning_rules):
+        if phrase in script:
+            warning = {
+                "type": "learning_rule_banned_phrase" if source == "learning_rule" else "capability_pack_banned_phrase",
+                "level": "block",
+                "message": f"命中能力包或纠错记忆新增禁词：{phrase}",
+                "phrase": phrase,
+            }
+            if rule_id:
+                warning["rule_id"] = rule_id
+            warnings.append(warning)
+
+    snapshot = _pack_snapshot(capability_pack)
+    pack_text = json.dumps(snapshot, ensure_ascii=False)
+    if isinstance(capability_pack, dict) and not _is_legacy_pack(capability_pack):
+        leaked = [term for term in LEGACY_DOMAIN_TERMS if term in script and term not in pack_text]
+        if leaked:
+            warnings.append({
+                "type": "legacy_domain_leak",
+                "level": "block",
+                "message": "普通项目脚本混入净界legacy行业内容。",
+                "matches": leaked,
+            })
+
     blocked = any(item["level"] == "block" for item in warnings)
     status = "blocked" if blocked else ("needs_human" if warnings else "passed")
     return {
@@ -284,7 +700,11 @@ def review_script(script: str, approved_findings: list[dict[str, Any]] | None = 
         "warnings": warnings,
         "conditions_present": conditions,
         "human_confirmation_required": True,
-        "scope": "通用科普，不构成具体产品功效结论",
+        "scope": "只允许使用人工批准且严格通过的证据；能力包与记忆只能收紧规则",
+        "capability_pack_id": _pack_id(capability_pack),
+        "learning_rule_ids": [
+            str(item.get("rule_id")) for item in _normalized_learning_rules(learning_rules) if item.get("rule_id")
+        ],
         "checked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
@@ -340,6 +760,8 @@ class ProductionRunner:
             item for item in research.get("findings", []) if str(item.get("finding_id")) in approved_ids
         ]
         approved_findings = list(research["script_eligible_findings"])
+        capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
+        learning_rules = _normalized_learning_rules(config.get("learning_rules"))
         insight = self._build_insight(config, research)
         atomic_json(folder / "insight.json", insight)
         variants, provider_report = self._generate_variants(config, insight, approved_findings)
@@ -347,27 +769,47 @@ class ProductionRunner:
         provider_report["tool_calls"] = len(research.get("tool_trace", []))
         atomic_json(folder / "script_variants.json", {"variants": variants, "provider": provider_report})
         approved_path = folder / "approved_script.json"
-        safe_candidates = [item for item in variants if not review_script(str(item.get("script", "")), approved_findings)["blocked"]]
+        safe_candidates = [
+            item for item in variants
+            if not review_script(
+                str(item.get("script", "")), approved_findings, capability_pack, learning_rules
+            )["blocked"]
+        ]
         approved = dict((safe_candidates or variants)[0])
         approved.update({"selected_by": "local_compliance_prefilter", "selected_at": datetime.now().astimezone().isoformat(timespec="seconds")})
         atomic_json(approved_path, approved)
-        review = review_script(str(approved["script"]), approved_findings)
+        review = review_script(str(approved["script"]), approved_findings, capability_pack, learning_rules)
         if review["blocked"] and self.provider is not None and provider_report.get("source") == "DeepSeek":
             try:
                 original_script = str(approved["script"])
-                repair = self.provider.repair_content_script(original_script, review, insight)
+                repair = _call_with_optional_policy(
+                    self.provider.repair_content_script,
+                    original_script,
+                    review,
+                    insight,
+                    capability_pack=capability_pack,
+                    production_input=config,
+                    learning_rules=learning_rules,
+                )
                 provider_report["repair_source"] = "DeepSeek"
                 repaired_script = str(repair.get("script", "")).strip()
                 if repaired_script:
                     approved.update({"script": repaired_script, "selected_by": "DeepSeek_repair_then_local_rules", "original_blocked_script": original_script, "repair_changes": repair.get("changes", [])})
                     atomic_json(approved_path, approved)
-                    review = review_script(repaired_script, approved_findings)
+                    review = review_script(repaired_script, approved_findings, capability_pack, learning_rules)
                     review["repair"] = {"applied": True, "changes": repair.get("changes", [])}
             except ProviderError as exc:
                 review["repair_error"] = str(exc)
         elif self.provider is not None and provider_report.get("source") == "DeepSeek":
             try:
-                model_review = self.provider.review_content_script(approved["script"], review)
+                model_review = _call_with_optional_policy(
+                    self.provider.review_content_script,
+                    approved["script"],
+                    review,
+                    capability_pack=capability_pack,
+                    production_input=config,
+                    learning_rules=learning_rules,
+                )
                 normalized_status = "blocked" if model_review.get("status") == "blocked" else "needs_human"
                 review["model_review"] = {**model_review, "status": normalized_status}
                 if normalized_status == "blocked":
@@ -380,7 +822,8 @@ class ProductionRunner:
         if review["blocked"]:
             unsafe_script = str(approved.get("script", ""))
             safe_template = build_local_variants(
-                str(config["topic"]), str(config["audience"]), approved_findings
+                str(config["topic"]), str(config["audience"]), approved_findings,
+                capability_pack, learning_rules,
             )[0]
             approved.update({
                 "script": safe_template["script"],
@@ -389,7 +832,7 @@ class ProductionRunner:
             })
             atomic_json(approved_path, approved)
             previous_warnings = review.get("warnings", [])
-            review = review_script(str(approved["script"]), approved_findings)
+            review = review_script(str(approved["script"]), approved_findings, capability_pack, learning_rules)
             review["safety_fallback"] = {
                 "applied": True,
                 "reason": "候选仍命中本地阻断规则，改用与选题相关的安全模板",
@@ -423,7 +866,11 @@ class ProductionRunner:
         segments = self._segments(config, str(approved["script"]))
         duration = self._audio_duration(folder / "voice.wav")
         captions = self._write_captions(folder, segments, duration)
-        motion_plan = build_motion_plan(config["topic"], config["audience"], segments, duration)
+        capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
+        learning_rules = _normalized_learning_rules(config.get("learning_rules"))
+        motion_plan = build_motion_plan(
+            config["topic"], config["audience"], segments, duration, capability_pack=capability_pack
+        )
         atomic_json(folder / "motion_plan.json", motion_plan)
         render_mode = str(config.get("render_mode", "animated"))
         if self.render_adapter:
@@ -437,10 +884,10 @@ class ProductionRunner:
                 (folder / "animation_fallback.log").write_text(str(exc), encoding="utf-8")
                 if config.get("require_animation"):
                     raise
-                render_report = self._render_video(folder, segments, captions, duration)
+                render_report = self._render_video(folder, segments, captions, duration, config)
                 render_report.update({"mode": "static_fallback", "fallback_reason": str(exc)})
         else:
-            render_report = self._render_video(folder, segments, captions, duration)
+            render_report = self._render_video(folder, segments, captions, duration, config)
             render_report["mode"] = "static_requested"
 
         elapsed = round(time.monotonic() - started, 2)
@@ -464,13 +911,17 @@ class ProductionRunner:
             "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "wall_clock_seconds": elapsed,
             "provider": provider_report,
+            "capability_pack": _pack_report(capability_pack),
+            "learning_rule_ids": [str(item.get("rule_id")) for item in learning_rules if item.get("rule_id")],
             "voice": voice_report,
             "render": render_report,
             "compliance": review,
             "adoption_proxy": {
                 "candidate_count": len(variants),
                 "provisionally_usable_count": sum(
-                    not review_script(str(item.get("script", "")), approved_findings)["blocked"]
+                    not review_script(
+                        str(item.get("script", "")), approved_findings, capability_pack, learning_rules
+                    )["blocked"]
                     for item in variants
                 ),
                 "evidence_binding": "approved_research_findings",
@@ -499,10 +950,15 @@ class ProductionRunner:
         approved_findings = [
             item for item in research.get("findings", []) if str(item.get("finding_id")) in approved_ids
         ]
+        insight = json.loads((folder / "insight.json").read_text(encoding="utf-8"))
+        capability_pack = insight.get("capability_pack") if isinstance(insight.get("capability_pack"), dict) else None
+        learning_rules = _normalized_learning_rules(insight.get("learning_rules"))
         report["adoption_proxy"] = {
             "candidate_count": len(variants),
             "provisionally_usable_count": sum(
-                not review_script(str(item.get("script", "")), approved_findings)["blocked"]
+                not review_script(
+                    str(item.get("script", "")), approved_findings, capability_pack, learning_rules
+                )["blocked"]
                 for item in variants
             ),
             "evidence_binding": "approved_research_findings",
@@ -526,7 +982,15 @@ class ProductionRunner:
                 registry,
                 max_model_turns=int(self.research_config.get("max_model_turns", 4)),
             )
-            return agent.run(str(config["topic"]), str(config["audience"]), source_urls)
+            return _call_with_optional_policy(
+                agent.run,
+                str(config["topic"]),
+                str(config["audience"]),
+                source_urls,
+                capability_pack=config.get("capability_pack"),
+                production_input=config,
+                learning_rules=_normalized_learning_rules(config.get("learning_rules")),
+            )
         except Exception as exc:
             return {
                 "status": "failed",
@@ -542,24 +1006,54 @@ class ProductionRunner:
 
     @staticmethod
     def _build_insight(config: dict[str, Any], research: dict[str, Any] | None = None) -> dict[str, Any]:
+        capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
+        snapshot = _pack_snapshot(capability_pack)
+        legacy = _is_legacy_pack(capability_pack) or (
+            capability_pack is None and any(term in str(config.get("topic", "")) for term in ("甲醛", "除醛", "测醛"))
+        )
         ids = {str(value) for value in config.get("pattern_card_ids", [])}
-        selected = [card for card in load_pattern_cards() if str(card.get("item_id")) in ids]
+        selected = [card for card in load_pattern_cards() if str(card.get("item_id")) in ids] if legacy else []
         research_for_script = dict(research or {})
         if research_for_script:
             research_for_script["findings"] = list(research_for_script.get("script_eligible_findings", []))
             research_for_script.pop("script_eligible_findings", None)
             research_for_script.pop("tool_trace", None)
+        learning_rules = [
+            {
+                key: rule[key]
+                for key in ("rule_id", "scope", "instruction", "pack_id", "source_event_ids")
+                if key in rule
+            }
+            for rule in _normalized_learning_rules(config.get("learning_rules"))
+        ]
+        if legacy:
+            pattern = "大字主张→小字条件→条件换算→现实场景反差→行动建议"
+            source_boundary = "公开视频仅用于学习内容结构，不作为产品功效证据"
+            requirements = ["剂量", "空间体积", "作用时间", "初始浓度", "检测方法", "报告来源"]
+            references = [
+                {"name": "GB/T 18883-2022 室内空气质量标准", "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436"},
+                {"name": "中华人民共和国广告法", "url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html"},
+            ]
+        else:
+            content_purpose = str(snapshot.get("content_purpose") or "解释一个真实业务问题").strip()
+            pattern = f"问题界定→证据核验→适用边界→{content_purpose}→下一步行动"
+            source_boundary = "只把可追溯且通过严格审核的材料写入正文；未知项保持未知"
+            requirements = _string_list(snapshot.get("evidence_requirements")) or [
+                "来源可追溯", "对象明确", "时间明确", "适用范围明确", "限制条件明确",
+            ]
+            references = []
         return {
             "topic": config["topic"],
             "audience": config["audience"],
             "selected_pattern_cards": selected,
-            "pattern": "大字主张→小字条件→条件换算→现实场景反差→行动建议",
-            "source_boundary": "公开视频仅用于学习内容结构，不作为产品功效证据",
-            "evidence_requirements": ["剂量", "空间体积", "作用时间", "初始浓度", "检测方法", "报告来源"],
-            "official_references": [
-                {"name": "GB/T 18883-2022 室内空气质量标准", "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=6188E23AE55E8F557043401FC2EDC436"},
-                {"name": "中华人民共和国广告法", "url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html"},
-            ],
+            "pattern": pattern,
+            "source_boundary": source_boundary,
+            "evidence_requirements": requirements,
+            "tone": snapshot.get("tone") or "清晰、克制、可复核",
+            "visual_direction": snapshot.get("visual_direction") or {},
+            "official_references": references,
+            "capability_pack": capability_pack or {},
+            "learning_rules": learning_rules,
             "web_research": research_for_script,
         }
 
@@ -570,9 +1064,12 @@ class ProductionRunner:
         approved_findings: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         report: dict[str, Any] = {"source": "local_deterministic", "fallback_used": False}
+        capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
+        learning_rules = _normalized_learning_rules(config.get("learning_rules"))
         if self.provider is None or not getattr(self.provider, "api_key", ""):
             return build_local_variants(
-                str(config["topic"]), str(config["audience"]), approved_findings
+                str(config["topic"]), str(config["audience"]), approved_findings,
+                capability_pack, learning_rules,
             ), report
         try:
             variants = self.provider.generate_content_scripts(config, insight)
@@ -583,7 +1080,8 @@ class ProductionRunner:
         except ProviderError as exc:
             report.update({"fallback_used": True, "fallback_reason": str(exc)})
             return build_local_variants(
-                str(config["topic"]), str(config["audience"]), approved_findings
+                str(config["topic"]), str(config["audience"]), approved_findings,
+                capability_pack, learning_rules,
             ), report
 
     @staticmethod
@@ -636,7 +1134,10 @@ class ProductionRunner:
                 }
                 for index, item in enumerate(provided, start=1)
             ]
-        return derive_motion_segments(str(config["topic"]), script, target_count=7)
+        capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
+        return derive_motion_segments(
+            str(config["topic"]), script, target_count=7, capability_pack=capability_pack
+        )
 
     @staticmethod
     def _audio_duration(path: Path) -> float:
@@ -699,13 +1200,22 @@ class ProductionRunner:
         (folder / "captions.srt").write_text("\n".join(lines), encoding="utf-8")
         return output
 
-    def _render_video(self, folder: Path, segments: list[dict[str, str]], captions: list[dict[str, Any]], duration: float) -> dict[str, Any]:
+    def _render_video(
+        self,
+        folder: Path,
+        segments: list[dict[str, str]],
+        captions: list[dict[str, Any]],
+        duration: float,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if not _tool_available(FFMPEG) or not _tool_available(FFPROBE):
             raise FileNotFoundError("未找到FFmpeg或FFprobe；请加入PATH或设置FFMPEG_PATH/FFPROBE_PATH")
         cards_dir = folder / "cards"
         cards_dir.mkdir(exist_ok=True)
         for index, segment in enumerate(segments, start=1):
-            self._draw_card(cards_dir / f"scene_{index:02d}.png", segment, index, len(segments))
+            self._draw_card(
+                cards_dir / f"scene_{index:02d}.png", segment, index, len(segments), config or {}
+            )
 
         concat_lines: list[str] = []
         for index, caption in enumerate(captions, start=1):
@@ -756,7 +1266,10 @@ class ProductionRunner:
         if not executable.is_file():
             raise FileNotFoundError("HyperFrames适配器未安装；请先在项目根目录执行npm ci，运行时禁止自动下载")
         project_dir = folder / "animation_project"
-        build_report = build_motion_project(project_dir, motion_plan, folder / "voice.wav")
+        capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
+        build_report = build_motion_project(
+            project_dir, motion_plan, folder / "voice.wav", capability_pack=capability_pack
+        )
         env = os.environ.copy()
         env["PATH"] = str(executable.parent) + os.pathsep + env.get("PATH", "")
         if FFMPEG.exists():
@@ -825,7 +1338,14 @@ class ProductionRunner:
             lines.append(current)
         return lines
 
-    def _draw_card(self, path: Path, segment: dict[str, str], index: int, count: int) -> None:
+    def _draw_card(
+        self,
+        path: Path,
+        segment: dict[str, str],
+        index: int,
+        count: int,
+        config: dict[str, Any] | None = None,
+    ) -> None:
         width, height = 1080, 1920
         image = Image.new("RGB", (width, height), "#09261f")
         draw = ImageDraw.Draw(image)
@@ -864,8 +1384,16 @@ class ProductionRunner:
             draw.text((116, y), line, font=caption_font, fill="#153B31")
             y += 78
 
-        draw.text((78, 1770), "净界AI内容工厂", font=small_font, fill=mint)
-        draw.text((680, 1770), "先看条件，再看数字", font=small_font, fill=cream)
+        capability_pack = (config or {}).get("capability_pack")
+        snapshot = _pack_snapshot(capability_pack if isinstance(capability_pack, dict) else None)
+        visual_direction = snapshot.get("visual_direction") if isinstance(snapshot.get("visual_direction"), dict) else {}
+        legacy = _is_legacy_pack(capability_pack if isinstance(capability_pack, dict) else None)
+        brand = str(visual_direction.get("brand_name") or snapshot.get("label") or (
+            "净界AI内容工厂" if legacy else "Evidence Motion"
+        ))[:24]
+        footer = "先看条件，再看数字" if legacy else "问题 · 证据 · 边界 · 行动"
+        draw.text((78, 1770), brand, font=small_font, fill=mint)
+        draw.text((620, 1770), footer, font=small_font, fill=cream)
         progress = 860 * index / count
         draw.rounded_rectangle((80, 1830, 1000, 1844), radius=7, fill="#31584B")
         draw.rounded_rectangle((80, 1830, 80 + progress, 1844), radius=7, fill=lime)

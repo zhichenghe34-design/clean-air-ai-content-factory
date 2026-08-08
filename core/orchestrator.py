@@ -13,6 +13,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.capability_pack import (
+    EXECUTABLE_AUDIT_STATUSES,
+    LEGACY_CLEAN_AIR_PACK_ID,
+    legacy_clean_air_pack,
+    local_capability_pack,
+    validate_capability_pack,
+    validate_goal,
+)
+from core.capability_registry import CapabilityPackRegistry, CapabilityPackRegistryError
+
 
 PIPELINE = [
     ("content_insight", "内容洞察"),
@@ -36,21 +46,14 @@ CANONICAL_ARTIFACTS = [
     "run_report.json",
 ]
 REVIEW_ARTIFACTS = {"research.json", "approved_script.json", "review.json"}
-TOPIC_STRONG_MARKERS = ("甲醛", "除醛", "测醛", "室内空气", "装修污染")
-TOPIC_CONTEXTUAL_MARKERS = ("通风", "检测报告", "气味")
-TOPIC_CONTEXT_MARKERS = (
-    "室内", "新房", "装修", "入住", "房间", "家居", "居家", "新居", "住宅",
-    "甲醛", "除醛", "测醛",
-)
-# Kept as the complete public vocabulary for callers that display the supported
-# field. Validation deliberately does not accept the contextual terms alone.
-TOPIC_MARKERS = TOPIC_STRONG_MARKERS + TOPIC_CONTEXTUAL_MARKERS
+LEGACY_CLEAN_AIR_MARKERS = ("甲醛", "除醛", "测醛", "室内空气", "装修污染")
 RUNNING_STATES = {"research_running", "content_running", "rendering"}
 IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 PRODUCTION_INPUT_FIELDS = {
     "topic", "audience", "target_duration_seconds", "pattern_card_ids", "voice_engine",
     "aspect_ratio", "render_mode", "require_animation", "enable_web_research", "source_urls",
-    "motion_scenes", "animation_quality",
+    "motion_scenes", "animation_quality", "capability_pack", "learning_rules", "project_id",
+    "selection_bundle_id", "candidate_id",
 }
 PLAN_FIELDS = {"goal", "summary", "steps", "missing", "estimated_cost_level", "planner"}
 PLAN_STEP_FIELDS = {"id", "name", "capability", "tool_id", "input", "output", "requires_approval", "risk"}
@@ -93,32 +96,96 @@ def file_sha256(path: Path) -> str:
 
 
 def topic_in_scope(value: object) -> bool:
-    """Return whether text is unambiguously inside the competition domain."""
-    text = str(value).strip()
-    if any(marker in text for marker in TOPIC_STRONG_MARKERS):
+    """Return whether text is a supported, low-risk content-production goal."""
+    try:
+        validate_goal(value, minimum=4, maximum=200)
         return True
-    return (
-        any(marker in text for marker in TOPIC_CONTEXTUAL_MARKERS)
-        and any(marker in text for marker in TOPIC_CONTEXT_MARKERS)
-    )
+    except (TypeError, ValueError):
+        return False
 
 
-def validate_topic_input(production_input: dict[str, Any]) -> dict[str, Any]:
+def validate_topic_input(
+    production_input: dict[str, Any], *, allow_learning_rules: bool = False,
+) -> dict[str, Any]:
     if not isinstance(production_input, dict):
         raise UnprocessableError("production_input必须是JSON对象")
-    topic = str(production_input.get("topic", "")).strip()
-    audience = str(production_input.get("audience", "新房家庭")).strip()
-    if not 4 <= len(topic) <= 80:
-        raise UnprocessableError("选题长度必须在4到80字之间")
-    if not topic_in_scope(topic):
-        raise UnprocessableError("当前原型只支持甲醛、除醛与室内空气相关选题")
+    try:
+        topic = validate_goal(production_input.get("topic", ""), minimum=4, maximum=80)
+    except (TypeError, ValueError) as exc:
+        raise UnprocessableError(str(exc)) from exc
+    raw_pack = production_input.get("capability_pack")
+    if raw_pack is None:
+        # Existing v2 callers predate dynamic packs. Clean-air topics retain the
+        # released rules; every other new topic receives a deterministic generic
+        # snapshot instead of silently falling back to formaldehyde copy.
+        raw_pack = (
+            legacy_clean_air_pack()
+            if any(marker in topic for marker in LEGACY_CLEAN_AIR_MARKERS)
+            else local_capability_pack(topic)
+        )
+    try:
+        capability_pack = validate_capability_pack(raw_pack)
+    except (TypeError, ValueError) as exc:
+        raise UnprocessableError(f"行业能力包无效：{exc}") from exc
+    default_audience = str(capability_pack.get("snapshot", {}).get("audience") or "目标受众")
+    audience = str(production_input.get("audience", default_audience)).strip()
     if not 2 <= len(audience) <= 80:
         raise UnprocessableError("受众长度必须在2到80字之间")
     unknown = sorted(set(production_input) - PRODUCTION_INPUT_FIELDS)
     if unknown:
         raise UnprocessableError("production_input包含不允许的字段", details={"fields": unknown})
     normalized = dict(production_input)
-    normalized.update({"topic": topic, "audience": audience})
+    normalized.update({"topic": topic, "audience": audience, "capability_pack": capability_pack})
+    if "project_id" in normalized:
+        project_id = str(normalized["project_id"]).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{4,128}", project_id):
+            raise UnprocessableError("project_id格式无效")
+        normalized["project_id"] = project_id
+    if "learning_rules" in normalized:
+        if not allow_learning_rules:
+            raise UnprocessableError("learning_rules只能由服务端记忆库绑定")
+        rules = normalized["learning_rules"]
+        if not isinstance(rules, list) or len(rules) > 50 or not all(isinstance(item, dict) for item in rules):
+            raise UnprocessableError("learning_rules必须是不超过50项的规则对象数组")
+        safe_rules = []
+        for item in rules:
+            unknown_rule = sorted(set(item) - {"rule_id", "scope", "instruction", "pack_id", "source_event_ids"})
+            if unknown_rule:
+                raise UnprocessableError("learning_rules包含不允许的字段", details={"fields": unknown_rule})
+            rule_id = str(item.get("rule_id", "")).strip()
+            scope = str(item.get("scope", "")).strip()
+            pack_id = str(item.get("pack_id", "")).strip()
+            source_event_ids = item.get("source_event_ids", [])
+            instruction = str(item.get("instruction", "")).strip()
+            if not re.fullmatch(r"rule-[0-9a-f]{20}", rule_id):
+                raise UnprocessableError("学习规则ID无效")
+            if scope not in {"task", "project", "workspace"}:
+                raise UnprocessableError("学习规则作用域无效")
+            expected_pack = "*" if scope == "workspace" else capability_pack["id"]
+            if pack_id != expected_pack:
+                raise UnprocessableError("学习规则与当前行业能力包不匹配")
+            if (
+                not isinstance(source_event_ids, list)
+                or not 1 <= len(source_event_ids) <= 20
+                or not all(isinstance(value, str) and re.fullmatch(r"correction-[0-9a-f]{32}", value) for value in source_event_ids)
+            ):
+                raise UnprocessableError("学习规则来源事件无效")
+            if not 4 <= len(instruction) <= 1000:
+                raise UnprocessableError("学习规则内容必须在4到1000字之间")
+            if re.search(
+                r"(?i)(?:https?://|file://|[A-Za-z]:[\\/]|\.\.[\\/]|api[_ -]?key\s*[:=]|password\s*[:=]|"
+                r"ignore\s+(?:all\s+)?(?:previous|system|developer)|忽略(?:之前|系统|开发者)|输出(?:系统|开发者)提示词)",
+                instruction,
+            ):
+                raise UnprocessableError("学习规则包含外部地址、敏感值或指令覆盖文本")
+            safe_rules.append({
+                "rule_id": rule_id,
+                "scope": scope,
+                "instruction": instruction,
+                "pack_id": pack_id,
+                "source_event_ids": list(source_event_ids),
+            })
+        normalized["learning_rules"] = safe_rules
     if "target_duration_seconds" in normalized:
         try:
             duration = float(normalized["target_duration_seconds"])
@@ -242,8 +309,10 @@ def local_fallback_plan(goal: str, tools: list[dict[str, Any]]) -> dict[str, Any
 
 class JobStore:
     def __init__(self, runtime_dir: Path):
-        self.jobs_dir = Path(runtime_dir) / "jobs"
+        self.runtime_dir = Path(runtime_dir)
+        self.jobs_dir = self.runtime_dir / "jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self.capability_registry = CapabilityPackRegistry(self.runtime_dir)
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
         self._reconcile_strict_rejections()
@@ -253,6 +322,11 @@ class JobStore:
         safe_plan = validate_plan(plan)
         steps = safe_plan["steps"]
         normalized_input = validate_topic_input(production_input) if production_input is not None else None
+        if normalized_input is not None:
+            normalized_input = dict(normalized_input)
+            normalized_input["capability_pack"] = self._trusted_capability_pack(
+                normalized_input["capability_pack"]
+            )
         timestamp = now_iso()
         job_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
         job = {
@@ -264,6 +338,19 @@ class JobStore:
             "authorized_at": None,
             "plan": safe_plan,
             "production_input": normalized_input,
+            "capability_pack": (
+                {
+                    "id": normalized_input["capability_pack"]["id"],
+                    "version": normalized_input["capability_pack"]["version"],
+                    "sha256": normalized_input["capability_pack"]["sha256"],
+                }
+                if normalized_input is not None else None
+            ),
+            "learning_rule_ids": [
+                str(item.get("rule_id", ""))
+                for item in (normalized_input or {}).get("learning_rules", [])
+                if item.get("rule_id")
+            ],
             "approvals": {
                 "research": {"status": "pending"},
                 "compliance": {"status": "pending"},
@@ -303,6 +390,7 @@ class JobStore:
 
     def approve(self, job_id: str) -> dict[str, Any]:
         job, folder = self._load_v2(job_id)
+        self._ensure_capability_pack(job, folder)
         if job["status"] != "planned":
             raise ConflictError("只有待授权任务可以批准")
         timestamp = now_iso()
@@ -349,6 +437,7 @@ class JobStore:
         try:
             job, folder = self._load_v2(job_id)
             self._recover_stale_lock(job, folder)
+            self._ensure_capability_pack(job, folder)
             replayed = next((run for run in job.get("runs", []) if run.get("idempotency_key") == idempotency_key), None)
             if replayed:
                 result = self._public(job)
@@ -462,6 +551,7 @@ class JobStore:
 
     def approve_research(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         job, folder = self._load_v2(job_id)
+        self._ensure_capability_pack(job, folder)
         if job["status"] not in {"awaiting_research_approval", "awaiting_research_revision"}:
             raise ConflictError("当前任务不在研究审批阶段")
         research_path = folder / "draft" / "research.json"
@@ -511,6 +601,7 @@ class JobStore:
 
     def approve_compliance(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         job, folder = self._load_v2(job_id)
+        self._ensure_capability_pack(job, folder)
         if job["status"] not in {"awaiting_compliance_approval", "awaiting_script_revision"}:
             raise ConflictError("当前任务不在合规审批阶段")
         draft = folder / "draft"
@@ -734,6 +825,7 @@ class JobStore:
 
     def update_script(self, job_id: str, script: str, review: dict[str, Any], estimate: dict[str, Any]) -> dict[str, Any]:
         job, folder = self._load_v2(job_id)
+        self._ensure_capability_pack(job, folder)
         if job["status"] not in {"awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision", "compliance_approved", "complete", "failed"}:
             raise ConflictError("当前阶段不能修改脚本")
         draft = folder / "draft"
@@ -754,6 +846,80 @@ class JobStore:
         job["updated_at"] = now_iso()
         self._write(folder / "job.json", job)
         self._event(folder, "script_updated", {"character_count": len(payload["script"]), "estimated_seconds": estimate.get("estimated_seconds")})
+        return self._public(job)
+
+    def apply_learning_rules(
+        self,
+        job_id: str,
+        rules: list[dict[str, Any]],
+        reason: str,
+        correction_kind: str = "content",
+    ) -> dict[str, Any]:
+        """Apply a human correction without overwriting the last successful run.
+
+        Corrections are instruction snapshots, not executable code. Research
+        approval remains valid because these rules only steer content unless a
+        later UI explicitly requests an industry/profile rebuild.
+        """
+        if correction_kind not in {"style", "content", "evidence", "capability", "process"}:
+            raise UnprocessableError("纠错类型无效")
+        job, folder = self._load_v2(job_id)
+        self._ensure_capability_pack(job, folder)
+        if job.get("status") in RUNNING_STATES:
+            raise ConflictError("任务正在运行；实时打断将在交互层启用后使用，当前请等待本阶段结束")
+        production_input = dict(job.get("production_input") or {})
+        previous_status = str(job.get("status", ""))
+        candidate = dict(production_input)
+        candidate["learning_rules"] = rules
+        normalized = validate_topic_input(candidate, allow_learning_rules=True)
+        job["production_input"] = normalized
+        job["learning_rule_ids"] = [
+            str(item.get("rule_id", "")) for item in normalized.get("learning_rules", []) if item.get("rule_id")
+        ]
+        job["approvals"]["compliance"] = {"status": "pending"}
+        research_approved = job.get("approvals", {}).get("research", {}).get("status") == "approved"
+        if correction_kind == "evidence":
+            # A worker saying that a source, number, report or fact is wrong is
+            # stronger than a style preference.  The old finding decisions and
+            # every downstream approval immediately lose authority.
+            job["approvals"]["research"] = {"status": "pending"}
+            job["status"] = "planned" if previous_status == "planned" else "authorized"
+            job["revision_required"] = {
+                "kind": "evidence",
+                "reason": str(reason).strip()[:1000],
+                "recorded_at": now_iso(),
+            }
+        elif correction_kind == "capability":
+            # Capability packs are immutable.  Do not pretend a text rule has
+            # rewritten one; pause until a new pack is generated and reviewed.
+            job["approvals"]["research"] = {"status": "pending"}
+            job["status"] = "awaiting_capability_revision"
+            job["revision_required"] = {
+                "kind": "capability",
+                "reason": str(reason).strip()[:1000],
+                "recorded_at": now_iso(),
+            }
+        elif previous_status == "planned":
+            # A correction is never execution authorization.
+            job["status"] = "planned"
+        elif previous_status in {"awaiting_research_approval", "awaiting_research_revision"}:
+            # Content/style learning does not rewrite an unchanged research file.
+            job["status"] = previous_status
+        elif research_approved:
+            job["status"] = "research_approved"
+        else:
+            job["status"] = "authorized"
+        job["last_error"] = None
+        job["last_failed_stage"] = None
+        job["updated_at"] = now_iso()
+        self._sync_steps(job)
+        self._write(folder / "job.json", job)
+        self._event(folder, "learning_rules_applied", {
+            "rule_ids": job["learning_rule_ids"],
+            "correction_kind": correction_kind,
+            "reason": str(reason).strip()[:1000],
+            "previous_success_run_preserved": job.get("current_run_id"),
+        })
         return self._public(job)
 
     def approved_findings(self, job_id: str) -> list[dict[str, Any]]:
@@ -945,6 +1111,9 @@ class JobStore:
             "stage": run["stage"],
             "status": "complete",
             "input_sha256": canonical_sha256(job.get("production_input")),
+            "capability_pack": dict(job.get("capability_pack") or {}),
+            "learning_rules_sha256": canonical_sha256((job.get("production_input") or {}).get("learning_rules", [])),
+            "learning_rule_ids": list(job.get("learning_rule_ids", [])),
             "approval_hashes": {
                 "research": job.get("approvals", {}).get("research", {}).get("artifact_sha256"),
                 "compliance": job.get("approvals", {}).get("compliance", {}).get("artifact_sha256"),
@@ -954,6 +1123,84 @@ class JobStore:
             "budget": runner.budget.snapshot() if getattr(runner, "budget", None) is not None else job.get("budget"),
             "artifacts": artifacts,
         }
+
+    def _ensure_capability_pack(self, job: dict[str, Any], folder: Path) -> None:
+        """Migrate a pre-v3 v2 task only when an authorized mutation occurs."""
+        production_input = job.get("production_input")
+        if not isinstance(production_input, dict):
+            return
+        existing_pack = production_input.get("capability_pack")
+        if existing_pack is not None:
+            trusted = self._trusted_capability_pack(existing_pack)
+            expected_summary = {
+                "id": trusted["id"],
+                "version": trusted["version"],
+                "sha256": trusted["sha256"],
+            }
+            if job.get("capability_pack") != expected_summary:
+                raise ConflictError("任务记录中的行业能力包身份不一致，已拒绝继续执行")
+            production_input["capability_pack"] = trusted
+            return
+        topic = str(production_input.get("topic", ""))
+        pack = (
+            legacy_clean_air_pack()
+            if any(marker in topic for marker in LEGACY_CLEAN_AIR_MARKERS)
+            else local_capability_pack(topic or "通用短视频内容任务")
+        )
+        production_input = dict(production_input)
+        production_input["capability_pack"] = pack
+        job["production_input"] = validate_topic_input(production_input, allow_learning_rules=True)
+        job["capability_pack"] = {"id": pack["id"], "version": pack["version"], "sha256": pack["sha256"]}
+        job.setdefault("learning_rule_ids", [])
+        job["updated_at"] = now_iso()
+        self._write(folder / "job.json", job)
+        self._event(folder, "capability_pack_migrated", {
+            "id": pack["id"], "version": pack["version"], "sha256": pack["sha256"],
+        })
+
+    @staticmethod
+    def _authority_document(pack: dict[str, Any]) -> dict[str, Any]:
+        """Compare all authority-bearing fields while ignoring display metadata."""
+
+        return {key: value for key, value in pack.items() if key != "generated_at"}
+
+    def _trusted_capability_pack(self, pack: object) -> dict[str, Any]:
+        """Require an executable audit and a verifiable authority source.
+
+        The two built-in deterministic pack families are reproducible trust
+        roots.  Model-generated or other dynamic packs must already exist as
+        the exact immutable document in this runtime's capability registry.
+        Merely supplying a self-consistent JSON document and recomputing its
+        public hash is therefore insufficient to start or mutate a job.
+        """
+
+        try:
+            validated = validate_capability_pack(pack)
+        except (TypeError, ValueError) as exc:
+            raise UnprocessableError(f"行业能力包无效：{exc}") from exc
+
+        audit_status = validated["audit"]["status"]
+        if audit_status not in EXECUTABLE_AUDIT_STATUSES:
+            raise UnprocessableError(f"行业能力包审核状态不可执行：{audit_status}")
+
+        if validated["id"] == LEGACY_CLEAN_AIR_PACK_ID:
+            # validate_capability_pack already enforces the exact reserved
+            # legacy contract, including source, audit, snapshot and identity.
+            return validated
+
+        if validated["source"] == "local":
+            expected = local_capability_pack(validated["snapshot"]["goal"])
+            if self._authority_document(validated) != self._authority_document(expected):
+                raise UnprocessableError("本地行业能力包不是可复现的安全内置版本")
+            return validated
+
+        try:
+            registered = self.capability_registry.get(validated["id"], validated["sha256"])
+        except CapabilityPackRegistryError as exc:
+            raise UnprocessableError("动态行业能力包未在本机不可变注册表中登记") from exc
+        if registered != validated:
+            raise UnprocessableError("动态行业能力包与本机注册表中的可信版本不一致")
+        return registered
 
     def _copy_draft(self, draft: Path, staging: Path) -> None:
         if not draft.exists():
