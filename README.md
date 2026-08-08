@@ -1,6 +1,6 @@
-# 净界 AI 内容工厂 v2
+# 时宜 Agent 内容工厂 v3（通用内核预览）
 
-面向除甲醛赛题的可运行、可审核、可复现短视频生产原型。DeepSeek 负责研究调度与脚本候选，搜索、网页提取、配音、动画和 FFmpeg 由登记的本地适配器执行；研究证据与最终脚本必须分别由人审批。
+一个可运行、可审核、可积累纠错经验的通用短视频生产内核。Agent 会根据当前目标现场生成行业能力包，再完成选题、研究、脚本、合规与成片；搜索、网页提取、配音、动画和 FFmpeg 仍由登记的本地适配器执行，研究证据与最终脚本仍分别由人审批。
 
 [![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.14-3776AB)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
@@ -24,11 +24,21 @@
 
 ![Agent 三选一工作台](docs/assets/agent-workbench.png)
 
-> 截图使用固定演示数据，仅展示界面状态与操作层级；真实结果、审批哈希和预算记录以公开证据包为准。
+> 当前截图、比赛 PDF、设计样片和真实 DeepSeek 证据包属于“净界除甲醛 v2”历史比赛基线，只证明该行业包的既有运行结果，不冒充通用 v3 的新联调证据。v3 视觉重设计尚未开始。
 
-默认首页采用 Agent 优先的轻交互：Agent 每轮只给 3 个经过领域与表述风险筛选的选题角度，用户可以选一个、换一批或直接说自己的想法；候选阶段不会声称公开依据已经核验。选定后系统自动完成执行授权、研究、脚本、合规检查与成片装配，只在“研究证据确认”和“最终脚本确认”两处停下；任务记录、设置、工具与能力包收进二级菜单，供需要时追溯。
+默认首页采用 Agent 优先的轻交互：用户描述行业、受众和内容目标，Agent 现场建立带 SHA-256 的能力包，并以“所有内容默认不可信”为前提反证审核，然后每轮只给 3 个角度。选定后系统自动推进，只在“研究证据确认”和“最终脚本确认”两处停下。任务进行中可以继续输入纠错；当前界面先采用“安全阶段应用”的默认方式，显式“打断/不打断”双模式会随下一轮 UI 重设计实现。
 
-## v2 解决了什么
+## v3 通用内核新增
+
+- 行业不再写死：有 Key 时由启动 Agent 生成能力包并交给独立反证 Agent 缩小范围；无 Key 时也根据真实目标生成本地通用包，不套用除甲醛正文。
+- “13 个本地工具能力包”仅指 v2 冻结目录中的本机工具登记；“动态行业能力包”是 v3 按任务现场生成的声明式行业约束，两者不互相计数或互相证明。
+- 能力包只保存行业、受众、平台、语气、证据要求、禁用主张和视觉方向等声明式约束，禁止脚本、命令、密钥和任意 URL；每个不可变版本进入独立注册表并可按哈希追溯。
+- 普通网页不能靠模型自报 `source_type` 冒充政府或机构来源；来源类型由实际 URL 在本地重新分类，能力包和历史记忆都不能充当事实证据。
+- 工作人员纠错采用追加式事件记录，并编译为 task、project 或 workspace 作用域的收紧规则；纠错不会代替任务授权，也不会覆盖上一份成功产物。
+- 同一条非任务规则在 3 个不同成功任务中被验证后，才会原子生成 instruction-only Skill；重复任务不凑数，Skill 不包含命令、脚本、URL或密钥。
+- 原净界逻辑被收进显式 `legacy-clean-air-v2` 能力包。历史任务不改写，旧证据、成片和审批哈希继续保持原用途。
+
+## 保留的 v2 安全与发布基线
 
 - 状态严格分为执行授权、研究、研究人工审定、内容生成、合规阻断/人工放行、渲染和完成；自动系统不再伪装成人工审核。
 - 每次推进使用独立 `run_id` 和 staging。失败尝试不会替换上一份成功成片，正式产物只从成功 manifest 解析。
@@ -107,9 +117,12 @@ VALIDATION.md（仅公开包）
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| POST | `/api/agent/topics` | 根据目标生成恰好 3 个领域内候选；公开依据留到研究阶段核验，Provider 不可用或会话 3 次额度耗尽时使用本地候选 |
+| POST | `/api/agent/topics` | 现场生成/复用当前行业能力包并返回恰好 3 个候选；Provider 不可用时使用同目标的本地通用包 |
 | POST | `/api/agent/plan` | 生成预任务执行计划；与选题共用会话 3 次额度，失败或耗尽时返回本地安全计划 |
-| POST | `/api/demo-job` | 创建领域内 v2 任务 |
+| POST | `/api/demo-job` | 以能力包不可变快照创建任务 |
+| POST | `/api/agent/corrections` | 记录工作人员纠错，生成带作用域的安全规则并在当前或下一安全阶段应用 |
+| GET | `/api/learning` | 查看纠错事件和已经验证生成的本地 Skills |
+| GET | `/api/capability-packs` | 查看已发布能力包的脱敏摘要与历史版本数 |
 | POST | `/api/jobs/{id}/approve` | 首次执行授权 |
 | POST | `/api/jobs/{id}/run` | 只推进到下一道人工作业门禁，要求 `Idempotency-Key` |
 | POST | `/api/jobs/{id}/approvals/research` | 研究逐 finding 审定 |
@@ -119,7 +132,7 @@ VALIDATION.md（仅公开包）
 | GET | `/api/jobs/{id}/artifacts/{name}` | 读取当前成功 manifest 产物 |
 | GET | `/api/jobs/{id}/runs/{run_id}/artifacts/{name}` | 读取历史成功运行产物 |
 
-`/api/agent/topics` 请求体为 `{ "goal": "4-200 字赛题目标", "excluded_topics": [] }`。`excluded_topics` 只能缺省或为数组，最多 24 个且每项为不超过 80 字的字符串；`false`、`0`、空字符串和 `null` 均返回 JSON 422。响应中的 `candidates` 始终为三个 `{id, title, reason, audience}`，并附带真实的 `source`、`notice`、`screening` 与 `topic_provider_budget`；同时提供与 `/api/agent/plan` 共用的 `pretask_provider_budget` 同值字段。响应会明确展示预任务 Agent Provider 的 attempted、limit、remaining 和实际来源。候选筛选不冒充研究证据核验，长度、类型或领域不合法时统一返回 JSON 422。
+`/api/agent/topics` 请求体为 `{ "goal": "4-200 字内容目标", "excluded_topics": [] }`，刷新时可把上次响应的 `capability_pack` 原样带回。`excluded_topics` 只能缺省或为数组，最多 24 个且每项为不超过 80 字的字符串；`false`、`0`、空字符串和 `null` 均返回 JSON 422。响应中的 `candidates` 始终为三个 `{id, title, reason, audience}`，同时返回 `capability_pack`、反证审核、脱敏项目上下文、已生效记忆和真实预算。候选筛选不冒充研究证据核验；个性化医疗/投资/高风险法律决策、恶意任务和指令注入会返回 JSON 422。
 
 `/api/agent/plan` 请求体为 `{ "goal": "任务目标" }`，响应始终包含 `plan`、`fallback`、`source`、`notice` 和同一份 `pretask_provider_budget`。Provider 返回 HTTP 200 但缺少消息、结构化 JSON 无效或计划调用失败时，会把该次 attempted 从 succeeded 纠正为 failed 并记录失败类型，然后安全降级，不会返回虚假的成功统计。
 
@@ -142,11 +155,12 @@ npm.cmd run test:flow
 .\.venv\Scripts\python.exe tools\verify_committed_media.py
 ```
 
-当前 74 项 Python 测试覆盖状态、审批、预算、并发、密钥、严格反证审核、Agent 选题、报告重建和 API 安全回归。浏览器烟雾测试验证 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、换一批、自定义输入、主流程无批准/拒绝按钮对、详细页可退回、13 个能力包、窄屏无溢出与零前端错误；独立流程烟雾测试覆盖创建任务直到完成的两道人工作业门禁。CI 在 Python 3.12/3.14 上全新安装，并使用可注入的假配音/渲染适配器完成快速确定性 E2E。
+Python 测试由 `unittest discover` 动态发现，当前 121 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，以及 v3 动态行业能力包、不可变注册表、来源信任、通用生产、纠错记忆和 Skill 晋升。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、换一批、自定义输入、两道人工作业门禁、窄屏无溢出与零前端错误。CI 使用可注入的假配音/渲染适配器完成快速确定性 E2E。
 
-## 现有可查看材料
+## v2 历史比赛材料（只读基线）
 
 - [动态测试成片](media/sample.mp4)
+- [v3 通用 Agent 内核说明](docs/GENERAL_AGENT_KERNEL.md)
 - [Agent 工作台演示](media/agent-workbench-demo.mp4)
 - [可复现动画工程](video-compositions/formaldehyde-conditions/)
 - [第二选题工程](video-compositions/forward-test-smell-vs-formaldehyde/)
@@ -157,4 +171,4 @@ npm.cmd run test:flow
 - [v2 完整脱敏证据包](evidence/v2-real-deepseek-20260801-022153/)
 - [v2 Agent 工作台补充材料 PDF](docs/competition-proposal.pdf)
 
-本仓库是比赛原型，不构成医学建议、检测结论、法律意见或具体产品功效证明。真实品牌宣称必须由企业检测材料及相应负责人确认。
+本仓库仍处于原型阶段，不构成医学、投资或法律建议，也不构成任何产品功效、业绩、认证或排名证明。真实品牌宣称必须回指可核验材料并由相应负责人确认。

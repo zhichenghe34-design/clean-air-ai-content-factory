@@ -5,7 +5,6 @@ import hashlib
 import json
 import sys
 import tempfile
-import unittest
 from io import BytesIO
 from pathlib import Path
 
@@ -22,6 +21,7 @@ from reportlab.platypus import BaseDocTemplate, Frame, Image, NextPageTemplate, 
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "docs" / "competition-proposal.pdf"
+V2_BASELINE = ROOT / "docs" / "release-baselines" / "v0.2.0.json"
 ASSETS = ROOT / "docs" / "assets"
 FONTS = ROOT / "docs" / "fonts"
 FONT_FILES = {
@@ -64,21 +64,10 @@ def register_fonts() -> None:
         pdfmetrics.registerFont(TTFont(family, str(path)))
 
 
-def discover_release_facts() -> tuple[int, int]:
-    catalog = json.loads((ROOT / "catalog" / "package-catalog.json").read_text(encoding="utf-8"))
-    package_count = len(catalog.get("packages", []))
-    loader = unittest.TestLoader()
-    sys.path.insert(0, str(ROOT))
-    try:
-        suite = loader.discover(str(ROOT / "tests"), pattern="test*.py")
-    finally:
-        try:
-            sys.path.remove(str(ROOT))
-        except ValueError:
-            pass
-    if loader.errors:
-        raise RuntimeError("unittest discovery failed:\n" + "\n".join(loader.errors))
-    return suite.countTestCases(), package_count
+def load_v2_release_facts() -> tuple[int, int]:
+    baseline = json.loads(V2_BASELINE.read_text(encoding="utf-8"))
+    facts = baseline["historical_facts"]
+    return int(facts["python_test_count"]), int(facts["local_tool_capability_pack_count"])
 
 
 def style(name: str, **overrides) -> ParagraphStyle:
@@ -114,11 +103,9 @@ def build(output: Path = OUTPUT) -> Path:
     # disabling ReportLab stream compression and embedding committed JPEGs.
     rl_config.pageCompression = 0
     register_fonts()
-    test_count, package_count = discover_release_facts()
-    if test_count != 74:
-        raise RuntimeError(f"Release PDF expects the audited 74-test suite, discovered {test_count}")
-    if package_count != 13:
-        raise RuntimeError(f"Release PDF expects 13 capability packages, discovered {package_count}")
+    # The v2 PDF is a frozen competition artifact.  It must never inherit the
+    # evolving v3 test suite or dynamic industry capability-pack count.
+    test_count, package_count = load_v2_release_facts()
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     title = style("Title", fontName="NotoSansSC-Bold", fontSize=28, leading=38, textColor=CREAM, spaceAfter=10)

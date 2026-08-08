@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "release": "v0.2.0",
+  "historical_facts": {
+    "python_test_count": 74,
+    "local_tool_capability_pack_count": 13,
+    "proposal_pdf_sha256": "2B9FC0E345B130F14EF63C6EF98DBA31B9F9A409ECE9BF67F79B96BDC05B4783",
+    "real_evidence_zip_sha256": "CF21EF0D6083928BA814ABE10F6C72400566F6679E9182304E5E4DE249FA3858"
+  },
+  "artifacts": {
+    "proposal_pdf": "docs/competition-proposal.pdf",
+    "real_evidence_zip": "evidence/v2-real-deepseek-20260801-022153.zip"
+  }
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -34,6 +35,20 @@ def discover_test_count(repo: Path, errors: list[str]) -> int:
     return suite.countTestCases()
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().upper()
+
+
+def load_v2_baseline(repo: Path) -> tuple[dict, dict]:
+    baseline_path = repo / "docs" / "release-baselines" / "v0.2.0.json"
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    return baseline["historical_facts"], baseline["artifacts"]
+
+
 def embedded_font_names(reader) -> set[str]:
     names: set[str] = set()
     for page in reader.pages:
@@ -65,6 +80,16 @@ def main() -> int:
     repo = args.repo.resolve()
     pdf_path = (args.pdf or repo / "docs" / "competition-proposal.pdf").resolve()
     errors: list[str] = []
+    try:
+        historical, artifacts = load_v2_baseline(repo)
+        historical_test_count = int(historical["python_test_count"])
+        historical_package_count = int(historical["local_tool_capability_pack_count"])
+        expected_pdf_hash = str(historical["proposal_pdf_sha256"])
+        expected_evidence_hash = str(historical["real_evidence_zip_sha256"])
+        evidence_zip = (repo / artifacts["real_evidence_zip"]).resolve()
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"ERROR: 无法读取 v0.2.0 历史基线：{exc}")
+        return 1
 
     files = {
         "README": repo / "README.md",
@@ -77,16 +102,21 @@ def main() -> int:
     test_count = discover_test_count(repo, errors)
     catalog = json.loads((repo / "catalog" / "package-catalog.json").read_text(encoding="utf-8"))
     package_count = len(catalog.get("packages", []))
-    if test_count != 74:
-        errors.append(f"unittest discovery 得到 {test_count} 项，当前发布基线应为 74")
-    if package_count != 13:
-        errors.append(f"能力目录数量为 {package_count}，当前发布基线应为 13")
+    if package_count != historical_package_count:
+        errors.append(f"v2 本地工具能力目录数量为 {package_count}，历史基线应为 {historical_package_count}")
 
-    require(texts["README"], ["v2", "127.0.0.1:8765", "7", "SHA-256", f"{package_count} 个能力包", f"{test_count} 项 Python 测试", "legacy_read_only", "DPAPI", "/api/agent/topics"], "README", errors)
+    if sha256_file(evidence_zip) != expected_evidence_hash:
+        errors.append(f"v2 真实证据 ZIP 哈希变化：{evidence_zip}")
+    if not args.skip_pdf and sha256_file(pdf_path) != expected_pdf_hash:
+        errors.append(f"v2 PDF 哈希变化：{pdf_path}")
+
+    require(texts["README"], ["v2", "v3", "127.0.0.1:8765", "7", "SHA-256", f"{historical_package_count} 个本地工具能力包", "动态行业能力包", f"当前 {test_count} 项 Python 测试", "legacy_read_only", "DPAPI", "/api/agent/topics"], "README", errors)
     require(texts["ARCHITECTURE"], ["v2", "7", "SHA-256", "legacy_read_only"], "ARCHITECTURE", errors)
-    require(texts["COMPETITION"], ["v2", "127.0.0.1:8765", "7", "SHA-256", f"{package_count} 个当前能力包", f"{test_count} 项 Python 测试", "三选一", "两处人工暂停", "legacy"], "COMPETITION", errors)
+    require(texts["COMPETITION"], ["v2", "127.0.0.1:8765", "7", "SHA-256", f"{historical_package_count} 个本地工具能力包", f"{historical_test_count} 项 Python 测试", "三选一", "两处人工暂停", "legacy"], "COMPETITION", errors)
     require(texts["SAFETY"], ["v2", "7", "SHA-256", "DPAPI"], "SAFETY", errors)
-    require(texts["SUBMISSION_TEXT"], ["v2", "127.0.0.1", "7", "SHA-256", "两次审批", "不会覆盖上一成功视频", "45-60 秒", "三个候选", "两处人工暂停"], "SUBMISSION_TEXT", errors)
+    require(texts["SUBMISSION_TEXT"], ["v2", "127.0.0.1", "7", "SHA-256", f"{historical_package_count} 个本地工具能力包", f"{historical_test_count} 项 Python 测试", "两次审批", "不会覆盖上一成功视频", "45-60 秒", "三个候选", "两处人工暂停"], "SUBMISSION_TEXT", errors)
+    general_kernel = (repo / "docs" / "GENERAL_AGENT_KERNEL.md").read_text(encoding="utf-8")
+    require(general_kernel, ["动态行业能力包", f"当前 {test_count} 项 Python 测试"], "GENERAL_AGENT_KERNEL", errors)
 
     current_docs = [repo / "README.md", *(repo / "docs").rglob("*.md")]
     stale_markers = (
@@ -131,7 +161,7 @@ def main() -> int:
             if len(reader.pages) != 8:
                 errors.append(f"PDF 页数为 {len(reader.pages)}，应为 8")
             pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
-            require(pdf_text, ["净界 AI 内容工厂 v2", "Agent 工作台", "三选一", "两处人工确认", "127.0.0.1:8765", f"{package_count}", f"{test_count}", "DPAPI", "legacy"], "PDF", errors)
+            require(pdf_text, ["净界 AI 内容工厂 v2", "Agent 工作台", "三选一", "两处人工确认", "127.0.0.1:8765", str(historical_package_count), str(historical_test_count), "DPAPI", "legacy"], "PDF", errors)
             if re.search(r"(?:A\s+I|Deep\s+Seek|Vox\s+CPM)", pdf_text, re.IGNORECASE):
                 errors.append("PDF 仍存在英文缩写异常拆字")
             link_count = sum(
