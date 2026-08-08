@@ -124,13 +124,13 @@ class ProviderGenericTests(unittest.TestCase):
     def test_bootstrap_normalizes_flat_visual_direction_object(self):
         raw = capability_snapshot()
         raw["visual_direction"] = {
-            "画幅": "1080×1920竖屏",
+            "画幅": "1080×1920竖屏\uff0c主体居中\uff1b留白\uff1a充足",
             "构图": "门店环境与信息卡片",
         }
         normalized = normalize_bootstrap_capability_snapshot(raw, raw["goal"])
         self.assertEqual(
             normalized["visual_direction"],
-            ["构图：门店环境与信息卡片", "画幅：1080×1920竖屏"],
+            ["构图：门店环境与信息卡片", "画幅：1080×1920竖屏\uff0c主体居中\uff1b留白\uff1a充足"],
         )
 
     def test_bootstrap_visual_object_rejects_composite_sensitive_keys(self):
@@ -163,6 +163,8 @@ class ProviderGenericTests(unittest.TestCase):
             "session_token_copy",
             "apiSecretCopy",
             "authenticationHeaderCopy",
+            "api\uff53\uff45\uff43\uff52\uff45\uff54",
+            "access\uff54\uff4f\uff4b\uff45\uff4e",
             "访问令牌备份",
             "客户授权信息",
             "接口密钥副本",
@@ -175,6 +177,19 @@ class ProviderGenericTests(unittest.TestCase):
                 with self.assertRaises(ProviderError) as raised:
                     normalize_bootstrap_capability_snapshot(raw, raw["goal"])
                 self.assertNotIn(key, str(raised.exception))
+
+        sensitive_values = (
+            "authorization\uff1aBearer opaque-credential-value",
+            "api\uff3fkey\uff1dopaque-credential-value",
+            "password\uff1dopaque-credential-value",
+        )
+        for value in sensitive_values:
+            with self.subTest(value=value):
+                raw = capability_snapshot()
+                raw["visual_direction"] = {"palette": value}
+                with self.assertRaises(ProviderError) as raised:
+                    normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+                self.assertNotIn(value, str(raised.exception))
 
     def test_bootstrap_visual_object_order_is_hash_stable_and_normalized_duplicates_fail(self):
         first_raw = capability_snapshot()
@@ -246,9 +261,23 @@ class ProviderGenericTests(unittest.TestCase):
         url_value["tone"] = ["参见 https://example.com"]
         cases["url"] = url_value
 
+        compatibility_url = capability_snapshot()
+        compatibility_url["tone"] = ["参见 \uff48\uff54\uff54\uff50\uff53\uff1a\uff0f\uff0fexample.com"]
+        cases["compatibility_url"] = compatibility_url
+
+        compatibility_path = capability_snapshot()
+        compatibility_path["audience"] = "\uff23\uff1a\uff3cUsers\uff3copaque"
+        cases["compatibility_path"] = compatibility_path
+
         command_value = capability_snapshot()
         command_value["visual_direction"] = {"构图": "powershell -enc AAA"}
         cases["command"] = command_value
+
+        compatibility_command = capability_snapshot()
+        compatibility_command["visual_direction"] = {
+            "构图": "\uff50\uff4f\uff57\uff45\uff52\uff53\uff48\uff45\uff4c\uff4c \uff0d\uff45\uff4e\uff43 AAA"
+        }
+        cases["compatibility_command"] = compatibility_command
 
         secret_value = capability_snapshot()
         secret_value["preferred_terms"] = ["sk-1234567890abcdef"]

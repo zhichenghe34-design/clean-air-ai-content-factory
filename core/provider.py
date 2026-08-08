@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+import unicodedata
 import uuid
 import urllib.error
 import urllib.parse
@@ -229,14 +230,15 @@ def _raise_bootstrap_schema(message: str, raw_pack: Any) -> None:
 
 def _assert_bootstrap_safe_text(value: str, *, field: str, maximum: int) -> str:
     text = value.strip()
-    if not text or len(text) > maximum:
+    safety_view = unicodedata.normalize("NFKC", text).strip()
+    if not safety_view or len(text) > maximum or len(safety_view) > maximum:
         raise ProviderError(f"项目启动接口返回的{field}为空或超过长度限制")
     if (
-        _BOOTSTRAP_CONTROL_RE.search(text)
-        or _BOOTSTRAP_URL_RE.search(text)
-        or _BOOTSTRAP_PATH_RE.search(text)
-        or _BOOTSTRAP_COMMAND_RE.search(text)
-        or _BOOTSTRAP_SECRET_RE.search(text)
+        _BOOTSTRAP_CONTROL_RE.search(safety_view)
+        or _BOOTSTRAP_URL_RE.search(safety_view)
+        or _BOOTSTRAP_PATH_RE.search(safety_view)
+        or _BOOTSTRAP_COMMAND_RE.search(safety_view)
+        or _BOOTSTRAP_SECRET_RE.search(safety_view)
     ):
         raise ProviderError(f"项目启动接口返回的{field}包含非声明式内容")
     return text
@@ -272,7 +274,8 @@ def _normalize_bootstrap_list(value: Any, *, field: str) -> list[str]:
 
 
 def _normalized_bootstrap_visual_key(value: str) -> str:
-    camel_split = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    safety_view = unicodedata.normalize("NFKC", value)
+    camel_split = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", safety_view)
     normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", camel_split.casefold()).strip("_")
     if not normalized:
         raise ProviderError("项目启动接口返回的visual_direction键无法规范化")
