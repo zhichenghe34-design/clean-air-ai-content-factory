@@ -23,6 +23,7 @@ const { chromium } = require('playwright');
     contentType: 'application/json; charset=utf-8',
     body: JSON.stringify({
       source: 'deepseek',
+      selection_bundle_id: 'selection-smoke-agent-flow-000000000001',
       screening: '已排除越域、夸大承诺和重复选题；公开依据将在研究阶段逐条核验。',
       candidates: [
         { id: 'topic-1', title: '通风后没有气味，甲醛就安全了吗？', reason: '误区切入。', audience: '新房家庭' },
@@ -39,7 +40,19 @@ const { chromium } = require('playwright');
   await page.route('**/api/demo-job', async route => {
     createRequests += 1;
     createKeys.push(route.request().headers()['idempotency-key']);
-    const input = (await route.request().postDataJSON()).production_input;
+    const requestPayload = await route.request().postDataJSON();
+    const selected = {
+      'topic-1': { title: '通风后没有气味，甲醛就安全了吗？', audience: '新房家庭' },
+      'topic-2': { title: '除醛率为什么要看检测条件？', audience: '新房家庭' },
+      'topic-3': { title: '检测报告应该先看哪些信息？', audience: '新房家庭' },
+    }[requestPayload.candidate_id];
+    const input = {
+      topic: selected.title,
+      audience: selected.audience,
+      ...requestPayload.production_options,
+      selection_bundle_id: requestPayload.selection_bundle_id,
+      candidate_id: requestPayload.candidate_id,
+    };
     if (!job) {
       job = {
         schema_version: 2,

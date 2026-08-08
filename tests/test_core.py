@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from core.capability_pack import legacy_clean_air_pack
 from core.config import ConfigStore
 from core.catalog import CatalogError, PackageCatalog
 from core.discovery import ProjectDiscovery
@@ -234,7 +235,7 @@ class ProviderTests(unittest.TestCase):
 
 class FakeSearchProvider:
     def search(self, query, max_results):
-        return [{"title": "权威资料", "url": "https://example.com/report", "snippet": "检测条件说明"}]
+        return [{"title": "权威资料", "url": "https://www.samr.gov.cn/report", "snippet": "检测条件说明"}]
 
 
 class MockFlashProvider:
@@ -256,7 +257,7 @@ class MockFlashProvider:
             return {
                 "role": "assistant",
                 "content": None,
-                "tool_calls": [{"id": "call-read", "type": "function", "function": {"name": "extract_url", "arguments": '{"url":"https://example.com/report"}'}}],
+                "tool_calls": [{"id": "call-read", "type": "function", "function": {"name": "extract_url", "arguments": '{"url":"https://www.samr.gov.cn/report"}'}}],
             }
         return {
             "role": "assistant",
@@ -265,9 +266,9 @@ class MockFlashProvider:
                 "summary": "检测结果必须结合条件理解",
                 "findings": [{
                     "claim": "检测结果应结合剂量、空间、时间与方法。",
-                    "source_urls": ["https://example.com/report"],
+                    "source_urls": ["https://www.samr.gov.cn/report"],
                     "evidence": [{
-                        "url": "https://example.com/report",
+                        "url": "https://www.samr.gov.cn/report",
                         "excerpt": "检测结果应结合剂量、空间、时间与方法。",
                         "source_type": "institutional_primary",
                         "retrieved_at": "2026-07-18T16:10:32+08:00",
@@ -279,7 +280,7 @@ class MockFlashProvider:
                 "content_patterns": ["主张→条件→建议"],
                 "evidence_gaps": [],
                 "sources": [{
-                    "url": "https://example.com/report",
+                    "url": "https://www.samr.gov.cn/report",
                     "title": "权威资料",
                     "publisher": "示例机构",
                     "source_type": "institutional_primary",
@@ -472,6 +473,7 @@ class WebAgentTests(unittest.TestCase):
                 "除醛数据为什么要看检测条件",
                 "新房家庭",
                 ["https://www.samr.gov.cn/law"],
+                capability_pack=legacy_clean_air_pack(),
             )
         self.assertEqual(result["tool_trace"][0]["tool"], "extract_url")
         self.assertEqual(result["evidence_review"]["script_eligible_count"], 1)

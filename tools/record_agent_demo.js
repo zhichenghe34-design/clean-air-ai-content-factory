@@ -246,6 +246,7 @@ function createFixture() {
         };
         await reply(route, {
           source: 'deepseek',
+          selection_bundle_id: 'selection-fixed-agent-demo-0000000001',
           notice: '',
           screening: '排除越域/明显夸大/重复；公开依据将在研究阶段逐条核验；选题 Provider 1/3（固定演示）。',
           topic_provider_budget: pretaskProviderBudget,
@@ -256,7 +257,15 @@ function createFixture() {
       }
       if (pathname === '/api/demo-job') {
         record('create');
-        const input = request.postDataJSON().production_input;
+        const createPayload = request.postDataJSON();
+        const selected = topics.find(item => item.id === createPayload.candidate_id);
+        const input = {
+          topic: selected.title,
+          audience: selected.audience,
+          ...createPayload.production_options,
+          selection_bundle_id: createPayload.selection_bundle_id,
+          candidate_id: createPayload.candidate_id,
+        };
         job = {
           schema_version: 2,
           id: 'demo-agent-job',

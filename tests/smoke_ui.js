@@ -60,6 +60,7 @@ const batches = [
       status: 200,
       contentType: 'application/json; charset=utf-8',
       body: JSON.stringify({
+        selection_bundle_id: `selection-smoke-ui-${topicCalls}`,
         source: 'deepseek',
         notice: `预任务 Provider 请求 ${topicCalls}/3，剩余 ${3 - topicCalls}；来源：DeepSeek。`,
         screening: `已排除越域、夸大承诺和重复选题；公开依据将在研究阶段逐条核验；预任务 Provider 请求 ${topicCalls}/3，剩余 ${3 - topicCalls}；来源：DeepSeek。`,
