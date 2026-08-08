@@ -40,6 +40,14 @@ from core.orchestrator import (
     validate_topic_input,
 )
 from core.production import DEFAULT_INPUT, ProductionRunner, estimate_narration_duration, review_script
+from core.production_engine import (
+    ENGINE_COMMIT,
+    ENGINE_MODE,
+    ENGINE_NAME,
+    ENGINE_VERSION,
+    ProductionEngineAdapter,
+    ProductionEngineError,
+)
 from core.provider import (
     BudgetLedger,
     CAPABILITY_SNAPSHOT_FIELDS,
@@ -75,6 +83,95 @@ agent_create_replays: dict[str, dict[str, str]] = {}
 correction_replays: OrderedDict[str, dict] = OrderedDict()
 topic_selection_bundles: OrderedDict[str, dict] = OrderedDict()
 SELECTION_BUNDLE_TTL_SECONDS = 2 * 60 * 60
+
+
+def production_engine_binding(*, strict: bool) -> tuple[ProductionEngineAdapter | None, dict, dict]:
+    enabled = os.environ.get("SHIYI_MPT_ENABLED", "").strip() == "1"
+    summary = {
+        "name": ENGINE_NAME,
+        "version": ENGINE_VERSION,
+        "commit": ENGINE_COMMIT,
+        "mode": ENGINE_MODE,
+        "enabled": enabled,
+        "health": "disabled",
+        "material_strategy": None,
+        "material_count": 0,
+    }
+    if not enabled:
+        return None, {}, summary
+    try:
+        timeout_seconds = float(os.environ.get("SHIYI_MPT_TIMEOUT_SECONDS", "1800"))
+        if not 60 <= timeout_seconds <= 3600:
+            raise ValueError("timeout outside release bounds")
+        base_url = os.environ.get("SHIYI_MPT_BASE_URL", "http://127.0.0.1:8080/api/v1")
+        material_root_value = os.environ.get("SHIYI_MPT_LOCAL_MATERIAL_DIR", "").strip()
+        material_strategy = os.environ.get(
+            "SHIYI_MPT_MATERIAL_STRATEGY", "local" if material_root_value else "pexels"
+        ).strip().lower()
+        if material_strategy not in {"local", "pexels", "pixabay", "coverr"}:
+            raise ProductionEngineError(
+                "invalid_material_strategy",
+                "Material strategy is not allowed.",
+                stage="configuration",
+            )
+        material_root = Path(material_root_value).expanduser() if material_root_value else None
+        local_material_paths: list[Path] | None = None
+        if material_strategy == "local":
+            if material_root is None or not material_root.is_dir():
+                raise ProductionEngineError(
+                    "local_material_root_required",
+                    "Local material root is unavailable.",
+                    stage="configuration",
+                )
+            local_material_paths = sorted(
+                (path for path in material_root.glob("*.mp4") if path.is_file()),
+                key=lambda path: path.name.casefold(),
+            )
+            if not 1 <= len(local_material_paths) <= 24:
+                raise ProductionEngineError(
+                    "invalid_local_materials",
+                    "Local material count is outside release bounds.",
+                    stage="configuration",
+                )
+        adapter = ProductionEngineAdapter(
+            base_url,
+            timeout_seconds=timeout_seconds,
+            local_material_root=material_root,
+        )
+        options = {
+            "material_strategy": material_strategy,
+            "voice_strategy": "edge_tts",
+            "local_material_paths": local_material_paths,
+        }
+        summary.update(
+            {
+                "health": (
+                    "ready"
+                    if os.environ.get("SHIYI_MPT_HEALTH_VERIFIED", "").strip() == "1"
+                    else "configured_unverified"
+                ),
+                "material_strategy": material_strategy,
+                "material_count": len(local_material_paths or []),
+            }
+        )
+        return adapter, options, summary
+    except (OSError, ValueError, ProductionEngineError) as exc:
+        code = getattr(exc, "code", "invalid_engine_configuration")
+        summary.update({"health": "misconfigured", "error_code": code})
+        if strict:
+            error = UnprocessableError("MPT生产引擎配置未通过安全检查", details={"code": code})
+            raise error from exc
+        return None, {}, summary
+
+
+def job_with_engine_summary(job: dict) -> dict:
+    result = dict(job)
+    _adapter, _options, summary = production_engine_binding(strict=False)
+    summary = dict(summary)
+    if "engine_report.json" in result.get("artifacts", []):
+        summary["last_successful_run"] = result.get("current_run_id")
+    result["production_engine"] = summary
+    return result
 
 
 def pretask_budget_for(goal: str) -> BudgetLedger:
@@ -517,7 +614,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 parts = path.strip("/").split("/")
                 if len(parts) != 3:
                     raise FileNotFoundError("接口不存在")
-                self.json_response(job_store.get(parts[2]))
+                self.json_response(job_with_engine_summary(job_store.get(parts[2])))
             elif path == "/api/catalog":
                 self.json_response(package_catalog.load())
             elif path == "/api/hardware":
@@ -601,7 +698,21 @@ class AppHandler(BaseHTTPRequestHandler):
                     limit = int(config_store.load().get("research", {}).get("max_provider_calls_per_job", 7))
                     budget = BudgetLedger(limit=limit, snapshot=job.get("budget"))
                     provider = self._provider(budget)
-                    runner = ProductionRunner(provider=provider, research_config=config_store.load().get("research", {}), budget=budget)
+                    render_stage_requested = job.get("status") == "compliance_approved" or (
+                        job.get("status") == "failed" and job.get("last_failed_stage") == "render"
+                    )
+                    engine_adapter, engine_options, _engine_summary = production_engine_binding(
+                        strict=render_stage_requested
+                    )
+                    if not render_stage_requested:
+                        engine_adapter, engine_options = None, {}
+                    runner = ProductionRunner(
+                        provider=provider,
+                        research_config=config_store.load().get("research", {}),
+                        budget=budget,
+                        production_engine_adapter=engine_adapter,
+                        production_engine_options=engine_options,
+                    )
                     executed_rule_ids = list(job.get("learning_rule_ids", []))
                     result = job_store.advance(job_id, runner, self.headers.get("Idempotency-Key", ""))
                     learning_update = None
@@ -711,6 +822,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "memory_count": len(learning_store.list_memories()),
             "learned_skill_count": len(learning_store.list_skills()),
             "dynamic_capability_pack_count": len(capability_registry.list()),
+            "production_engine": production_engine_binding(strict=False)[2],
         }
 
     def _discover(self, body: dict) -> dict:
@@ -901,6 +1013,134 @@ class AppHandler(BaseHTTPRequestHandler):
         return [dict(item, id=f"topic-{index + 1}") for index, item in enumerate(result)], used_local_fallback
 
     def _suggest_topics(self, body: dict) -> dict:
+        """Release topic flow with a deterministic, server-owned safety boundary.
+
+        Dynamic capability-pack generation and its counter-evidence review remain
+        available in ``_suggest_topics_experimental_dynamic`` for offline
+        experiments, but they are deliberately not part of the release homepage
+        path.  A topic request may spend at most one pre-task Provider call.
+        """
+
+        if os.environ.get("SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS", "").strip() == "1":
+            return self._suggest_topics_experimental_dynamic(body)
+
+        goal = self._validate_topic_goal(body.get("goal"))
+        pretask_budget = pretask_budget_for(goal)
+        excluded = [] if "excluded_topics" not in body else body["excluded_topics"]
+        if not isinstance(excluded, list) or len(excluded) > 24:
+            raise UnprocessableError("excluded_topics必须是不超过24项的数组")
+        if any(not isinstance(item, str) for item in excluded):
+            raise UnprocessableError("excluded_topics每一项都必须是字符串")
+        excluded = [item.strip() for item in excluded if item.strip()]
+        if any(len(item) > 80 for item in excluded):
+            raise UnprocessableError("excluded_topics每一项最多80字")
+
+        # Preserve the released refresh contract and its tamper checks.  The
+        # supplied snapshot is never trusted as the release safety boundary;
+        # the server always rebuilds that boundary from the normalized goal and
+        # approved startup memory below.
+        supplied_pack = body.get("capability_pack")
+        if supplied_pack is not None:
+            try:
+                supplied_pack = validate_capability_pack(supplied_pack)
+            except (TypeError, ValueError) as exc:
+                raise UnprocessableError(f"行业能力包无效：{exc}") from exc
+            if supplied_pack["snapshot"].get("goal") != goal:
+                raise UnprocessableError("行业能力包与当前目标不匹配，请重新生成项目上下文")
+            try:
+                registered_pack = capability_registry.get(supplied_pack["id"], supplied_pack["sha256"])
+            except (TypeError, ValueError) as exc:
+                raise UnprocessableError("刷新只能使用服务端已登记的行业能力包，请重新生成项目上下文") from exc
+            if registered_pack != supplied_pack:
+                raise UnprocessableError("行业能力包与服务端已审核版本不一致")
+
+        pack = self._local_pack_with_startup_memory(goal)
+        capability_review: dict | None = None
+        capability_review_failure_kind = "not_run"
+        bootstrap_failure_kind = "not_run"
+        bootstrap_schema_diagnostic: dict | None = None
+        source = "local_safe_agent"
+        status_notice = ""
+        remaining_before_call = pretask_budget.snapshot()["remaining"]
+
+        if remaining_before_call <= 0:
+            raw = self._safe_topic_candidates(excluded, goal, pack)
+            status_notice = "本机会话的预任务 Agent Provider 预算已耗尽，已返回本地安全候选"
+        elif not config_store.get_api_key():
+            raw = self._safe_topic_candidates(excluded, goal, pack)
+            status_notice = "未配置 DeepSeek Key，已返回本地安全候选且未产生 Provider 请求"
+        else:
+            try:
+                provider = self._provider(pretask_budget)
+                memory_rules = self._startup_memory_rules(goal)
+                # Exactly one release-path Provider method is allowed here.  Do
+                # not retry an older signature: a signature/transport/schema
+                # failure must safely fall back without spending another call.
+                raw = provider.suggest_topics(goal, excluded, pack, memory_rules)
+                if not isinstance(raw, list):
+                    raise ProviderError("选题 Provider 未返回候选数组")
+                source = "deepseek"
+                status_notice = "DeepSeek 已返回候选"
+            except (ProviderError, TypeError, ValueError):
+                raw = self._safe_topic_candidates(excluded, goal, pack)
+                source = "local_safe_agent"
+                status_notice = "DeepSeek 选题暂不可用，已降级为本地安全候选"
+
+        candidates, used_local_fallback = self._normalize_topic_candidates(raw, excluded, goal, pack)
+        if source == "deepseek" and used_local_fallback:
+            source = "deepseek_filtered_with_local_fallback"
+            status_notice = "部分 DeepSeek 候选未通过本地安全校验，已补足本地安全候选"
+        if len(candidates) != 3:
+            raise WorkflowError("Agent暂时没有找到三个互不重复的安全角度，请稍后再试")
+
+        pack = self._publish_capability_pack(pack)
+        budget = pretask_budget.snapshot()
+        source_label = {
+            "deepseek": "DeepSeek",
+            "deepseek_filtered_with_local_fallback": "DeepSeek与本地安全候选混合",
+            "local_safe_agent": "本地安全候选",
+        }[source]
+        budget_note = (
+            f"预任务 Agent Provider 请求 {budget['attempted']}/{budget['limit']}，"
+            f"剩余 {budget['remaining']}；来源：{source_label}"
+        )
+        release_boundary_note = (
+            "正式版使用服务端确定性安全能力包；动态能力包生成与反证审核不进入正式主链；"
+            "候选仍须在后续研究阶段逐条核验，不代表事实已证实"
+        )
+        notice = f"{status_notice.rstrip('。')}；{release_boundary_note}；{budget_note}。"
+        selection_bundle_id = store_topic_selection_bundle(goal, pack, candidates)
+        return {
+            "goal": goal,
+            "source": source,
+            "notice": notice,
+            "candidates": candidates,
+            "selection_bundle_id": selection_bundle_id,
+            "selection_bundle_expires_in_seconds": SELECTION_BUNDLE_TTL_SECONDS,
+            "capability_pack": pack,
+            "capability_review": capability_review,
+            "capability_review_failure_kind": capability_review_failure_kind,
+            "bootstrap_failure_kind": bootstrap_failure_kind,
+            "bootstrap_schema_diagnostic": bootstrap_schema_diagnostic,
+            "context": {
+                "project_id": pack["id"],
+                "industry_pack_id": pack["id"],
+                "industry_pack_label": pack["snapshot"].get("label", "确定性安全能力包"),
+                "industry": pack["snapshot"].get("industry", "通用内容行业"),
+                "confidence": "limited",
+                "selected_by": source,
+                "material_count": 0,
+            },
+            "learning": learning_store.memory_snapshot(pack["id"]),
+            "screening": f"{release_boundary_note}；{budget_note}。",
+            # Keep the topic-specific public field used by the released UI and
+            # expose the shared name used by /api/agent/plan as well.
+            "topic_provider_budget": budget,
+            "pretask_provider_budget": budget,
+        }
+
+    def _suggest_topics_experimental_dynamic(self, body: dict) -> dict:
+        """Retained dynamic bootstrap/review path for explicit offline experiments."""
         goal = self._validate_topic_goal(body.get("goal"))
         pretask_budget = pretask_budget_for(goal)
         excluded = [] if "excluded_topics" not in body else body["excluded_topics"]

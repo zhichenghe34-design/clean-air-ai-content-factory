@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import inspect
 import math
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,12 +18,21 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont
 
 from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
+from core.production_engine import ENGINE_COMMIT, ENGINE_MODE, ENGINE_NAME, ENGINE_VERSION
 from core.provider import BudgetLedger, ProviderError
 from core.web_agent import WebResearchAgent
 from core.web_tools import TrustedWebToolRegistry
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().upper()
 
 
 def _configured_path(env_name: str, default: str | Path) -> Path:
@@ -717,6 +728,8 @@ class ProductionRunner:
         budget: BudgetLedger | None = None,
         voice_adapter: Any | None = None,
         render_adapter: Any | None = None,
+        production_engine_adapter: Any | None = None,
+        production_engine_options: dict[str, Any] | None = None,
     ):
         self.provider = provider
         self.research_config = research_config or {}
@@ -727,6 +740,8 @@ class ProductionRunner:
             self.provider.budget = self.budget
         self.voice_adapter = voice_adapter
         self.render_adapter = render_adapter
+        self.production_engine_adapter = production_engine_adapter
+        self.production_engine_options = dict(production_engine_options or {})
 
     def run(self, folder: Path, production_input: dict[str, Any] | None = None) -> dict[str, Any]:
         raise RuntimeError("v2生产线必须通过JobStore分阶段运行并完成人工门禁")
@@ -859,36 +874,45 @@ class ProductionRunner:
         review = json.loads((folder / "review.json").read_text(encoding="utf-8"))
         if review.get("status") == "blocked" or review.get("blocked"):
             raise RuntimeError("合规审核仍处于阻断状态")
-        voice_report = self.voice_adapter(folder, approved["script"], config) if self.voice_adapter else self._synthesize_voice(folder, approved["script"], config)
-        if not (folder / "voice.wav").is_file():
-            raise RuntimeError("配音适配器没有生成voice.wav")
-        voice_report.update(self._normalize_voice_duration(folder, float(config.get("target_duration_seconds", 52))))
         segments = self._segments(config, str(approved["script"]))
-        duration = self._audio_duration(folder / "voice.wav")
-        captions = self._write_captions(folder, segments, duration)
+        production_engine_report: dict[str, Any] | None = None
+        if self.production_engine_adapter is not None:
+            engine_stage = self._run_production_engine(folder, approved, config, segments)
+            voice_report = engine_stage["voice"]
+            duration = float(engine_stage["duration_seconds"])
+            render_report = engine_stage["render"]
+            production_engine_report = engine_stage["engine"]
+        else:
+            voice_report = self.voice_adapter(folder, approved["script"], config) if self.voice_adapter else self._synthesize_voice(folder, approved["script"], config)
+            if not (folder / "voice.wav").is_file():
+                raise RuntimeError("配音适配器没有生成voice.wav")
+            voice_report.update(self._normalize_voice_duration(folder, float(config.get("target_duration_seconds", 52))))
+            duration = self._audio_duration(folder / "voice.wav")
+            captions = self._write_captions(folder, segments, duration)
         capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
         learning_rules = _normalized_learning_rules(config.get("learning_rules"))
         motion_plan = build_motion_plan(
             config["topic"], config["audience"], segments, duration, capability_pack=capability_pack
         )
         atomic_json(folder / "motion_plan.json", motion_plan)
-        render_mode = str(config.get("render_mode", "animated"))
-        if self.render_adapter:
-            render_report = self.render_adapter(folder, motion_plan, config)
-            if not (folder / "final.mp4").is_file():
-                raise RuntimeError("渲染适配器没有生成final.mp4")
-        elif render_mode == "animated":
-            try:
-                render_report = self._render_animated_video(folder, motion_plan, config)
-            except Exception as exc:
-                (folder / "animation_fallback.log").write_text(str(exc), encoding="utf-8")
-                if config.get("require_animation"):
-                    raise
+        if self.production_engine_adapter is None:
+            render_mode = str(config.get("render_mode", "animated"))
+            if self.render_adapter:
+                render_report = self.render_adapter(folder, motion_plan, config)
+                if not (folder / "final.mp4").is_file():
+                    raise RuntimeError("渲染适配器没有生成final.mp4")
+            elif render_mode == "animated":
+                try:
+                    render_report = self._render_animated_video(folder, motion_plan, config)
+                except Exception as exc:
+                    (folder / "animation_fallback.log").write_text(str(exc), encoding="utf-8")
+                    if config.get("require_animation"):
+                        raise
+                    render_report = self._render_video(folder, segments, captions, duration, config)
+                    render_report.update({"mode": "static_fallback", "fallback_reason": str(exc)})
+            else:
                 render_report = self._render_video(folder, segments, captions, duration, config)
-                render_report.update({"mode": "static_fallback", "fallback_reason": str(exc)})
-        else:
-            render_report = self._render_video(folder, segments, captions, duration, config)
-            render_report["mode"] = "static_requested"
+                render_report["mode"] = "static_requested"
 
         elapsed = round(time.monotonic() - started, 2)
         variants_payload = json.loads((folder / "script_variants.json").read_text(encoding="utf-8"))
@@ -915,6 +939,7 @@ class ProductionRunner:
             "learning_rule_ids": [str(item.get("rule_id")) for item in learning_rules if item.get("rule_id")],
             "voice": voice_report,
             "render": render_report,
+            "production_engine": production_engine_report,
             "compliance": review,
             "adoption_proxy": {
                 "candidate_count": len(variants),
@@ -930,6 +955,8 @@ class ProductionRunner:
             "artifacts": [
                 "research.json", "insight.json", "script_variants.json", "approved_script.json", "review.json",
                 "voice.wav", "captions.srt", "motion_plan.json", "final.mp4", "run_report.json",
+            ] + [
+                name for name in ("material_sources.json", "engine_report.json") if (folder / name).is_file()
             ],
         }
         atomic_json(folder / "run_report.json", report)
@@ -991,13 +1018,13 @@ class ProductionRunner:
                 production_input=config,
                 learning_rules=_normalized_learning_rules(config.get("learning_rules")),
             )
-        except Exception as exc:
+        except Exception:
             return {
                 "status": "failed",
-                "summary": "联网调研失败，已降级到本地范式",
+                "summary": "联网调研失败，未生成可审批证据",
                 "findings": [],
                 "content_patterns": [],
-                "evidence_gaps": [str(exc)],
+                "evidence_gaps": ["联网调研未完成；请修复后重试或明确关闭联网调研"],
                 "sources": [],
                 "tool_trace": [],
                 "model_calls": 0,
@@ -1139,6 +1166,370 @@ class ProductionRunner:
             str(config["topic"]), script, target_count=7, capability_pack=capability_pack
         )
 
+    def _run_production_engine(
+        self,
+        folder: Path,
+        approved: dict[str, Any],
+        config: dict[str, Any],
+        segments: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        options = dict(self.production_engine_options)
+        topic = str(config.get("topic", "")).strip()
+        keywords = [topic]
+        for segment in segments:
+            value = str(segment.get("title") or segment.get("caption") or "").strip()
+            if value and value not in keywords:
+                keywords.append(value)
+            if len(keywords) >= 12:
+                break
+        result = self.production_engine_adapter.run(
+            approved=True,
+            script=str(approved["script"]),
+            keywords=keywords,
+            aspect="portrait",
+            target_duration_seconds=float(config.get("target_duration_seconds", 52)),
+            staging_dir=folder,
+            material_strategy=str(options.get("material_strategy", "pexels")),
+            voice_strategy=str(options.get("voice_strategy", "edge_tts")),
+            local_material_paths=options.get("local_material_paths"),
+        )
+        result_payload = result.as_dict() if callable(getattr(result, "as_dict", None)) else {}
+        if not isinstance(result_payload, dict):
+            raise RuntimeError("MPT生产引擎返回了无效结果")
+        if (
+            result_payload.get("engine_name"),
+            result_payload.get("engine_version"),
+            result_payload.get("engine_commit"),
+            result_payload.get("mode"),
+        ) != (ENGINE_NAME, ENGINE_VERSION, ENGINE_COMMIT, ENGINE_MODE):
+            raise RuntimeError("MPT生产引擎身份与固定版本不一致")
+
+        raw_audio = folder / ".engine-import" / "audio.mp3"
+        self._import_engine_audio(raw_audio, folder / "voice.wav")
+        voice_report = {
+            "engine": result_payload.get("engine_name", "MoneyPrinterTurbo"),
+            "source_format": "audio/mpeg",
+            "canonical_format": "audio/wav",
+            "source_sha256": _file_sha256(raw_audio),
+        }
+        voice_report.update(
+            self._normalize_voice_duration(folder, float(config.get("target_duration_seconds", 52)))
+        )
+        retiming_report = {"applied": False}
+        if voice_report.get("tempo_adjusted") is True:
+            retiming_report = self._retime_engine_output(
+                folder, float(voice_report["tempo_factor"])
+            )
+        duration = self._audio_duration(folder / "voice.wav")
+        caption_report = self._validate_engine_captions(
+            folder / "captions.srt", duration, str(approved["script"])
+        )
+        render_report = self._probe_engine_video(folder / "final.mp4")
+        render_report.update(
+            {
+                "mode": "moneyprinterturbo_local_http",
+                "subtitle_mode": "engine_burned_and_sidecar_srt",
+                "caption_validation": caption_report,
+                "retiming": retiming_report,
+            }
+        )
+
+        engine_report_path = folder / "engine_report.json"
+        try:
+            engine_report = json.loads(engine_report_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("MPT生产引擎报告无效") from exc
+        expected_script_hash = hashlib.sha256(str(approved["script"]).encode("utf-8")).hexdigest().upper()
+        if engine_report.get("script_sha256") != expected_script_hash:
+            raise RuntimeError("MPT生产引擎报告与已批准脚本不一致")
+        report_artifacts = engine_report.get("artifacts")
+        if not isinstance(report_artifacts, list):
+            raise RuntimeError("MPT生产引擎报告产物清单无效")
+        artifact_index: dict[str, dict[str, Any]] = {}
+        for item in report_artifacts:
+            if not isinstance(item, dict) or not isinstance(item.get("relative_path"), str):
+                raise RuntimeError("MPT生产引擎报告产物清单无效")
+            relative_path = str(item["relative_path"])
+            if relative_path in artifact_index:
+                raise RuntimeError("MPT生产引擎报告包含重复产物")
+            artifact_index[relative_path] = dict(item)
+        expected_engine_artifacts = {
+            "final.mp4",
+            ".engine-import/audio.mp3",
+            "captions.srt",
+            "material_sources.json",
+        }
+        if set(artifact_index) != expected_engine_artifacts:
+            raise RuntimeError("MPT生产引擎报告产物集合不完整")
+        imported_audio = artifact_index[".engine-import/audio.mp3"]
+        if imported_audio is None or imported_audio.get("sha256") != voice_report["source_sha256"]:
+            raise RuntimeError("MPT生产引擎配音哈希不一致")
+        imported_audio["disposition"] = "transcoded_to_voice_wav_then_removed"
+        engine_report["engine_imports"] = [imported_audio]
+        published_engine_artifacts: list[dict[str, Any]] = []
+        for item in report_artifacts:
+            if not isinstance(item, dict):
+                raise RuntimeError("MPT生产引擎报告产物清单无效")
+            relative_path = item.get("relative_path")
+            if relative_path == ".engine-import/audio.mp3":
+                continue
+            record = dict(item)
+            if relative_path in {"final.mp4", "captions.srt", "material_sources.json"}:
+                artifact_path = folder / str(relative_path)
+                if not artifact_path.is_file() or artifact_path.stat().st_size <= 0:
+                    raise RuntimeError("MPT生产引擎报告产物缺失")
+                if retiming_report.get("applied") is True and relative_path in {"final.mp4", "captions.srt"}:
+                    record["engine_source_sha256"] = record.get("sha256")
+                    record["control_layer_retimed"] = True
+                record["size"] = artifact_path.stat().st_size
+                record["sha256"] = _file_sha256(artifact_path)
+            published_engine_artifacts.append(record)
+        engine_report["artifacts"] = published_engine_artifacts
+        engine_report["control_layer_validation"] = {
+            "status": "passed",
+            "canonical_voice_sha256": _file_sha256(folder / "voice.wav"),
+            "final_video_sha256": _file_sha256(folder / "final.mp4"),
+            "captions_sha256": _file_sha256(folder / "captions.srt"),
+            "caption_validation": caption_report,
+            "media": render_report,
+        }
+        atomic_json(engine_report_path, engine_report)
+
+        raw_audio.unlink(missing_ok=True)
+        private_dir = raw_audio.parent
+        if private_dir.is_dir() and not any(private_dir.iterdir()):
+            private_dir.rmdir()
+        return {
+            "voice": voice_report,
+            "duration_seconds": duration,
+            "render": render_report,
+            "engine": {
+                "name": result_payload.get("engine_name"),
+                "version": result_payload.get("engine_version"),
+                "commit": result_payload.get("engine_commit"),
+                "mode": result_payload.get("mode"),
+                "task_id": result_payload.get("task_id"),
+                "status": "complete",
+            },
+        }
+
+    @staticmethod
+    def _import_engine_audio(source: Path, destination: Path) -> None:
+        if not source.is_file() or source.stat().st_size <= 0:
+            raise RuntimeError("MPT没有生成可导入的配音")
+        if not _tool_available(FFMPEG):
+            raise FileNotFoundError("未找到FFmpeg，无法导入MPT配音")
+        command = [
+            str(FFMPEG), "-y", "-i", str(source), "-vn", "-ac", "2", "-ar", "44100",
+            "-c:a", "pcm_s16le", str(destination),
+        ]
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+        )
+        if result.returncode or not destination.is_file() or destination.stat().st_size <= 0:
+            destination.unlink(missing_ok=True)
+            raise RuntimeError("MPT配音导入失败")
+
+    @staticmethod
+    def _parse_srt_seconds(value: str) -> float:
+        match = re.fullmatch(r"(\d{2}):(\d{2}):(\d{2}),(\d{3})", value.strip())
+        if not match:
+            raise RuntimeError("MPT字幕时间格式无效")
+        hours, minutes, seconds, milliseconds = (int(item) for item in match.groups())
+        if minutes >= 60 or seconds >= 60:
+            raise RuntimeError("MPT字幕时间格式无效")
+        return hours * 3600 + minutes * 60 + seconds + milliseconds / 1000
+
+    @classmethod
+    def _retime_engine_output(cls, folder: Path, tempo_factor: float) -> dict[str, Any]:
+        if not math.isfinite(tempo_factor) or not 0.75 <= tempo_factor <= 1.5:
+            raise RuntimeError("MPT安全变速系数无效")
+        video = folder / "final.mp4"
+        voice = folder / "voice.wav"
+        captions = folder / "captions.srt"
+        if not video.is_file() or not voice.is_file() or not captions.is_file():
+            raise RuntimeError("MPT重定时缺少视频、配音或字幕")
+        if not _tool_available(FFMPEG):
+            raise FileNotFoundError("未找到FFmpeg，无法同步调整MPT音画与字幕")
+
+        adjusted_video = folder / "final.retimed.mp4"
+        adjusted_captions = folder / "captions.retimed.srt"
+        for temporary in (adjusted_video, adjusted_captions):
+            if temporary.is_symlink() or (temporary.exists() and not temporary.is_file()):
+                raise RuntimeError("MPT重定时临时产物路径不安全")
+            temporary.unlink(missing_ok=True)
+
+        timing_pattern = re.compile(
+            r"(?m)^(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})$"
+        )
+        source_captions = captions.read_text(encoding="utf-8-sig")
+
+        def replace_timing(match: re.Match[str]) -> str:
+            start = cls._parse_srt_seconds(match.group(1)) / tempo_factor
+            end = cls._parse_srt_seconds(match.group(2)) / tempo_factor
+            return f"{cls._srt_time(start)} --> {cls._srt_time(end)}"
+
+        retimed_captions, timing_count = timing_pattern.subn(replace_timing, source_captions)
+        if timing_count <= 0:
+            raise RuntimeError("MPT字幕时间轴无法安全重定时")
+
+        command = [
+            str(FFMPEG),
+            "-y",
+            "-i",
+            str(video),
+            "-i",
+            str(voice),
+            "-filter_complex",
+            f"[0:v:0]setpts=PTS/{tempo_factor:.6f}[v]",
+            "-map",
+            "[v]",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(adjusted_video),
+        ]
+        try:
+            try:
+                adjusted_captions.write_text(retimed_captions, encoding="utf-8", newline="\n")
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=600,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RuntimeError("MPT音画与字幕同步重定时失败") from exc
+            if (
+                result.returncode
+                or not adjusted_video.is_file()
+                or adjusted_video.stat().st_size <= 0
+                or not adjusted_captions.is_file()
+                or adjusted_captions.stat().st_size <= 0
+            ):
+                raise RuntimeError("MPT音画与字幕同步重定时失败")
+            adjusted_video.replace(video)
+            adjusted_captions.replace(captions)
+        finally:
+            for temporary in (adjusted_video, adjusted_captions):
+                if temporary.is_file() or temporary.is_symlink():
+                    temporary.unlink(missing_ok=True)
+        return {
+            "applied": True,
+            "tempo_factor": round(tempo_factor, 6),
+            "video_track": "setpts",
+            "audio_track": "normalized_voice_wav_to_aac",
+            "caption_timing_scaled": True,
+            "timing_count": timing_count,
+        }
+
+    @staticmethod
+    def _caption_binding_text(value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", value).casefold()
+        return "".join(
+            character
+            for character in normalized
+            if not character.isspace()
+            and unicodedata.category(character)[0] not in {"C", "P", "Z"}
+        )
+
+    @classmethod
+    def _validate_engine_captions(
+        cls,
+        path: Path,
+        media_duration: float,
+        approved_script: str,
+    ) -> dict[str, Any]:
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise RuntimeError("MPT没有生成字幕文件")
+        text = path.read_text(encoding="utf-8-sig")
+        blocks = [item for item in re.split(r"\r?\n\s*\r?\n", text.strip()) if item.strip()]
+        if not 1 <= len(blocks) <= 500:
+            raise RuntimeError("MPT字幕条目数量无效")
+        previous_end = 0.0
+        maximum_gap = 0.0
+        caption_fragments: list[str] = []
+        for expected_index, block in enumerate(blocks, start=1):
+            lines = block.splitlines()
+            if len(lines) < 3 or lines[0].strip() != str(expected_index) or " --> " not in lines[1]:
+                raise RuntimeError("MPT字幕编号或结构不连续")
+            start_text, end_text = lines[1].split(" --> ", 1)
+            start = cls._parse_srt_seconds(start_text)
+            end = cls._parse_srt_seconds(end_text)
+            if start + 0.001 < previous_end or end <= start or not "".join(lines[2:]).strip():
+                raise RuntimeError("MPT字幕存在重叠、倒序或空文本")
+            maximum_gap = max(maximum_gap, start - previous_end)
+            previous_end = end
+            caption_fragments.extend(lines[2:])
+        trailing_gap = max(0.0, media_duration - previous_end)
+        maximum_gap = max(maximum_gap, trailing_gap)
+        if previous_end > media_duration + 0.75 or maximum_gap > 2.0:
+            raise RuntimeError("MPT字幕时间轴与成片不连续")
+        approved_binding = cls._caption_binding_text(approved_script)
+        caption_binding = cls._caption_binding_text("".join(caption_fragments))
+        if not approved_binding or caption_binding != approved_binding:
+            raise RuntimeError("MPT字幕正文与已批准脚本不一致")
+        return {
+            "status": "passed",
+            "cue_count": len(blocks),
+            "overlap_count": 0,
+            "last_end_seconds": round(previous_end, 3),
+            "maximum_gap_seconds": round(maximum_gap, 3),
+            "text_sha256": hashlib.sha256(caption_binding.encode("utf-8")).hexdigest().upper(),
+        }
+
+    @staticmethod
+    def _probe_engine_video(path: Path) -> dict[str, Any]:
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise RuntimeError("MPT没有生成成片")
+        if not _tool_available(FFPROBE):
+            raise FileNotFoundError("未找到FFprobe，无法验证MPT成片")
+        command = [str(FFPROBE), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)]
+        try:
+            probe = json.loads(subprocess.check_output(command, text=True, encoding="utf-8"))
+            video_stream = next(stream for stream in probe["streams"] if stream.get("codec_type") == "video")
+            audio_stream = next(stream for stream in probe["streams"] if stream.get("codec_type") == "audio")
+            duration = float(probe["format"]["duration"])
+        except (OSError, ValueError, KeyError, StopIteration, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+            raise RuntimeError("MPT成片媒体结构无效") from exc
+        if video_stream.get("width") != 1080 or video_stream.get("height") != 1920:
+            raise RuntimeError("MPT成片分辨率不符合1080x1920")
+        if video_stream.get("codec_name") != "h264" or audio_stream.get("codec_name") != "aac":
+            raise RuntimeError("MPT成片编码必须为H.264/AAC")
+        if not 45 <= duration <= 60:
+            raise RuntimeError(f"MPT成片时长{duration:.2f}秒，不在45-60秒范围内")
+        return {
+            "ok": True,
+            "file": "final.mp4",
+            "duration_seconds": round(duration, 3),
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "width": 1080,
+            "height": 1920,
+            "fps": video_stream.get("r_frame_rate"),
+        }
+
     @staticmethod
     def _audio_duration(path: Path) -> float:
         command = [str(FFPROBE), "-v", "error", "-show_entries", "format=duration", "-of", "default=nk=1:nw=1", str(path)]
@@ -1150,7 +1541,14 @@ class ProductionRunner:
         duration = cls._audio_duration(voice)
         if 45.0 <= duration <= 60.0:
             return {"duration_seconds": round(duration, 3), "tempo_adjusted": False}
-        desired = min(58.0, max(45.0, target_seconds))
+        target = min(60.0, max(45.0, target_seconds))
+        feasible_minimum = max(45.0, duration / 1.5)
+        feasible_maximum = min(60.0, duration / 0.75)
+        if feasible_minimum > feasible_maximum:
+            raise ScriptRevisionRequired(
+                f"配音时长{duration:.2f}秒，无法在0.75到1.5倍安全变速范围内达到45-60秒"
+            )
+        desired = min(feasible_maximum, max(feasible_minimum, target))
         tempo = duration / desired
         if not 0.75 <= tempo <= 1.5:
             raise ScriptRevisionRequired(
@@ -1172,7 +1570,7 @@ class ProductionRunner:
             "duration_seconds": round(final_duration, 3),
             "tempo_adjusted": True,
             "original_duration_seconds": round(duration, 3),
-            "tempo_factor": round(tempo, 4),
+            "tempo_factor": round(tempo, 6),
             "original_file": "voice.original.wav",
         }
 

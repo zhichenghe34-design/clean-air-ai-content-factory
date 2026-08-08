@@ -45,6 +45,11 @@ CANONICAL_ARTIFACTS = [
     "final.mp4",
     "run_report.json",
 ]
+OPTIONAL_ENGINE_ARTIFACTS = [
+    "material_sources.json",
+    "engine_report.json",
+]
+PUBLIC_ARTIFACTS = [*CANONICAL_ARTIFACTS, *OPTIONAL_ENGINE_ARTIFACTS]
 REVIEW_ARTIFACTS = {"research.json", "approved_script.json", "review.json"}
 LEGACY_CLEAN_AIR_MARKERS = ("甲醛", "除醛", "测醛", "室内空气", "装修污染")
 RUNNING_STATES = {"research_running", "content_running", "rendering"}
@@ -57,6 +62,9 @@ PRODUCTION_INPUT_FIELDS = {
 }
 PLAN_FIELDS = {"goal", "summary", "steps", "missing", "estimated_cost_level", "planner"}
 PLAN_STEP_FIELDS = {"id", "name", "capability", "tool_id", "input", "output", "requires_approval", "risk"}
+EMPTY_RESEARCH_APPROVAL_NOTE = (
+    "本人确认本次无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板"
+)
 
 
 class WorkflowError(RuntimeError):
@@ -445,11 +453,21 @@ class JobStore:
                 result["replayed"] = True
                 return result
             stage = self._next_stage(job)
+            self._require_current_stage_approvals(job, folder, folder / "draft", stage)
             lock_path = self._acquire_disk_lock(folder, idempotency_key)
             run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}"
             run_dir = folder / "runs" / run_id
             staging = run_dir / "staging"
             staging.mkdir(parents=True, exist_ok=False)
+            try:
+                self._copy_draft(folder / "draft", staging)
+                # Recheck the exact snapshot the runner will consume. This closes
+                # the gap between validating the mutable draft and copying it.
+                self._require_current_stage_approvals(job, folder, staging, stage)
+            except Exception:
+                if run_dir.exists():
+                    shutil.rmtree(run_dir)
+                raise
             run = {
                 "run_id": run_id,
                 "stage": stage,
@@ -480,7 +498,6 @@ class JobStore:
 
                 bound_budget.set_persistence_callback(persist_budget)
             try:
-                self._copy_draft(folder / "draft", staging)
                 if stage == "research":
                     runner.run_research_stage(staging, job["production_input"])
                     self._prepare_research(staging / "research.json")
@@ -507,7 +524,7 @@ class JobStore:
                     run["artifacts"] = [item["name"] for item in manifest["artifacts"]]
                     run["manifest_sha256"] = file_sha256(published / "manifest.json")
                     job["current_run_id"] = run_id
-                    job["artifacts"] = [name for name in CANONICAL_ARTIFACTS if (published / name).is_file()]
+                    job["artifacts"] = [name for name in PUBLIC_ARTIFACTS if (published / name).is_file()]
                     job["status"] = "complete"
                 if stage != "render":
                     manifest = self._build_manifest(job, run, staging, runner)
@@ -564,7 +581,10 @@ class JobStore:
         decision = str(payload.get("decision", ""))
         if decision not in {"approved", "rejected"}:
             raise UnprocessableError("decision必须是approved或rejected")
-        eligible = {str(item.get("finding_id")) for item in research.get("findings", []) if item.get("auto_review_status") == "eligible"}
+        research_findings = research.get("findings", [])
+        if not isinstance(research_findings, list):
+            raise UnprocessableError("研究finding结构无效")
+        eligible = {str(item.get("finding_id")) for item in research_findings if isinstance(item, dict) and item.get("auto_review_status") == "eligible"}
         finding_decisions = payload.get("findings")
         if not isinstance(finding_decisions, list):
             raise UnprocessableError("研究审批必须逐条提交finding决定")
@@ -584,14 +604,30 @@ class JobStore:
             }
         if set(submitted) != eligible:
             raise UnprocessableError("所有可入脚本finding都必须逐条审批")
+        empty_finding_confirmation = False
+        if decision == "approved" and not eligible:
+            if research_findings or str(research.get("status", "")) not in {"offline", "disabled"}:
+                raise UnprocessableError("只有明确离线或禁用调研且finding为空时，才可确认使用本地安全模板")
+            if finding_decisions:
+                raise UnprocessableError("无finding的本地安全模板确认不得提交finding决定")
+            empty_finding_confirmation = True
         record = {
             "status": decision,
             "reviewer": reviewer,
             "reviewed_at": now_iso(),
             "artifact_sha256": digest,
-            "note": str(payload.get("note", "")).strip()[:1000],
+            "note": (
+                EMPTY_RESEARCH_APPROVAL_NOTE
+                if empty_finding_confirmation
+                else str(payload.get("note", "")).strip()[:1000]
+            ),
             "findings": list(submitted.values()),
         }
+        if empty_finding_confirmation:
+            record["empty_finding_confirmation"] = {
+                "research_status": str(research.get("status")),
+                "content_scope": "local_safe_template_without_industry_fact_claims",
+            }
         job["approvals"]["research"] = record
         job["approvals"]["compliance"] = {"status": "pending"}
         job["status"] = "research_approved" if decision == "approved" else "awaiting_research_revision"
@@ -738,7 +774,8 @@ class JobStore:
             source_items = source_manifest.get("artifacts", [])
             if not isinstance(source_items, list) or not source_items:
                 raise ConflictError("成功运行manifest没有可复用产物")
-            allowed_names = set(CANONICAL_ARTIFACTS) | {"approvals.json"}
+            allowed_names = set(PUBLIC_ARTIFACTS) | {"approvals.json"}
+            required_names = set(CANONICAL_ARTIFACTS) | {"approvals.json"}
             seen_names: set[str] = set()
             for item in source_items:
                 if not isinstance(item, dict):
@@ -754,7 +791,7 @@ class JobStore:
                     or file_sha256(source_path) != item.get("sha256")
                 ):
                     raise ConflictError(f"成功运行产物校验失败: {item.get('name', '')}")
-            if seen_names != allowed_names:
+            if not required_names.issubset(seen_names):
                 raise ConflictError("成功运行manifest正式产物集合不完整")
 
             lock_path = self._acquire_disk_lock(folder, idempotency_key)
@@ -795,7 +832,7 @@ class JobStore:
                 run["status"] = "complete"
                 run["finished_at"] = now_iso()
                 job["current_run_id"] = run_id
-                job["artifacts"] = [name for name in CANONICAL_ARTIFACTS if (published / name).is_file()]
+                job["artifacts"] = [name for name in PUBLIC_ARTIFACTS if (published / name).is_file()]
                 job["status"] = "complete"
                 job["last_failed_stage"] = None
                 job.pop("automatic_render_retry", None)
@@ -932,7 +969,7 @@ class JobStore:
         return [item for item in research.get("findings", []) if isinstance(item, dict) and str(item.get("finding_id")) in approved_ids]
 
     def resolve_artifact(self, job_id: str, name: str, run_id: str | None = None) -> Path:
-        if name not in set(CANONICAL_ARTIFACTS) | {"manifest.json", "approvals.json"}:
+        if name not in set(PUBLIC_ARTIFACTS) | {"manifest.json", "approvals.json"}:
             raise WorkflowError("产物类型不允许")
         job, folder = self._load_raw(job_id)
         if job.get("schema_version") != 2:
@@ -962,6 +999,56 @@ class JobStore:
         if target.parent != (folder / "draft").resolve() or not target.is_file():
             raise FileNotFoundError("待审产物不存在")
         return target
+
+    def _require_current_stage_approvals(
+        self,
+        job: dict[str, Any],
+        folder: Path,
+        snapshot: Path,
+        stage: str,
+    ) -> None:
+        """Bind every gated stage to the exact files a human approved."""
+
+        approvals = job.setdefault("approvals", {})
+        if stage in {"content", "render"}:
+            research = approvals.get("research", {})
+            research_path = snapshot / "research.json"
+            research_matches = (
+                research.get("status") == "approved"
+                and research_path.is_file()
+                and research.get("artifact_sha256") == file_sha256(research_path)
+            )
+            if not research_matches:
+                approvals["research"] = {"status": "pending"}
+                approvals["compliance"] = {"status": "pending"}
+                job["status"] = "awaiting_research_approval"
+                job["last_error"] = None
+                job["updated_at"] = now_iso()
+                self._sync_steps(job)
+                self._write(folder / "job.json", job)
+                self._event(folder, "approval_invalidated", {"gate": "research"})
+                raise ConflictError("研究文件已变化，原人工审批已失效，请重新审核")
+
+        if stage == "render":
+            compliance = approvals.get("compliance", {})
+            review_path = snapshot / "review.json"
+            script_path = snapshot / "approved_script.json"
+            compliance_matches = (
+                compliance.get("status") == "approved"
+                and review_path.is_file()
+                and script_path.is_file()
+                and compliance.get("artifact_sha256") == file_sha256(review_path)
+                and compliance.get("script_sha256") == file_sha256(script_path)
+            )
+            if not compliance_matches:
+                approvals["compliance"] = {"status": "pending"}
+                job["status"] = "awaiting_compliance_approval"
+                job["last_error"] = None
+                job["updated_at"] = now_iso()
+                self._sync_steps(job)
+                self._write(folder / "job.json", job)
+                self._event(folder, "approval_invalidated", {"gate": "compliance"})
+                raise ConflictError("脚本或合规文件已变化，原人工审批已失效，请重新审核")
 
     def _next_stage(self, job: dict[str, Any]) -> str:
         status = job.get("status")
@@ -1089,7 +1176,7 @@ class JobStore:
 
     def _build_manifest(self, job: dict[str, Any], run: dict[str, Any], staging: Path, runner: Any) -> dict[str, Any]:
         artifacts = []
-        public_names = set(CANONICAL_ARTIFACTS) | {"approvals.json"}
+        public_names = set(PUBLIC_ARTIFACTS) | {"approvals.json"}
         for path in sorted(staging.iterdir(), key=lambda value: value.name):
             if not path.is_file() or path.name not in public_names:
                 continue

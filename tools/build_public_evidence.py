@@ -10,7 +10,17 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from verify_public_evidence import CANONICAL, REQUIRED, probe_video, scan_text, sha256, validate_srt, verify
+from verify_public_evidence import (
+    CANONICAL,
+    MPT_ENGINE_ARTIFACTS,
+    REQUIRED,
+    _engine_contract,
+    probe_video,
+    scan_text,
+    sha256,
+    validate_srt,
+    verify,
+)
 
 
 EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
@@ -35,7 +45,18 @@ def main() -> int:
     source_stage = source_manifest.get("stage")
     if source_manifest.get("schema_version") != 2 or source_stage not in {"render", "report_rebuild"} or source_manifest.get("status") != "complete":
         raise SystemExit("源目录不是成功发布的 v2 render/report_rebuild 运行")
+    source_files = {item.name for item in source.iterdir() if item.is_file()}
+    source_manifest_entries = {
+        str(item.get("name"))
+        for item in source_manifest.get("artifacts", [])
+        if isinstance(item, dict)
+    }
+    evidence_contract, contract_errors = _engine_contract(source_files, source_manifest_entries)
+    if contract_errors:
+        raise SystemExit("源运行的生产引擎证据不完整：" + "; ".join(contract_errors))
     needed = set(CANONICAL) | {"approvals.json"}
+    if evidence_contract == "mpt_v0.3":
+        needed.update(MPT_ENGINE_ARTIFACTS)
     missing = sorted(name for name in needed if not (source / name).is_file())
     if missing:
         raise SystemExit(f"源运行缺少产物：{', '.join(missing)}")
@@ -68,17 +89,29 @@ def main() -> int:
             raise RuntimeError("公开前扫描失败：" + "; ".join(source_findings))
 
         media = probe_video(temporary / "final.mp4")
-        subtitle_errors = validate_srt(temporary / "captions.srt", media["duration_seconds"])
+        approved_script = json.loads((temporary / "approved_script.json").read_text(encoding="utf-8"))
+        subtitle_errors = validate_srt(
+            temporary / "captions.srt",
+            media["duration_seconds"],
+            str(approved_script.get("script", "")),
+            contract=evidence_contract,
+        )
         if subtitle_errors:
             raise RuntimeError("字幕校验失败：" + "; ".join(subtitle_errors))
+        subtitle_contract_text = (
+            "字幕：正文与已批准脚本全文绑定，无重叠，首段、段间和尾部最大空隙均不超过 2 秒。"
+            if evidence_contract == "mpt_v0.3"
+            else "字幕：沿用冻结 v2 合同，时间轴相邻误差不超过 0.05 秒，终点与成片误差不超过 0.15 秒。"
+        )
         validation = (
-            "# v2 公开证据验证说明\n\n"
+            "# 公开证据验证说明\n\n"
             f"- Job ID：`{source_manifest.get('job_id')}`\n"
             f"- Run ID：`{source_manifest.get('run_id')}`\n"
+            f"- 证据合同：`{evidence_contract}`\n"
             f"- 源运行 manifest SHA-256：`{sha256(source_manifest_path)}`\n"
             f"- 单任务 Provider 预算：`{source_manifest.get('budget', {}).get('attempted')}/7 attempted`\n"
             f"- 成片：`{media['duration_seconds']}` 秒，`{media['width']}×{media['height']}`，`{media['video_codec']}/{media['audio_codec']}`\n"
-            "- 字幕：时间轴从 0 连续到成片末尾，允许误差 0.15 秒。\n"
+            f"- {subtitle_contract_text}\n"
             "- 审批：研究 finding 逐项决定与最终脚本合规放行均来自用户本人操作；自动流程不代签。\n"
             f"- 公开副本脱敏：research.json 中 {redacted_email_count} 处来源页联系邮箱替换为 [REDACTED_EMAIL]；原审批哈希保留在 approvals.json，公开副本哈希另行记录。\n"
             "- 脱敏：包内不含 Key、Cookie、Authorization、本机绝对路径、原始配置、邮箱或手机号。\n"
@@ -91,7 +124,8 @@ def main() -> int:
         manifest["source_manifest_sha256"] = sha256(source_manifest_path)
         manifest["packaged_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         manifest["artifacts"] = []
-        for name in sorted(REQUIRED - {"manifest.json"}):
+        public_files = REQUIRED | (MPT_ENGINE_ARTIFACTS if evidence_contract == "mpt_v0.3" else set())
+        for name in sorted(public_files - {"manifest.json"}):
             path = temporary / name
             manifest["artifacts"].append({
                 "name": name,
@@ -107,13 +141,13 @@ def main() -> int:
             raise RuntimeError("公开包终验失败：" + "; ".join(errors))
         temporary.replace(output)
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-            for name in sorted(REQUIRED):
+            for name in sorted(public_files):
                 data = (output / name).read_bytes()
                 info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = 0o100644 << 16
                 archive.writestr(info, data)
-        print(json.dumps({"status": "PUBLIC_EVIDENCE_BUILT", "folder": output.name, "zip": zip_path.name, "files": len(REQUIRED)}, ensure_ascii=False))
+        print(json.dumps({"status": "PUBLIC_EVIDENCE_BUILT", "folder": output.name, "zip": zip_path.name, "files": len(public_files), "evidence_contract": evidence_contract}, ensure_ascii=False))
         return 0
     except Exception:
         if temporary.exists():

@@ -54,6 +54,12 @@ const artifactLabels = {
   "run_report.json": "运行报告", "manifest.json": "哈希清单", "approvals.json": "审批记录",
 };
 const PENDING_CREATE_STORAGE = "shiyi_pending_agent_create";
+const EMPTY_RESEARCH_APPROVAL_NOTE = "本人确认本次无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板";
+
+function isEmptyLocalResearch(research) {
+  const findings = Array.isArray(research?.findings) ? research.findings : [];
+  return ["offline", "disabled"].includes(research?.status) && findings.length === 0;
+}
 
 async function bootstrapSession() {
   const response = await fetch("/api/session", { credentials: "same-origin", cache: "no-store" });
@@ -465,7 +471,13 @@ async function renderHomeJob(job) {
     const findings = research.data.findings || [];
     const eligible = findings.filter(item => item.auto_review_status === "eligible").length;
     const rejected = findings.length - eligible;
-    panel.innerHTML = `${head}<div class="gate-card"><h3>研究证据已反向核验</h3><div class="gate-stats"><span><b>${eligible}</b> 条可用</span><span><b>${rejected}</b> 条已否决</span></div><p>脚本只会使用你这次确认、且能够回到原始来源的内容。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="approve-research">继续制作</button><button class="quiet-link" type="button" data-home-action="show-details">查看依据</button></div><p class="reply-hint">也可以直接回复：继续</p></div>`;
+    if (isEmptyLocalResearch(research.data)) {
+      panel.innerHTML = `${head}<div class="gate-card"><h3>本次没有可采信的外部证据</h3><div class="gate-stats"><span><b>0</b> 条可用 finding</span><span><b>本地安全模板</b></span></div><p>${escapeHtml(EMPTY_RESEARCH_APPROVAL_NOTE)}</p><div class="gate-actions"><button class="primary" type="button" data-home-action="approve-research">确认边界并继续</button><button class="quiet-link" type="button" data-home-action="show-details">查看研究记录</button></div><p class="reply-hint">也可以直接回复：继续</p></div>`;
+    } else if (!eligible) {
+      panel.innerHTML = `${head}<div class="gate-card"><h3>研究结果不能进入下一步</h3><div class="gate-stats"><span><b>0</b> 条可用</span><span><b>${rejected}</b> 条已否决</span></div><p>本次不是明确的离线/禁用调研，不能用空审批绕过研究门禁。请查看原因并退回研究。</p><div class="gate-actions"><button class="quiet-link" type="button" data-home-action="show-details">查看原因</button></div></div>`;
+    } else {
+      panel.innerHTML = `${head}<div class="gate-card"><h3>研究证据已反向核验</h3><div class="gate-stats"><span><b>${eligible}</b> 条可用</span><span><b>${rejected}</b> 条已否决</span></div><p>脚本只会使用你这次确认、且能够回到原始来源的内容。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="approve-research">继续制作</button><button class="quiet-link" type="button" data-home-action="show-details">查看依据</button></div><p class="reply-hint">也可以直接回复：继续</p></div>`;
+    }
     return;
   }
   if (["awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision"].includes(status)) {
@@ -513,9 +525,10 @@ async function approveHomeResearch(jobId) {
   const findings = (research.data.findings || []).filter(item => item.auto_review_status === "eligible").map(item => ({
     finding_id: String(item.finding_id), decision: "approved", evidence_type: "paraphrase", note: "通过首页单一确认采用安全转述",
   }));
-  if (!findings.length) throw new Error("没有可批准的证据，请打开任务记录查看严格审核结果");
+  const emptyLocalResearch = isEmptyLocalResearch(research.data);
+  if (!findings.length && !emptyLocalResearch) throw new Error("没有可批准的证据，请打开任务记录查看严格审核结果");
   await api(`/api/jobs/${jobId}/approvals/research`, { method: "POST", body: JSON.stringify({
-    decision: "approved", reviewer: "本机会话用户", note: "通过 Agent 首页确认继续制作", artifact_sha256: research.sha256, findings,
+    decision: "approved", reviewer: "本机会话用户", note: emptyLocalResearch ? EMPTY_RESEARCH_APPROVAL_NOTE : "通过 Agent 首页确认继续制作", artifact_sha256: research.sha256, findings,
   }) });
   toast("研究证据已确认，Agent 继续写稿");
   await refresh({ syncHomeView: false });
@@ -635,9 +648,12 @@ function findingReviewGuide(item) {
   };
 }
 
-function renderResearchFindings(findings, strictAudit = null) {
+function renderResearchFindings(findings, strictAudit = null, researchStatus = "") {
   const eligibleCount = findings.filter(item => item.auto_review_status === "eligible").length;
   const excludedCount = findings.length - eligibleCount;
+  if (!findings.length && ["offline", "disabled"].includes(researchStatus)) {
+    return `<p class="lead">本次没有可采信 finding。${escapeHtml(EMPTY_RESEARCH_APPROVAL_NOTE)}</p>`;
+  }
   const summary = strictAudit ? `严格审核 Agent 已按“所有内容默认虚假”完成反向举证：${strictAudit.passed_count || 0} 条限定通过，${strictAudit.rejected_count || 0} 条被否决。` : `${eligibleCount} 条可安全转述，${excludedCount} 条已自动排除。`;
   const rows = findings.map(item => {
     const guide = findingReviewGuide(item);
@@ -648,7 +664,7 @@ function renderResearchFindings(findings, strictAudit = null) {
     }
     return `<div class="finding finding-excluded"><span class="finding-status">系统建议：不采用</span><strong>${escapeHtml(guide.summary)}</strong><dl class="review-guide"><dt>原因</dt><dd>${escapeHtml(guide.prohibited)}</dd></dl><details><summary>查看原始机器结论</summary><p>${escapeHtml(item.claim || "未命名结论")}</p><small>${escapeHtml(sources)}</small></details></div>`;
   }).join("");
-  return `<p class="lead">${summary}</p>${rows || '<p class="lead">研究未产生 finding，建议退回研究。</p>'}`;
+  return `<p class="lead">${summary}</p>${rows || '<p class="lead">研究未产生可审批 finding；本次状态不允许空审批，请退回研究。</p>'}`;
 }
 
 function renderRunHistory(job) {
@@ -689,8 +705,10 @@ async function openJob(id) {
     state.reviewFiles.research = await readJsonArtifact(`/api/jobs/${id}/review-artifacts/research.json`);
     if (!researchPanel.hidden) {
       const findings = state.reviewFiles.research.data.findings || [];
-      document.getElementById("researchFindings").innerHTML = renderResearchFindings(findings, state.reviewFiles.research.data.strict_audit || null);
-      document.getElementById("researchDecision").value = findings.some(item => item.auto_review_status === "eligible") ? "approved" : "rejected";
+      const emptyLocalResearch = isEmptyLocalResearch(state.reviewFiles.research.data);
+      document.getElementById("researchFindings").innerHTML = renderResearchFindings(findings, state.reviewFiles.research.data.strict_audit || null, state.reviewFiles.research.data.status || "");
+      document.getElementById("researchDecision").value = findings.some(item => item.auto_review_status === "eligible") || emptyLocalResearch ? "approved" : "rejected";
+      if (emptyLocalResearch) document.getElementById("researchNote").value = EMPTY_RESEARCH_APPROVAL_NOTE;
       syncApprovalButton("research");
     }
   } catch (_) { /* research may not exist yet */ }
@@ -720,7 +738,10 @@ async function submitResearch(decision) {
   const job = state.selectedJob;
   if (!job || !state.reviewFiles.research) return;
   const findings = [...document.querySelectorAll("#researchFindings .finding[data-finding-id]")].map(row => ({ finding_id: row.dataset.findingId, decision: row.querySelector('[data-field="decision"]')?.value || row.dataset.decision || "rejected", evidence_type: row.dataset.evidenceType || "paraphrase" }));
-  await api(`/api/jobs/${job.id}/approvals/research`, { method: "POST", body: JSON.stringify({ decision, reviewer: document.getElementById("researchReviewer").value.trim(), note: document.getElementById("researchNote").value.trim(), artifact_sha256: state.reviewFiles.research.sha256, findings }) });
+  const emptyLocalResearch = isEmptyLocalResearch(state.reviewFiles.research.data);
+  if (decision === "approved" && !findings.length && !emptyLocalResearch) throw new Error("本次研究状态不允许空审批");
+  const note = decision === "approved" && emptyLocalResearch ? EMPTY_RESEARCH_APPROVAL_NOTE : document.getElementById("researchNote").value.trim();
+  await api(`/api/jobs/${job.id}/approvals/research`, { method: "POST", body: JSON.stringify({ decision, reviewer: document.getElementById("researchReviewer").value.trim(), note, artifact_sha256: state.reviewFiles.research.sha256, findings }) });
   toast(decision === "approved" ? "研究证据已由你批准" : "研究已退回");
   await refresh({ syncHomeView: false });
   await openJob(job.id);
