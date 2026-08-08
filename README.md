@@ -1,13 +1,18 @@
-# 时宜 Agent 内容工厂 v3（通用内核预览）
+# 时宜 Agent 内容工厂 v0.3（组合式本地发布候选）
 
-一个可运行、可审核、可积累纠错经验的通用短视频生产内核。Agent 会根据当前目标现场生成行业能力包，再完成选题、研究、脚本、合规与成片；搜索、网页提取、配音、动画和 FFmpeg 仍由登记的本地适配器执行，研究证据与最终脚本仍分别由人审批。
+一个可运行、可审核、可积累纠错经验的短视频内容工厂。计划中的 v0.3 正式主链先从本地确定性安全能力包出发，再完成三选一、研究、脚本、合规和成片；研究证据与最终脚本仍分别由人审批。MoneyPrinterTurbo 1.3.3 作为固定版本的本地视频生产引擎，我们的控制层继续负责证据、审批、预算、运行隔离、媒体复验和最终 manifest。
 
 [![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.14-3776AB)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
 [![CI](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/badge/Release-v0.2.0-C8E35B)](https://github.com/zhichenghe34-design/clean-air-ai-content-factory/releases/tag/v0.2.0)
 
-## Windows 一键体验
+| 版本 | 当前状态 | 可下载 |
+|---|---|---|
+| v0.2.0 | 当前稳定发布 | 是 |
+| v0.3.0 MPT 组合版 | 本地发布候选；正式两道人审 E2E、最终包与远端 CI 尚待完成 | 否 |
+
+## Windows 一键体验（当前稳定版 v0.2.0）
 
 不懂 Python、Node.js 或 FFmpeg，也可以直接使用已经封装并完成全新解压验证的 Windows 便携版：
 
@@ -16,8 +21,8 @@
 下载后完整解压，双击 `启动净界AI内容工厂.bat`。软件只监听本机 `127.0.0.1`；包内不含 API Key、Cookie 或个人配置。
 
 - 版本：`v0.2.0`
-- ZIP 大小：475,324,040 字节（约 453.3 MiB）
-- SHA-256：`DB0F452831F6C9418B57B0BE99992D4120D3F79EEC37CB8F9DEE3B5754E97869`
+- ZIP 大小：390,125,769 字节（约 372.1 MiB）
+- SHA-256：`F074B7D1BBC7C0F1262CBB5514A15B9782DBA1EACEBFC9B03C8275E9A1A539EB`
 - 验收：74 项 Python 测试、npm audit 0 漏洞、封装 EXE HTTP、HyperFrames 运行时及 H.264/AAC 实编码均通过
 
 便携包中的 FFmpeg 为包含 `libx264` 的 GPLv3 构建，许可证和构建信息随包提供。仓库自身代码仍按 [MIT License](LICENSE) 发布；正式再分发便携包时请同时遵守其中第三方组件的许可证义务。
@@ -26,17 +31,25 @@
 
 > 当前截图、比赛 PDF、设计样片和真实 DeepSeek 证据包属于“净界除甲醛 v2”历史比赛基线，只证明该行业包的既有运行结果，不冒充通用 v3 的新联调证据。v3 视觉重设计尚未开始。
 
-默认首页采用 Agent 优先的轻交互：用户描述行业、受众和内容目标，Agent 现场建立带 SHA-256 的能力包，并以“所有内容默认不可信”为前提反证审核，然后每轮只给 3 个角度。选定后系统自动推进，只在“研究证据确认”和“最终脚本确认”两处停下。任务进行中可以继续输入纠错；当前界面先采用“安全阶段应用”的默认方式，显式“打断/不打断”双模式会随下一轮 UI 重设计实现。
+默认首页采用 Agent 优先的轻交互：用户描述行业、受众和内容目标，系统使用带 SHA-256 的确定性安全能力包，并在每轮只给 3 个角度。选定后系统自动推进，只在“研究证据确认”和“最终脚本确认”两处停下。候选只是研究方向，不代表事实已经成立；严格反证和人工确认仍在任务链内执行。任务进行中可以继续输入纠错；当前界面先采用“安全阶段应用”的默认方式，显式“打断/不打断”双模式延期。
 
 ## v3 通用内核新增
 
-- 行业不再写死：有 Key 时由启动 Agent 生成能力包并交给独立反证 Agent 缩小范围；无 Key 时也根据真实目标生成本地通用包，不套用除甲醛正文。
+- 正式路径不再被动态 schema 阻断：每个目标先使用本地确定性安全能力包；有 Key 时只请求一次三个候选，无 Key、Provider 失败或预任务额度耗尽时返回同目标的本地安全候选。
+- 动态行业能力包生成与启动阶段反证协议仍保留为实验能力，只能通过 `SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS=1` 在开发验证中启用，不属于 v0.3 正式发布主链，也不充当成功证据。
 - “13 个本地工具能力包”仅指 v2 冻结目录中的本机工具登记；“动态行业能力包”是 v3 按任务现场生成的声明式行业约束，两者不互相计数或互相证明。
 - 能力包只保存行业、受众、平台、语气、证据要求、禁用主张和视觉方向等声明式约束，禁止脚本、命令、密钥和任意 URL；每个不可变版本进入独立注册表并可按哈希追溯。
 - 普通网页不能靠模型自报 `source_type` 冒充政府或机构来源；来源类型由实际 URL 在本地重新分类，能力包和历史记忆都不能充当事实证据。
 - 工作人员纠错采用追加式事件记录，并编译为 task、project 或 workspace 作用域的收紧规则；纠错不会代替任务授权，也不会覆盖上一份成功产物。
 - 同一条非任务规则在 3 个不同成功任务中被验证后，才会原子生成 instruction-only Skill；重复任务不凑数，Skill 不包含命令、脚本、URL或密钥。
 - 原净界逻辑被收进显式 `legacy-clean-air-v2` 能力包。历史任务不改写，旧证据、成片和审批哈希继续保持原用途。
+
+## 组合式视频生产引擎
+
+- MoneyPrinterTurbo 固定为 `1.3.3` / `254cd028906ee657eab844dc94087cdbea2a7aa8`，通过只监听回环地址的内部 HTTP API 接收已经批准的脚本和本地素材；它不能读取 DeepSeek Key，也不能重写事实内容。
+- 固定脚本的独立 CLI 烟雾和真实 HTTP → `ProductionRunner` 联调均已通过。CLI 证据 manifest SHA-256 为 `D184B944BEF773A17790F264ADEC01D3F838AC3B411CF83F829FABEBD4B87E5E`；HTTP 组合成片为 46.600 秒、1080×1920、H.264/yuv420p + AAC，证据 manifest SHA-256 为 `F42EA0D748B7E15287978462112E7481E8F9CB80FBBF015B70ACE183204DB64F`。这些都只属于内部工程证据，不冒充用户两道人审后的正式比赛证据。
+- 引擎输出先进入当前运行 staging。控制层重新校验时长、分辨率、编解码、字幕连续性与哈希；全部通过后，才把 `material_sources.json`、`engine_report.json` 和标准产物写进成功 manifest。失败不会替换上一成功运行。
+- 封包构建器限定使用项目核验过的 Noto Sans SC、本地 MP4 和无 BGM 策略；不采用上游字体、歌曲、WebUI、LLM 或社交发布功能。最终 v0.3 候选包尚未发布，具体边界见 [生产引擎组合说明](docs/PRODUCTION_ENGINE_INTEGRATION.md)。
 
 ## 保留的 v2 安全与发布基线
 
@@ -52,7 +65,7 @@
 
 旧任务不会重写，GET 时统一显示为 `legacy_read_only`，也不能通过 v2 正式产物接口访问旧报告。2026-07-18 的旧真实联调材料保留在 `examples/real-e2e/` 并明确标记为 legacy；2026-08-01 的 v2 联调由用户亲自完成两道人工作业门禁，公开证据包位于 `evidence/v2-real-deepseek-20260801-022153/`。
 
-## 快速开始
+## 开发启动（仅工作台）
 
 需要 Python 3.12 或 3.14、Node.js、FFmpeg/FFprobe。HyperFrames 使用锁定依赖，运行时不会通过 `npx --yes` 临时下载。
 
@@ -64,6 +77,8 @@ npm.cmd ci
 ```
 
 默认地址是 `http://127.0.0.1:8765`。如果 8765 被占用，程序只在 127.0.0.1 上顺延寻找端口，控制台会显示实际端口。
+
+这条命令只启动工作台源码，不会自动启动 MoneyPrinterTurbo。v0.3 组合开发环境使用 `scripts/launch_combined.ps1` 同时启动两个回环服务，并要求 MPT、Python 与 FFmpeg 都已预装；最终便携包会把这些运行时和根目录双击入口一并封装，运行时不会下载依赖。
 
 API Key 推荐放在环境变量：
 
@@ -97,7 +112,7 @@ flowchart LR
 
 ## 产物与证据
 
-每次最终成功运行包含原十项产物，并增加审批与清单；公开证据包再增加一份机器复算的验证说明，共 13 项：
+每次最终成功运行包含原十项产物，并增加审批与清单；公开证据包再增加一份机器复算的验证说明，共 13 项。使用组合引擎的运行还会把两项引擎证据纳入同一 manifest：
 
 ```text
 research.json             insight.json
@@ -107,6 +122,8 @@ captions.srt              motion_plan.json
 final.mp4                 run_report.json
 approvals.json            manifest.json
 VALIDATION.md（仅公开包）
+material_sources.json（组合引擎运行）
+engine_report.json（组合引擎运行）
 ```
 
 `manifest.json` 记录输入哈希、两道审批哈希、开始/结束时间、预算，以及每个文件的 MIME、字节数和 SHA-256。历史成功产物使用带 `run_id` 的只读地址；失败 staging 和未入清单文件不对外提供。
@@ -117,7 +134,7 @@ VALIDATION.md（仅公开包）
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| POST | `/api/agent/topics` | 现场生成/复用当前行业能力包并返回恰好 3 个候选；Provider 不可用时使用同目标的本地通用包 |
+| POST | `/api/agent/topics` | 使用确定性安全能力包返回恰好 3 个候选；有 Key 时只请求一次候选，Provider 不可用时使用同目标的本地安全候选 |
 | POST | `/api/agent/plan` | 生成预任务执行计划；与选题共用会话 3 次额度，失败或耗尽时返回本地安全计划 |
 | POST | `/api/demo-job` | 以能力包不可变快照创建任务 |
 | POST | `/api/agent/corrections` | 记录工作人员纠错，生成带作用域的安全规则并在当前或下一安全阶段应用 |
@@ -132,7 +149,7 @@ VALIDATION.md（仅公开包）
 | GET | `/api/jobs/{id}/artifacts/{name}` | 读取当前成功 manifest 产物 |
 | GET | `/api/jobs/{id}/runs/{run_id}/artifacts/{name}` | 读取历史成功运行产物 |
 
-`/api/agent/topics` 请求体为 `{ "goal": "4-200 字内容目标", "excluded_topics": [] }`，刷新时可把上次响应的 `capability_pack` 原样带回。`excluded_topics` 只能缺省或为数组，最多 24 个且每项为不超过 80 字的字符串；`false`、`0`、空字符串和 `null` 均返回 JSON 422。响应中的 `candidates` 始终为三个 `{id, title, reason, audience}`，同时返回 `capability_pack`、反证审核、脱敏项目上下文、已生效记忆和真实预算。候选筛选不冒充研究证据核验；个性化医疗/投资/高风险法律决策、恶意任务和指令注入会返回 JSON 422。
+`/api/agent/topics` 请求体为 `{ "goal": "4-200 字内容目标", "excluded_topics": [] }`，刷新时可把上次响应的 `capability_pack` 原样带回。`excluded_topics` 只能缺省或为数组，最多 24 个且每项为不超过 80 字的字符串；`false`、`0`、空字符串和 `null` 均返回 JSON 422。响应中的 `candidates` 始终为三个 `{id, title, reason, audience}`，同时返回确定性能力包、脱敏项目上下文、已生效记忆和真实预算；正式路径的启动阶段反证字段明确为 `not_run`，不会伪造自动通过。候选筛选不冒充研究证据核验；个性化医疗/投资/高风险法律决策、恶意任务和指令注入会返回 JSON 422。
 
 `/api/agent/plan` 请求体为 `{ "goal": "任务目标" }`，响应始终包含 `plan`、`fallback`、`source`、`notice` 和同一份 `pretask_provider_budget`。Provider 返回 HTTP 200 但缺少消息、结构化 JSON 无效或计划调用失败时，会把该次 attempted 从 succeeded 纠正为 failed 并记录失败类型，然后安全降级，不会返回虚假的成功统计。
 
@@ -155,7 +172,7 @@ npm.cmd run test:flow
 .\.venv\Scripts\python.exe tools\verify_committed_media.py
 ```
 
-Python 测试由 `unittest discover` 动态发现，当前 157 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，以及 v3 动态行业能力包、不可变注册表、来源信任、通用生产、纠错记忆、项目启动安全结构诊断、反证裁决可观察性、候选身份绑定和 Skill 晋升。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、两道人工作业门禁、窄屏无溢出与零前端错误。CI 使用可注入的假配音/渲染适配器完成快速确定性 E2E。
+Python 测试由 `unittest discover` 动态发现，当前 222 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及 MoneyPrinterTurbo 适配器、两道人审绑定、失败运行隔离、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、两道人工作业门禁、窄屏无溢出与零前端错误。CI 使用可注入的假配音/渲染适配器完成快速确定性 E2E。
 
 ## v2 历史比赛材料（只读基线）
 
