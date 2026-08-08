@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from core.capability_pack import normalize_capability_pack
 from core.provider import (
+    BudgetLedger,
     CAPABILITY_SNAPSHOT_FIELDS,
     OpenAICompatibleProvider,
     ProviderError,
+    bootstrap_capability_schema_diagnostics,
+    normalize_bootstrap_capability_snapshot,
 )
 from core.strict_audit import strict_audit_research
 from core.web_agent import EXACT_EVIDENCE_RULES, WebResearchAgent, normalize_research_result
@@ -53,13 +58,15 @@ class ProviderGenericTests(unittest.TestCase):
     def test_bootstrap_identifies_domain_and_returns_raw_pack_with_three_candidates(self):
         subject = provider()
         observed = {}
+        goal = "为一家本地餐饮门店制作可信的知识短视频"
 
         def fake_chat(system, user_data, *, stage="provider", count_budget=True):
             observed.update(system=system, user_data=user_data, stage=stage, count_budget=count_budget)
-            return {"capability_pack": capability_snapshot(), "candidates": candidates()}
+            snapshot = capability_snapshot()
+            snapshot["goal"] = goal
+            return {"capability_pack": snapshot, "candidates": candidates()}
 
         subject._chat_json = fake_chat  # type: ignore[method-assign]
-        goal = "为一家本地餐饮门店制作可信的知识短视频"
         result = subject.bootstrap_project(
             goal,
             ["不要再做探店合集"],
@@ -76,6 +83,234 @@ class ProviderGenericTests(unittest.TestCase):
         self.assertIn("所有关于企业", observed["system"])
         self.assertIn("不得虚构企业资料", observed["system"])
         self.assertEqual(observed["user_data"]["memory_rules"][0]["instruction"], "不要使用低价促销定位")
+
+    def test_bootstrap_standard_schema_is_unchanged(self):
+        raw = capability_snapshot()
+        goal = raw["goal"]
+        normalized = normalize_bootstrap_capability_snapshot(copy.deepcopy(raw), goal)
+        self.assertEqual(normalized, raw)
+        self.assertEqual(set(normalized), set(CAPABILITY_SNAPSHOT_FIELDS))
+
+    def test_bootstrap_normalizes_single_string_list_fields_without_semantic_fill(self):
+        raw = capability_snapshot()
+        expected = {}
+        for field in (
+            "platforms",
+            "tone",
+            "preferred_terms",
+            "avoided_terms",
+            "evidence_requirements",
+            "prohibited_claims",
+            "visual_direction",
+            "assumptions",
+        ):
+            raw[field] = raw[field][0]
+            expected[field] = [raw[field]]
+        normalized = normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+        for field, value in expected.items():
+            self.assertEqual(normalized[field], value)
+
+    def test_bootstrap_normalizes_scalar_single_item_arrays_and_chinese_risk(self):
+        raw = capability_snapshot()
+        goal = raw["goal"]
+        for field in ("label", "industry", "goal", "audience", "content_purpose"):
+            raw[field] = [raw[field]]
+        raw["risk_level"] = ["高风险"]
+        normalized = normalize_bootstrap_capability_snapshot(raw, goal)
+        self.assertEqual(normalized["goal"], goal)
+        self.assertEqual(normalized["risk_level"], "high")
+        self.assertEqual(normalized["label"], "本地餐饮门店内容包")
+
+    def test_bootstrap_normalizes_flat_visual_direction_object(self):
+        raw = capability_snapshot()
+        raw["visual_direction"] = {
+            "画幅": "1080×1920竖屏",
+            "构图": "门店环境与信息卡片",
+        }
+        normalized = normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+        self.assertEqual(
+            normalized["visual_direction"],
+            ["画幅：1080×1920竖屏", "构图：门店环境与信息卡片"],
+        )
+
+    def test_bootstrap_maps_only_explicit_equivalent_risk_levels(self):
+        cases = {
+            "low": "low",
+            "LOW": "low",
+            "低": "low",
+            "低风险": "low",
+            "medium": "medium",
+            "中": "medium",
+            "中风险": "medium",
+            "high": "high",
+            "高": "high",
+            "高风险": "high",
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                raw = capability_snapshot()
+                raw["risk_level"] = value
+                normalized = normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+                self.assertEqual(normalized["risk_level"], expected)
+        for value in ("moderate", "较高", "一般", "1"):
+            with self.subTest(rejected=value):
+                raw = capability_snapshot()
+                raw["risk_level"] = value
+                with self.assertRaises(ProviderError):
+                    normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+
+    def test_bootstrap_rejects_unsafe_or_malformed_snapshot_shapes(self):
+        cases = {}
+
+        unknown = capability_snapshot()
+        unknown["extra"] = "unexpected"
+        cases["unknown_field"] = unknown
+
+        missing = capability_snapshot()
+        missing.pop("industry")
+        cases["missing_field"] = missing
+
+        nested = capability_snapshot()
+        nested["audience"] = {"segment": "上班族"}
+        cases["nested_object"] = nested
+
+        nested_visual = capability_snapshot()
+        nested_visual["visual_direction"] = {"layout": {"position": "center"}}
+        cases["nested_visual_object"] = nested_visual
+
+        mixed = capability_snapshot()
+        mixed["tone"] = ["克制", 3]
+        cases["mixed_list"] = mixed
+
+        url_value = capability_snapshot()
+        url_value["tone"] = ["参见 https://example.com"]
+        cases["url"] = url_value
+
+        command_value = capability_snapshot()
+        command_value["visual_direction"] = {"构图": "powershell -enc AAA"}
+        cases["command"] = command_value
+
+        secret_value = capability_snapshot()
+        secret_value["preferred_terms"] = ["sk-1234567890abcdef"]
+        cases["secret"] = secret_value
+
+        sensitive_key = capability_snapshot()
+        sensitive_key["visual_direction"] = {"api_key": "只做信息卡片"}
+        cases["sensitive_key"] = sensitive_key
+
+        empty = capability_snapshot()
+        empty["label"] = "   "
+        cases["empty_required"] = empty
+
+        null_value = capability_snapshot()
+        null_value["industry"] = None
+        cases["null"] = null_value
+
+        number_value = capability_snapshot()
+        number_value["audience"] = 7
+        cases["number"] = number_value
+
+        boolean_value = capability_snapshot()
+        boolean_value["content_purpose"] = True
+        cases["boolean"] = boolean_value
+
+        wrong_goal = capability_snapshot()
+        wrong_goal["goal"] = "模型擅自改写后的其他目标"
+        cases["goal_mismatch"] = wrong_goal
+
+        for name, raw in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ProviderError) as raised:
+                    normalize_bootstrap_capability_snapshot(
+                        raw,
+                        capability_snapshot()["goal"],
+                    )
+                details = raised.exception.details
+                self.assertIsInstance(details, dict)
+                self.assertEqual(
+                    set(details),
+                    {"missing_fields", "unknown_fields", "field_types", "list_element_types"},
+                )
+                serialized = json.dumps(details, ensure_ascii=False)
+                self.assertNotIn("sk-1234567890abcdef", serialized)
+                self.assertNotIn("https://example.com", serialized)
+                self.assertNotIn("powershell -enc AAA", serialized)
+
+    def test_bootstrap_structure_diagnostics_contain_types_but_no_values(self):
+        raw = capability_snapshot()
+        raw.pop("industry")
+        raw["unexpected"] = {"secret": "sk-1234567890abcdef"}
+        raw["api_key=sk-1234567890abcdef"] = "should not enter diagnostics"
+        raw["tone"] = ["克制", 3, False]
+        details = bootstrap_capability_schema_diagnostics(raw)
+        self.assertEqual(details["missing_fields"], ["industry"])
+        self.assertEqual(details["unknown_fields"], ["<redacted-unknown-field>", "unexpected"])
+        self.assertEqual(details["field_types"]["tone"], "array")
+        self.assertEqual(details["list_element_types"]["tone"], ["boolean", "number", "string"])
+        serialized = json.dumps(details, ensure_ascii=False)
+        self.assertNotIn("sk-1234567890abcdef", serialized)
+        self.assertNotIn("克制", serialized)
+        error = ProviderError("schema failed", details=details)
+        self.assertIn("missing_fields", str(error))
+        self.assertNotIn("sk-1234567890abcdef", str(error))
+        self.assertNotIn("克制", str(error))
+
+    def test_bootstrap_adapter_still_uses_final_pack_constraints_and_stable_hash(self):
+        raw = capability_snapshot()
+        raw["platforms"] = "抖音"
+        raw["visual_direction"] = {"构图": "证据卡片优先"}
+        raw["risk_level"] = "中风险"
+        adapted = normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+        first = normalize_capability_pack(adapted, raw["goal"], "deepseek")
+        second = normalize_capability_pack(adapted, raw["goal"], "deepseek")
+        self.assertEqual(first["sha256"], second["sha256"])
+        self.assertIn("事实性主张必须有可追溯证据", first["snapshot"]["evidence_requirements"])
+        self.assertIn(
+            "不得虚构事实、数据、用户证言、案例或来源",
+            first["snapshot"]["prohibited_claims"],
+        )
+
+    def test_bootstrap_semantic_budget_success_and_failure_counts_are_preserved(self):
+        failed_budget = BudgetLedger(limit=3)
+        failed_subject = OpenAICompatibleProvider(
+            {"base_url": "https://api.deepseek.com", "model": "test-model"},
+            "test-only-key",
+            failed_budget,
+        )
+        failed_token = failed_budget.begin("project_bootstrap")
+        failed_budget.finish(failed_token, ok=True)
+        failed_subject._last_budget_token = failed_token
+        malformed = capability_snapshot()
+        malformed["tone"] = ["克制", 3]
+        failed_subject._chat_json = lambda *args, **kwargs: {  # type: ignore[method-assign]
+            "capability_pack": malformed,
+            "candidates": candidates(),
+        }
+        with self.assertRaises(ProviderError):
+            failed_subject.bootstrap_project(malformed["goal"])
+        self.assertEqual(failed_budget.snapshot()["attempted"], 1)
+        self.assertEqual(failed_budget.snapshot()["succeeded"], 0)
+        self.assertEqual(failed_budget.snapshot()["failed"], 1)
+        self.assertEqual(failed_budget.snapshot()["events"][0]["error_type"], "invalid_capability_pack_schema")
+
+        success_budget = BudgetLedger(limit=3)
+        success_subject = OpenAICompatibleProvider(
+            {"base_url": "https://api.deepseek.com", "model": "test-model"},
+            "test-only-key",
+            success_budget,
+        )
+        success_token = success_budget.begin("project_bootstrap")
+        success_budget.finish(success_token, ok=True)
+        success_subject._last_budget_token = success_token
+        standard = capability_snapshot()
+        success_subject._chat_json = lambda *args, **kwargs: {  # type: ignore[method-assign]
+            "capability_pack": standard,
+            "candidates": candidates(),
+        }
+        success_subject.bootstrap_project(standard["goal"])
+        self.assertEqual(success_budget.snapshot()["attempted"], 1)
+        self.assertEqual(success_budget.snapshot()["succeeded"], 1)
+        self.assertEqual(success_budget.snapshot()["failed"], 0)
 
     def test_bootstrap_rejects_incomplete_pack_or_wrong_candidate_count(self):
         subject = provider()

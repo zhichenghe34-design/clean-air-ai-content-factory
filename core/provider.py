@@ -13,7 +13,16 @@ from typing import Any, Callable
 
 
 class ProviderError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.details = details
+
+    def __str__(self) -> str:
+        message = super().__str__()
+        if self.details is None:
+            return message
+        diagnostic = json.dumps(self.details, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return f"{message}；结构诊断：{diagnostic}"
 
 
 CAPABILITY_SNAPSHOT_FIELDS = (
@@ -42,6 +51,253 @@ CAPABILITY_SNAPSHOT_LIST_FIELDS = {
     "visual_direction",
     "assumptions",
 }
+CAPABILITY_SNAPSHOT_REQUIRED_LIST_FIELDS = {"platforms", "tone", "assumptions"}
+
+_BOOTSTRAP_SCALAR_LIMITS = {
+    "label": 80,
+    "industry": 80,
+    "goal": 200,
+    "audience": 80,
+    "content_purpose": 160,
+    "risk_level": 16,
+}
+_BOOTSTRAP_LIST_LIMITS = {
+    "platforms": 12,
+    "tone": 12,
+    "preferred_terms": 24,
+    "avoided_terms": 24,
+    "evidence_requirements": 24,
+    "prohibited_claims": 24,
+    "visual_direction": 12,
+    "assumptions": 16,
+}
+_BOOTSTRAP_RISK_LEVELS = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "低": "low",
+    "中": "medium",
+    "高": "high",
+    "低风险": "low",
+    "中风险": "medium",
+    "高风险": "high",
+}
+_BOOTSTRAP_FORBIDDEN_VISUAL_KEYS = {
+    "prompt",
+    "system_prompt",
+    "developer_prompt",
+    "instruction_prompt",
+    "path",
+    "filepath",
+    "directory",
+    "command",
+    "cmd",
+    "shell",
+    "script",
+    "code",
+    "secret",
+    "secrets",
+    "api_key",
+    "apikey",
+    "token",
+    "access_token",
+    "password",
+    "cookie",
+    "authorization",
+    "url",
+    "endpoint",
+    "headers",
+    "密钥",
+    "口令",
+    "密码",
+    "令牌",
+    "路径",
+    "命令",
+    "网址",
+    "链接",
+}
+_BOOTSTRAP_URL_RE = re.compile(r"(?i)(?:https?|file|ftp)://")
+_BOOTSTRAP_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|(?:^|\s)/(?:etc|home|users|var|tmp)/|\.\.[\\/])")
+_BOOTSTRAP_SECRET_RE = re.compile(
+    r"(?i)(?:api[_ -]?key|access[_ -]?token|password|authorization|cookie)\s*[:=]\s*\S+|\bsk-[A-Za-z0-9_-]{12,}\b"
+)
+_BOOTSTRAP_COMMAND_RE = re.compile(
+    r"(?i)(?:\b(?:powershell|cmd\.exe|bash|zsh)\s+(?:-[a-z]|/c)"
+    r"|\b(?:curl|wget)\s+(?:-[A-Za-z]+\s+)*(?:https?|ftp)://"
+    r"|\brm\s+-rf\b|\binvoke-expression\b|\bsubprocess\.)"
+)
+_BOOTSTRAP_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _bootstrap_value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, (int, float)):
+        return "number"
+    return "other"
+
+
+def _bootstrap_diagnostic_field_name(value: str) -> str:
+    if (
+        not value
+        or len(value) > 80
+        or _BOOTSTRAP_CONTROL_RE.search(value)
+        or _BOOTSTRAP_URL_RE.search(value)
+        or _BOOTSTRAP_PATH_RE.search(value)
+        or _BOOTSTRAP_COMMAND_RE.search(value)
+        or _BOOTSTRAP_SECRET_RE.search(value)
+    ):
+        return "<redacted-unknown-field>"
+    return value
+
+
+def bootstrap_capability_schema_diagnostics(value: Any) -> dict[str, Any]:
+    """Describe only schema shape; never retain model-provided content values."""
+
+    if not isinstance(value, dict):
+        return {
+            "missing_fields": list(CAPABILITY_SNAPSHOT_FIELDS),
+            "unknown_fields": [],
+            "field_types": {"capability_pack": _bootstrap_value_type(value)},
+            "list_element_types": {},
+        }
+    string_keys = {key for key in value if isinstance(key, str)}
+    missing = [field for field in CAPABILITY_SNAPSHOT_FIELDS if field not in string_keys]
+    unknown = sorted({
+        _bootstrap_diagnostic_field_name(key)
+        for key in string_keys
+        if key not in CAPABILITY_SNAPSHOT_FIELDS
+    })
+    if any(not isinstance(key, str) for key in value):
+        unknown.append("<non-string-key>")
+    field_types = {
+        field: _bootstrap_value_type(value[field])
+        for field in CAPABILITY_SNAPSHOT_FIELDS
+        if field in value
+    }
+    list_element_types = {
+        field: sorted({_bootstrap_value_type(item) for item in value[field]})
+        for field in CAPABILITY_SNAPSHOT_LIST_FIELDS
+        if isinstance(value.get(field), list)
+    }
+    return {
+        "missing_fields": missing,
+        "unknown_fields": unknown,
+        "field_types": field_types,
+        "list_element_types": list_element_types,
+    }
+
+
+def _raise_bootstrap_schema(message: str, raw_pack: Any) -> None:
+    raise ProviderError(message, details=bootstrap_capability_schema_diagnostics(raw_pack))
+
+
+def _assert_bootstrap_safe_text(value: str, *, field: str, maximum: int) -> str:
+    text = value.strip()
+    if not text or len(text) > maximum:
+        raise ProviderError(f"项目启动接口返回的{field}为空或超过长度限制")
+    if (
+        _BOOTSTRAP_CONTROL_RE.search(text)
+        or _BOOTSTRAP_URL_RE.search(text)
+        or _BOOTSTRAP_PATH_RE.search(text)
+        or _BOOTSTRAP_COMMAND_RE.search(text)
+        or _BOOTSTRAP_SECRET_RE.search(text)
+    ):
+        raise ProviderError(f"项目启动接口返回的{field}包含非声明式内容")
+    return text
+
+
+def _normalize_bootstrap_scalar(value: Any, *, field: str, maximum: int) -> str:
+    if isinstance(value, list):
+        if len(value) != 1 or not isinstance(value[0], str):
+            raise ProviderError(f"项目启动接口返回的{field}必须是字符串或单项字符串数组")
+        value = value[0]
+    if not isinstance(value, str):
+        raise ProviderError(f"项目启动接口返回的{field}必须是字符串")
+    return _assert_bootstrap_safe_text(value, field=field, maximum=maximum)
+
+
+def _normalize_bootstrap_list(value: Any, *, field: str) -> list[str]:
+    if isinstance(value, str):
+        values: list[Any] = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        raise ProviderError(f"项目启动接口返回的{field}必须是字符串数组")
+    if len(values) > _BOOTSTRAP_LIST_LIMITS[field]:
+        raise ProviderError(f"项目启动接口返回的{field}项目过多")
+    if field in CAPABILITY_SNAPSHOT_REQUIRED_LIST_FIELDS and not values:
+        raise ProviderError(f"项目启动接口返回的{field}不能为空")
+    result: list[str] = []
+    for item in values:
+        if not isinstance(item, str):
+            raise ProviderError(f"项目启动接口返回的{field}包含非字符串元素")
+        result.append(_assert_bootstrap_safe_text(item, field=field, maximum=300))
+    return result
+
+
+def _normalize_bootstrap_visual_object(value: dict[Any, Any]) -> list[str]:
+    if not 1 <= len(value) <= 12:
+        raise ProviderError("项目启动接口返回的visual_direction对象必须包含1到12项")
+    result: list[str] = []
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise ProviderError("项目启动接口返回的visual_direction对象必须是扁平字符串映射")
+        clean_key = key.strip()
+        normalized_key = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", clean_key.casefold()).strip("_")
+        if normalized_key in _BOOTSTRAP_FORBIDDEN_VISUAL_KEYS:
+            raise ProviderError("项目启动接口返回的visual_direction包含敏感键")
+        clean_key = _assert_bootstrap_safe_text(clean_key, field="visual_direction键", maximum=80)
+        clean_value = _assert_bootstrap_safe_text(item, field="visual_direction值", maximum=200)
+        result.append(f"{clean_key}：{clean_value}")
+    return result
+
+
+def normalize_bootstrap_capability_snapshot(raw_pack: Any, goal: str) -> dict[str, Any]:
+    """Safely normalize only the unversioned Provider bootstrap snapshot.
+
+    This adapter tolerates a few harmless representation differences while
+    preserving the exact top-level whitelist. The result must still pass
+    ``normalize_capability_pack`` before it can become an executable pack.
+    """
+
+    diagnostics = bootstrap_capability_schema_diagnostics(raw_pack)
+    if not isinstance(raw_pack, dict) or diagnostics["missing_fields"] or diagnostics["unknown_fields"]:
+        _raise_bootstrap_schema("项目启动接口返回的行业能力包结构不完整", raw_pack)
+    normalized: dict[str, Any] = {}
+    try:
+        for field in CAPABILITY_SNAPSHOT_FIELDS:
+            value = raw_pack[field]
+            if field == "visual_direction" and isinstance(value, dict):
+                normalized[field] = _normalize_bootstrap_visual_object(value)
+            elif field in CAPABILITY_SNAPSHOT_LIST_FIELDS:
+                normalized[field] = _normalize_bootstrap_list(value, field=field)
+            else:
+                normalized[field] = _normalize_bootstrap_scalar(
+                    value,
+                    field=field,
+                    maximum=_BOOTSTRAP_SCALAR_LIMITS[field],
+                )
+        normalized["risk_level"] = _BOOTSTRAP_RISK_LEVELS.get(normalized["risk_level"].casefold(), "")
+        if not normalized["risk_level"]:
+            raise ProviderError("项目启动接口返回的风险等级无效")
+        authoritative_goal = str(goal).strip()
+        if normalized["goal"] != authoritative_goal:
+            raise ProviderError("项目启动接口重复的goal与用户输入不一致")
+        normalized["goal"] = authoritative_goal
+    except ProviderError as exc:
+        if exc.details is None:
+            exc.details = diagnostics
+        raise
+    return normalized
 
 
 def _validate_topic_candidates(value: Any, *, add_ids: bool = False) -> list[dict[str, Any]]:
@@ -320,31 +576,17 @@ class OpenAICompatibleProvider:
             count_budget=True,
         )
         raw_pack = result.get("capability_pack")
-        if not isinstance(raw_pack, dict) or set(raw_pack) != set(CAPABILITY_SNAPSHOT_FIELDS):
+        try:
+            normalized_pack = normalize_bootstrap_capability_snapshot(raw_pack, goal)
+        except ProviderError:
             self._mark_semantic_failure("invalid_capability_pack_schema")
-            raise ProviderError("项目启动接口返回的行业能力包结构不完整")
-        for field in CAPABILITY_SNAPSHOT_FIELDS:
-            value = raw_pack.get(field)
-            if field in CAPABILITY_SNAPSHOT_LIST_FIELDS:
-                if (
-                    not isinstance(value, list)
-                    or any(not isinstance(item, str) or not item.strip() for item in value)
-                    or (field in {"platforms", "tone", "assumptions"} and not value)
-                ):
-                    self._mark_semantic_failure("invalid_capability_pack_schema")
-                    raise ProviderError("项目启动接口返回的行业能力包字段类型无效")
-            elif not isinstance(value, str) or not value.strip():
-                self._mark_semantic_failure("invalid_capability_pack_schema")
-                raise ProviderError("项目启动接口返回的行业能力包字段类型无效")
-        if raw_pack.get("risk_level") not in {"low", "medium", "high"}:
-            self._mark_semantic_failure("invalid_capability_pack_schema")
-            raise ProviderError("项目启动接口返回的风险等级无效")
+            raise
         try:
             candidates = _validate_topic_candidates(result.get("candidates"), add_ids=True)
         except ProviderError:
             self._mark_semantic_failure("invalid_topic_schema")
             raise
-        return {"capability_pack": dict(raw_pack), "candidates": candidates}
+        return {"capability_pack": normalized_pack, "candidates": candidates}
 
     def adversarial_review_capability_pack(
         self,
