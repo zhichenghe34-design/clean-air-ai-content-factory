@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw, ImageFont
 from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
 from core.production_engine import ENGINE_COMMIT, ENGINE_MODE, ENGINE_NAME, ENGINE_VERSION
 from core.provider import BudgetLedger, ProviderError
-from core.web_agent import WebResearchAgent
+from core.web_agent import EXACT_EVIDENCE_RULES, WebResearchAgent
 from core.web_tools import TrustedWebToolRegistry
 
 
@@ -200,6 +200,19 @@ STRICT_FINDING_STATUSES = {
     "proven_for_limited_use", "supported_limited", "passed", "approved", "eligible", "evidence_bound",
 }
 
+SOURCE_PAGE_STATEMENT_ONLY = "source_page_statement_only"
+SOURCE_PAGE_GENERIC_ATTRIBUTIONS = (
+    "该来源页面称",
+    "该页面称",
+    "该来源称",
+    "据该来源",
+    "据该页面",
+    "该报道认为",
+    "该报道指出",
+    "该报道提醒",
+    "该文章称",
+)
+
 LEGACY_DOMAIN_TERMS = ("甲醛", "除醛", "测醛", "新房", "入住", "检测报告", "试验舱", "实验舱")
 
 
@@ -301,6 +314,126 @@ def _strict_findings(approved_findings: list[dict[str, Any]] | None) -> list[dic
         for item in (approved_findings or [])
         if isinstance(item, dict) and _finding_is_strictly_usable(item)
     ]
+
+
+def _finding_requires_source_attribution(item: dict[str, Any]) -> bool:
+    if item.get("independent_fact_supported") is False:
+        return True
+    scopes = [item.get("claim_scope"), item.get("source_scope")]
+    scopes.extend(
+        entry.get("source_scope")
+        for entry in item.get("evidence", [])
+        if isinstance(entry, dict)
+    )
+    return any(str(value).strip() == SOURCE_PAGE_STATEMENT_ONLY for value in scopes)
+
+
+def _compact_contract_text(value: Any) -> str:
+    return re.sub(r"[\s，,。！？!?；;：:\"'“”‘’（）()]", "", str(value or ""))
+
+
+def _source_attribution_contract(item: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """Derive exact claim content and same-sentence attribution from approved metadata."""
+    contents: set[str] = set()
+    attributions = {
+        normalized
+        for marker in SOURCE_PAGE_GENERIC_ATTRIBUTIONS
+        if (normalized := _compact_contract_text(marker))
+    }
+
+    source_label = str(item.get("source_label", "")).strip()
+    normalized_label = _compact_contract_text(source_label)
+    if normalized_label:
+        attributions.add(normalized_label)
+        for suffix in ("官方页面", "原始文章", "来源页面", "页面", "文章", "来源"):
+            if normalized_label.endswith(suffix) and len(normalized_label) > len(suffix) + 1:
+                attributions.add(normalized_label[: -len(suffix)])
+        if "转载" in normalized_label:
+            attributions.add(normalized_label[: normalized_label.index("转载") + len("转载")])
+
+    for field in ("claim", "allowed_use"):
+        statement = str(item.get(field, "")).strip()
+        if not statement:
+            continue
+        body = statement
+        split = re.split(r"[：:]", statement, maxsplit=1)
+        if len(split) == 2:
+            prefix, body = (part.strip() for part in split)
+            if prefix and not prefix.startswith("可以"):
+                attributions.add(_compact_contract_text(prefix))
+
+        body = body.lstrip(" ，,：:")
+        compact_body = _compact_contract_text(body)
+        for marker in sorted(SOURCE_PAGE_GENERIC_ATTRIBUTIONS, key=len, reverse=True):
+            compact_marker = _compact_contract_text(marker)
+            if compact_body.startswith(compact_marker):
+                attributions.add(compact_marker)
+                compact_body = compact_body[len(compact_marker):]
+                break
+        if len(compact_body) >= 8:
+            contents.add(compact_body)
+    return contents, {value for value in attributions if value}
+
+
+def _fixed_source_page_anchor_groups(item: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
+    """Return anchors only from the local fixed rule whose claim matches exactly."""
+    claim = str(item.get("claim", "")).strip()
+    if not claim:
+        return ()
+    for rule in EXACT_EVIDENCE_RULES:
+        if str(rule.get("claim", "")).strip() != claim or rule.get("source_type") != "source_page":
+            continue
+        raw_groups = rule.get("attribution_anchor_groups")
+        if not isinstance(raw_groups, (list, tuple)):
+            return ()
+        groups: list[tuple[str, ...]] = []
+        for raw_group in raw_groups:
+            if not isinstance(raw_group, (list, tuple)):
+                return ()
+            group = tuple(
+                compact
+                for value in raw_group
+                if isinstance(value, str) and (compact := _compact_contract_text(value))
+            )
+            if not group:
+                return ()
+            groups.append(group)
+        return tuple(groups)
+    return ()
+
+
+def _source_page_attribution_violations(
+    script: str,
+    strict_findings: list[dict[str, Any]],
+) -> list[str]:
+    clauses = [
+        _compact_contract_text(value)
+        for value in re.split(r"[。！？；;\n]+", script)
+        if _compact_contract_text(value)
+    ]
+    violations: list[str] = []
+    for index, item in enumerate(strict_findings, start=1):
+        if not _finding_requires_source_attribution(item):
+            continue
+        contents, attributions = _source_attribution_contract(item)
+        anchor_groups = _fixed_source_page_anchor_groups(item)
+        if not contents and not anchor_groups:
+            continue
+        missing = any(
+            (
+                any(content in clause or (len(clause) >= 8 and clause in content) for content in contents)
+                or bool(anchor_groups) and all(
+                    any(anchor in clause for anchor in group)
+                    for group in anchor_groups
+                )
+            )
+            and not any(marker in clause for marker in attributions)
+            for clause in clauses
+        )
+        if missing:
+            finding_id = str(item.get("finding_id", "")).strip()
+            violations.append(finding_id or f"approved-finding-{index}")
+    return list(dict.fromkeys(violations))
 
 
 def _finding_statement(item: dict[str, Any], max_chars: int = 96) -> str:
@@ -542,7 +675,16 @@ def review_script(
 ) -> dict[str, Any]:
     script = str(script or "")
     strict_findings = _strict_findings(approved_findings)
-    evidence_text = re.sub(r"\s+", "", json.dumps(strict_findings, ensure_ascii=False))
+    support_rows = [
+        {
+            "claim": item.get("claim", ""),
+            "allowed_use": item.get("allowed_use", ""),
+        }
+        if _finding_requires_source_attribution(item)
+        else item
+        for item in strict_findings
+    ]
+    evidence_text = re.sub(r"\s+", "", json.dumps(support_rows, ensure_ascii=False))
     evidence_context_supplied = approved_findings is not None
     legacy_trusted_template = script.strip() == LEGACY_DEFAULT_SCRIPT
 
@@ -602,6 +744,15 @@ def review_script(
         if not qualitative_clause_supported(clean_clause) and clean_clause not in qualitative_claims:
             qualitative_claims.append(clean_clause)
     warnings: list[dict[str, Any]] = []
+
+    missing_attribution = _source_page_attribution_violations(script, strict_findings)
+    if missing_attribution:
+        warnings.append({
+            "type": "source_page_claim_missing_attribution",
+            "level": "block",
+            "message": "来源页限定finding在脚本中缺少同句来源归属。",
+            "finding_ids": missing_attribution,
+        })
 
     if percentages:
         warnings.append({

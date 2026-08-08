@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.capability_pack import normalize_capability_pack
+from core.capability_pack import local_capability_pack, normalize_capability_pack
 from core.provider import (
     BudgetLedger,
     CAPABILITY_SNAPSHOT_FIELDS,
@@ -17,7 +17,12 @@ from core.provider import (
     sanitize_bootstrap_schema_diagnostic,
 )
 from core.strict_audit import strict_audit_research
-from core.web_agent import EXACT_EVIDENCE_RULES, WebResearchAgent, normalize_research_result
+from core.web_agent import (
+    EXACT_EVIDENCE_RULES,
+    WebResearchAgent,
+    bind_exact_evidence_candidates,
+    normalize_research_result,
+)
 from core.web_tools import TrustedWebToolRegistry
 
 
@@ -792,12 +797,24 @@ class SourceTrustTests(unittest.TestCase):
                 "warnings": [],
             }
 
-        class ExhaustedProvider:
+        class LocalReviewProvider:
             api_key = "mock-only"
 
             @staticmethod
             def chat_with_tools(messages, tools, tool_choice="auto"):
-                raise ProviderError("API调用预算已耗尽（7/7）")
+                raise ProviderError("调研模型未返回结果")
+
+            @staticmethod
+            def adversarial_review_research(findings, capability_pack=None):
+                return {
+                    "status": "complete",
+                    "findings": [{
+                        "audit_id": item["audit_id"],
+                        "verdict": "supported_limited",
+                        "reasons": ["本地逐字摘录与有限范围一致"],
+                        "safe_scope": "仅限页面原文和已有边界",
+                    } for item in findings],
+                }
 
         def run(pack_id: str) -> dict:
             with tempfile.TemporaryDirectory() as folder:
@@ -806,7 +823,7 @@ class SourceTrustTests(unittest.TestCase):
                     extractor=extract,
                     seed_urls=[url],
                 )
-                return WebResearchAgent(ExhaustedProvider(), registry).run(
+                return WebResearchAgent(LocalReviewProvider(), registry).run(
                     "如何核验公开数据",
                     "普通消费者",
                     [url],
@@ -819,6 +836,221 @@ class SourceTrustTests(unittest.TestCase):
         self.assertEqual(dynamic["strict_audit"]["passed_count"], 0)
         self.assertEqual(legacy["strict_audit"]["passed_count"], 1)
         self.assertEqual(legacy["findings"][0]["evidence"][0]["source_type"], "government_law")
+
+    def test_dynamic_clean_air_topic_binds_cctv_exact_findings_for_limited_use(self):
+        rules = [rule for rule in EXACT_EVIDENCE_RULES if rule.get("source_hosts") == ["news.cctv.com"]]
+        self.assertEqual(len(rules), 3)
+        url = "https://news.cctv.com/2024/01/12/clean-air.shtml"
+        captured_text = "\n".join(str(rule["excerpt"]) for rule in rules)
+
+        def extract(value, output_dir):
+            return {
+                "status": "complete",
+                "source": {"final_url": value, "title": "甲醛自测方式靠谱吗？"},
+                "content": {"text": captured_text, "text_chars": len(captured_text)},
+                "attempts": [{"route": "fake", "status": "complete"}],
+                "warnings": [],
+            }
+
+        class ApprovedReviewProvider:
+            api_key = "mock-only"
+
+            @staticmethod
+            def chat_with_tools(messages, tools, tool_choice="auto"):
+                return {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "status": "partial",
+                        "summary": "等待本地精确证据绑定",
+                        "findings": [],
+                        "content_patterns": [],
+                        "evidence_gaps": [],
+                        "sources": [],
+                    }, ensure_ascii=False),
+                }
+
+            @staticmethod
+            def parse_json_content(content):
+                return json.loads(content)
+
+            @staticmethod
+            def adversarial_review_research(findings, capability_pack=None):
+                return {
+                    "status": "complete",
+                    "findings": [{
+                        "audit_id": item["audit_id"],
+                        "verdict": "supported_limited",
+                        "reasons": ["逐字摘录和限定范围一致"],
+                        "safe_scope": "仅限央视网转载页面的表述",
+                    } for item in findings],
+                }
+
+        topic = "甲醛检测盒和便携自测仪为什么不能替代专业检测？"
+        clean_air_pack = local_capability_pack(topic)
+        self.assertEqual(clean_air_pack["source"], "local")
+        self.assertEqual(clean_air_pack["audit"]["generated_by"], "deterministic_local_generator")
+        self.assertEqual(clean_air_pack["snapshot"]["industry"], "家居与本地服务")
+        with tempfile.TemporaryDirectory() as folder:
+            registry = TrustedWebToolRegistry(
+                Path(folder),
+                extractor=extract,
+                seed_urls=[url],
+            )
+            result = WebResearchAgent(ApprovedReviewProvider(), registry).run(
+                topic,
+                "新房家庭",
+                [url],
+                capability_pack=clean_air_pack,
+            )
+
+        self.assertEqual(result["local_evidence_binding"]["added_count"], 3)
+        self.assertEqual(result["strict_audit"]["passed_count"], 3)
+        self.assertTrue(result["strict_audit"]["model_review_required"])
+        self.assertEqual(result["strict_audit"]["model_review_status"], "complete")
+        self.assertTrue(all(item["confidence"] == "medium" for item in result["findings"]))
+        self.assertTrue(all(item["strict_review_status"] == "proven_for_limited_use" for item in result["findings"]))
+        self.assertTrue(all(item["independent_fact_supported"] is False for item in result["findings"]))
+        self.assertTrue(all("CMA" in " ".join(item["limitations"]) for item in result["findings"]))
+        self.assertEqual(result["sources"][0]["publisher"], "央视网（转载上观新闻）")
+        self.assertEqual(result["sources"][0]["source_type"], "source_page")
+
+    def test_dynamic_food_scope_rejects_incidental_clean_air_topic_marker(self):
+        rule = next(rule for rule in EXACT_EVIDENCE_RULES if rule.get("source_hosts") == ["news.cctv.com"])
+        url = "https://news.cctv.com/2024/01/12/clean-air.shtml"
+
+        def extract(value, output_dir):
+            return {
+                "status": "complete",
+                "source": {"final_url": value, "title": "甲醛自测方式靠谱吗？"},
+                "content": {"text": rule["excerpt"], "text_chars": len(rule["excerpt"])},
+                "attempts": [{"route": "fake", "status": "complete"}],
+                "warnings": [],
+            }
+
+        class ExhaustedProvider:
+            api_key = "mock-only"
+
+            @staticmethod
+            def chat_with_tools(messages, tools, tool_choice="auto"):
+                raise ProviderError("API调用预算已耗尽（7/7）")
+
+        topic = "餐饮门店怎样回应顾客提到的甲醛新闻，同时介绍晚市到店流程？"
+        food_pack = local_capability_pack(topic)
+        self.assertEqual(food_pack["source"], "local")
+        self.assertEqual(food_pack["audit"]["generated_by"], "deterministic_local_generator")
+        self.assertEqual(food_pack["snapshot"]["industry"], "餐饮与食品")
+        with tempfile.TemporaryDirectory() as folder:
+            registry = TrustedWebToolRegistry(Path(folder), extractor=extract, seed_urls=[url])
+            result = WebResearchAgent(ExhaustedProvider(), registry).run(
+                topic,
+                "附近消费者",
+                [url],
+                capability_pack=food_pack,
+            )
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(result["strict_audit"]["passed_count"], 0)
+
+    def test_adversarial_review_budget_error_rejects_all_local_exact_findings(self):
+        rules = [rule for rule in EXACT_EVIDENCE_RULES if rule.get("source_hosts") == ["news.cctv.com"]]
+        url = "https://news.cctv.com/2024/01/12/clean-air.shtml"
+        captured_text = "\n".join(str(rule["excerpt"]) for rule in rules)
+
+        def extract(value, output_dir):
+            return {
+                "status": "complete",
+                "source": {"final_url": value, "title": "甲醛自测方式靠谱吗？"},
+                "content": {"text": captured_text, "text_chars": len(captured_text)},
+                "attempts": [{"route": "fake", "status": "complete"}],
+                "warnings": [],
+            }
+
+        class BudgetFailureProvider:
+            api_key = "mock-only"
+
+            @staticmethod
+            def chat_with_tools(messages, tools, tool_choice="auto"):
+                return {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "status": "partial",
+                        "summary": "等待本地精确证据绑定",
+                        "findings": [],
+                        "content_patterns": [],
+                        "evidence_gaps": [],
+                        "sources": [],
+                    }, ensure_ascii=False),
+                }
+
+            @staticmethod
+            def parse_json_content(content):
+                return json.loads(content)
+
+            @staticmethod
+            def adversarial_review_research(findings, capability_pack=None):
+                raise ProviderError("API调用预算已耗尽（7/7）")
+
+        topic = "甲醛检测盒和便携自测仪为什么不能替代专业检测？"
+        clean_air_pack = local_capability_pack(topic)
+        self.assertEqual(clean_air_pack["snapshot"]["industry"], "家居与本地服务")
+        with tempfile.TemporaryDirectory() as folder:
+            registry = TrustedWebToolRegistry(Path(folder), extractor=extract, seed_urls=[url])
+            result = WebResearchAgent(BudgetFailureProvider(), registry).run(
+                topic,
+                "新房家庭",
+                [url],
+                capability_pack=clean_air_pack,
+            )
+
+        self.assertEqual(len(result["findings"]), 3)
+        self.assertEqual(result["strict_audit"]["passed_count"], 0)
+        self.assertTrue(result["strict_audit"]["model_review_required"])
+        self.assertEqual(result["strict_audit"]["model_review_status"], "failed")
+        self.assertTrue(all(item["script_eligible"] is False for item in result["findings"]))
+        self.assertIn("预算已耗尽", result["strict_audit"]["model_review_error"])
+
+    def test_cctv_rules_expose_controlled_attribution_anchor_groups(self):
+        rules = [rule for rule in EXACT_EVIDENCE_RULES if rule.get("source_hosts") == ["news.cctv.com"]]
+        self.assertEqual(
+            [rule.get("attribution_anchor_groups") for rule in rules],
+            [
+                [["检测盒"], ["粗略", "范围", "区间", "不精确"]],
+                [["自测仪"], ["误判", "不准确"]],
+                [["气味"], ["不能判断", "超标", "专业检测"]],
+            ],
+        )
+
+    def test_cctv_rule_requires_both_exact_excerpt_and_cctv_host(self):
+        rule = next(rule for rule in EXACT_EVIDENCE_RULES if rule.get("source_hosts") == ["news.cctv.com"])
+        base = {"status": "partial", "findings": [], "sources": []}
+        spoofed = bind_exact_evidence_candidates(
+            base,
+            self.trace("https://example.com/copied", str(rule["excerpt"])),
+            retrieved_at="2026-08-09T02:00:00+08:00",
+        )
+        missing = bind_exact_evidence_candidates(
+            base,
+            self.trace("https://news.cctv.com/2024/01/12/clean-air.shtml", "页面没有精确原句"),
+            retrieved_at="2026-08-09T02:00:00+08:00",
+        )
+
+        self.assertEqual(spoofed["local_evidence_binding"]["added_count"], 0)
+        self.assertEqual(spoofed["findings"], [])
+        self.assertEqual(missing["local_evidence_binding"]["added_count"], 0)
+        self.assertEqual(missing["findings"], [])
+
+    def test_every_exact_rule_rejects_copied_excerpt_on_unrelated_host(self):
+        base = {"status": "partial", "findings": [], "sources": []}
+        for rule in EXACT_EVIDENCE_RULES:
+            with self.subTest(claim=rule["claim"]):
+                self.assertTrue(rule.get("source_hosts"))
+                spoofed = bind_exact_evidence_candidates(
+                    base,
+                    self.trace("https://example.com/copied", str(rule["excerpt"])),
+                    retrieved_at="2026-08-09T02:00:00+08:00",
+                )
+                self.assertEqual(spoofed["local_evidence_binding"]["added_count"], 0)
+                self.assertEqual(spoofed["findings"], [])
 
 
 if __name__ == "__main__":

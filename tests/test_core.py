@@ -451,7 +451,7 @@ class WebAgentTests(unittest.TestCase):
         self.assertNotIn("human_verified", json.dumps(candidate, ensure_ascii=False))
         self.assertNotIn("reviewer", candidate)
 
-    def test_seed_source_prefetch_preserves_exact_evidence_when_budget_is_exhausted(self):
+    def test_seed_source_prefetch_fails_closed_without_adversarial_review_capability(self):
         excerpt = "广告使用数据、统计资料、调查结果、文摘、引用语等引证内容的，应当真实、准确，并表明出处。引证内容有适用范围和有效期限的，应当明确表示。"
 
         def law_extract(url, output_dir):
@@ -476,7 +476,13 @@ class WebAgentTests(unittest.TestCase):
                 capability_pack=legacy_clean_air_pack(),
             )
         self.assertEqual(result["tool_trace"][0]["tool"], "extract_url")
-        self.assertEqual(result["evidence_review"]["script_eligible_count"], 1)
+        self.assertEqual(len(result["findings"]), 1)
+        self.assertFalse(result["findings"][0]["script_eligible"])
+        self.assertEqual(result["evidence_review"]["script_eligible_count"], 0)
+        self.assertTrue(result["strict_audit"]["model_review_required"])
+        self.assertEqual(result["strict_audit"]["model_review_status"], "missing")
+        self.assertEqual(result["strict_audit"]["passed_count"], 0)
+        self.assertIn("反证审核能力不可用", result["strict_audit"]["model_review_error"])
         self.assertIn("预算已耗尽", result["evidence_gaps"][0])
 
     def test_off_topic_search_is_reanchored_to_the_selected_topic(self):

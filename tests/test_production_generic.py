@@ -143,6 +143,124 @@ class GenericProductionTests(unittest.TestCase):
         supported = review_script(f"该来源页面称，{claim}。", [finding], GENERIC_PACK, [])
         self.assertFalse(supported["blocked"])
 
+    def test_source_page_claim_requires_same_sentence_attribution_without_affecting_high_trust(self):
+        source_page_finding = {
+            "finding_id": "finding-cctv-page-1",
+            "claim": "央视网转载的上观新闻文章称：甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "allowed_use": "可以带归属地说明：该报道认为检测盒只能看出大致范围。",
+            "source_label": "央视网转载上观新闻页面",
+            "claim_scope": "source_page_statement_only",
+            "source_scope": "source_page_statement_only",
+            "independent_fact_supported": False,
+            "strict_review_status": "proven_for_limited_use",
+            "script_eligible": True,
+            "evidence": [{
+                "source_type": "source_page",
+                "source_scope": "source_page_statement_only",
+                "excerpt": "甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            }],
+        }
+
+        direct = review_script(
+            "甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            [source_page_finding],
+        )
+        self.assertTrue(direct["blocked"])
+        warning = next(
+            item for item in direct["warnings"]
+            if item["type"] == "source_page_claim_missing_attribution"
+        )
+        self.assertEqual(warning["finding_ids"], ["finding-cctv-page-1"])
+        self.assertNotIn(source_page_finding["claim"], json.dumps(warning, ensure_ascii=False))
+
+        false_only = {
+            **source_page_finding,
+            "claim_scope": None,
+            "source_scope": None,
+            "evidence": [{"source_type": "source_page", "excerpt": source_page_finding["claim"]}],
+        }
+        scope_only = {**source_page_finding, "independent_fact_supported": None}
+        for finding in (false_only, scope_only):
+            with self.subTest(trigger=finding):
+                result = review_script(
+                    "甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+                    [finding],
+                )
+                self.assertTrue(result["blocked"])
+                self.assertTrue(any(
+                    item["type"] == "source_page_claim_missing_attribution"
+                    for item in result["warnings"]
+                ))
+
+        for script in (
+            "检测盒只能看出大致范围。",
+            "据该来源。甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "家用甲醛检测盒最多只能粗略估计室内浓度区间。",
+            "检测盒测出来的只是一个粗略区间，并不精确。",
+        ):
+            with self.subTest(unattributed_script=script):
+                result = review_script(script, [source_page_finding])
+                self.assertTrue(result["blocked"])
+                self.assertTrue(any(
+                    item["type"] == "source_page_claim_missing_attribution"
+                    for item in result["warnings"]
+                ))
+
+        attributed_scripts = (
+            source_page_finding["claim"],
+            "该页面称，甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "据该来源，甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "央视网转载内容提到，甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "该报道认为，检测盒只能看出大致范围。",
+            "据央视网转载的报道，家用甲醛检测盒最多只能粗略估计室内浓度区间。",
+            "据央视网转载的报道，检测盒测出来的只是一个粗略区间，并不精确。",
+        )
+        for script in attributed_scripts:
+            with self.subTest(script=script):
+                result = review_script(script, [source_page_finding])
+                self.assertFalse(result["blocked"], result["warnings"])
+
+        model_anchor_finding = {
+            **source_page_finding,
+            "finding_id": "finding-model-anchor-untrusted",
+            "claim": "该页面称：本页仅介绍活动安排。",
+            "allowed_use": "可以带归属地说明：该页面称活动详情以页面为准。",
+            "attribution_anchor_groups": [["套餐"], ["优惠"]],
+        }
+        untrusted_model_anchors = review_script("套餐现在有优惠。", [model_anchor_finding])
+        self.assertFalse(any(
+            item["type"] == "source_page_claim_missing_attribution"
+            for item in untrusted_model_anchors["warnings"]
+        ))
+
+        government_finding = {
+            "finding_id": "finding-law-1",
+            "claim": "《中华人民共和国广告法》要求广告中的引证内容真实、准确并表明出处。",
+            "source_scope": "higher_trust_domain_page",
+            "independent_fact_supported": None,
+            "strict_review_status": "proven_for_limited_use",
+            "script_eligible": True,
+            "evidence": [{
+                "source_type": "government_law",
+                "source_scope": "higher_trust_domain_page",
+                "excerpt": "引证内容应当真实、准确，并表明出处。",
+            }],
+        }
+        high_trust = review_script(government_finding["claim"], [government_finding])
+        self.assertFalse(high_trust["blocked"], high_trust["warnings"])
+        standard_finding = {
+            **government_finding,
+            "finding_id": "finding-standard-1",
+            "claim": "全国标准信息公共服务平台列明GB/T 18883-2022的名称为《室内空气质量标准》。",
+            "evidence": [{
+                "source_type": "government_standard_metadata",
+                "source_scope": "higher_trust_domain_page",
+                "excerpt": "GB/T 18883-2022 室内空气质量标准",
+            }],
+        }
+        high_trust_standard = review_script(standard_finding["claim"], [standard_finding])
+        self.assertFalse(high_trust_standard["blocked"], high_trust_standard["warnings"])
+
     def test_insight_and_motion_read_generic_pack_without_legacy_semantics(self):
         config = {
             "topic": "如何跟进第一次接触的企业客户？",
