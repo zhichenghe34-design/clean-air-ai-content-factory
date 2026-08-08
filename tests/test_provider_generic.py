@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from core.capability_pack import normalize_capability_pack
 from core.provider import (
+    BudgetLedger,
     CAPABILITY_SNAPSHOT_FIELDS,
     OpenAICompatibleProvider,
     ProviderError,
+    bootstrap_capability_schema_diagnostics,
+    normalize_bootstrap_capability_snapshot,
+    sanitize_bootstrap_schema_diagnostic,
 )
 from core.strict_audit import strict_audit_research
 from core.web_agent import EXACT_EVIDENCE_RULES, WebResearchAgent, normalize_research_result
@@ -53,13 +59,15 @@ class ProviderGenericTests(unittest.TestCase):
     def test_bootstrap_identifies_domain_and_returns_raw_pack_with_three_candidates(self):
         subject = provider()
         observed = {}
+        goal = "为一家本地餐饮门店制作可信的知识短视频"
 
         def fake_chat(system, user_data, *, stage="provider", count_budget=True):
             observed.update(system=system, user_data=user_data, stage=stage, count_budget=count_budget)
-            return {"capability_pack": capability_snapshot(), "candidates": candidates()}
+            snapshot = capability_snapshot()
+            snapshot["goal"] = goal
+            return {"capability_pack": snapshot, "candidates": candidates()}
 
         subject._chat_json = fake_chat  # type: ignore[method-assign]
-        goal = "为一家本地餐饮门店制作可信的知识短视频"
         result = subject.bootstrap_project(
             goal,
             ["不要再做探店合集"],
@@ -76,6 +84,371 @@ class ProviderGenericTests(unittest.TestCase):
         self.assertIn("所有关于企业", observed["system"])
         self.assertIn("不得虚构企业资料", observed["system"])
         self.assertEqual(observed["user_data"]["memory_rules"][0]["instruction"], "不要使用低价促销定位")
+
+    def test_bootstrap_standard_schema_is_unchanged(self):
+        raw = capability_snapshot()
+        goal = raw["goal"]
+        normalized = normalize_bootstrap_capability_snapshot(copy.deepcopy(raw), goal)
+        self.assertEqual(normalized, raw)
+        self.assertEqual(set(normalized), set(CAPABILITY_SNAPSHOT_FIELDS))
+
+    def test_bootstrap_normalizes_single_string_list_fields_without_semantic_fill(self):
+        raw = capability_snapshot()
+        expected = {}
+        for field in (
+            "platforms",
+            "tone",
+            "preferred_terms",
+            "avoided_terms",
+            "evidence_requirements",
+            "prohibited_claims",
+            "visual_direction",
+            "assumptions",
+        ):
+            raw[field] = raw[field][0]
+            expected[field] = [raw[field]]
+        normalized = normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+        for field, value in expected.items():
+            self.assertEqual(normalized[field], value)
+
+    def test_bootstrap_normalizes_scalar_single_item_arrays_and_chinese_risk(self):
+        raw = capability_snapshot()
+        goal = raw["goal"]
+        for field in ("label", "industry", "goal", "audience", "content_purpose"):
+            raw[field] = [raw[field]]
+        raw["risk_level"] = ["高风险"]
+        normalized = normalize_bootstrap_capability_snapshot(raw, goal)
+        self.assertEqual(normalized["goal"], goal)
+        self.assertEqual(normalized["risk_level"], "high")
+        self.assertEqual(normalized["label"], "本地餐饮门店内容包")
+
+    def test_bootstrap_normalizes_flat_visual_direction_object(self):
+        raw = capability_snapshot()
+        raw["visual_direction"] = {
+            "画幅": "1080×1920竖屏\uff0c主体居中\uff1b留白\uff1a充足",
+            "构图": "门店环境与信息卡片",
+        }
+        normalized = normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+        self.assertEqual(
+            normalized["visual_direction"],
+            ["构图：门店环境与信息卡片", "画幅：1080×1920竖屏\uff0c主体居中\uff1b留白\uff1a充足"],
+        )
+
+    def test_bootstrap_visual_object_rejects_composite_sensitive_keys(self):
+        sensitive_keys = (
+            "authorization_header",
+            "refresh_token",
+            "client_secret",
+            "cookie_value",
+            "api_key_copy",
+            "authorizationHeader",
+            "authorizationheader",
+            "accesstoken",
+            "sessiontoken",
+            "bearertoken",
+            "authtoken",
+            "idtoken",
+            "apisecret",
+            "consumersecret",
+            "webhooksecret",
+            "signingsecret",
+            "authentication_header",
+            "authenticationheader",
+            "passwd",
+            "pwd",
+            "refreshtoken",
+            "clientsecret",
+            "cookievalue",
+            "apikeycopy",
+            "access-token-copy",
+            "session_token_copy",
+            "apiSecretCopy",
+            "authenticationHeaderCopy",
+            "api\uff53\uff45\uff43\uff52\uff45\uff54",
+            "access\uff54\uff4f\uff4b\uff45\uff4e",
+            "访问令牌备份",
+            "客户授权信息",
+            "接口密钥副本",
+            "登录凭据说明",
+        )
+        for key in sensitive_keys:
+            with self.subTest(key=key):
+                raw = capability_snapshot()
+                raw["visual_direction"] = {key: "信息卡片"}
+                with self.assertRaises(ProviderError) as raised:
+                    normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+                self.assertNotIn(key, str(raised.exception))
+
+        sensitive_values = (
+            "authorization\uff1aBearer opaque-credential-value",
+            "api\uff3fkey\uff1dopaque-credential-value",
+            "password\uff1dopaque-credential-value",
+        )
+        for value in sensitive_values:
+            with self.subTest(value=value):
+                raw = capability_snapshot()
+                raw["visual_direction"] = {"palette": value}
+                with self.assertRaises(ProviderError) as raised:
+                    normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+                self.assertNotIn(value, str(raised.exception))
+
+    def test_bootstrap_visual_object_order_is_hash_stable_and_normalized_duplicates_fail(self):
+        first_raw = capability_snapshot()
+        first_raw["visual_direction"] = {"palette": "暖色", "shot": "近景"}
+        second_raw = capability_snapshot()
+        second_raw["visual_direction"] = {"shot": "近景", "palette": "暖色"}
+        first_snapshot = normalize_bootstrap_capability_snapshot(first_raw, first_raw["goal"])
+        second_snapshot = normalize_bootstrap_capability_snapshot(second_raw, second_raw["goal"])
+        self.assertEqual(first_snapshot["visual_direction"], second_snapshot["visual_direction"])
+        first_pack = normalize_capability_pack(first_snapshot, first_raw["goal"], "deepseek")
+        second_pack = normalize_capability_pack(second_snapshot, second_raw["goal"], "deepseek")
+        self.assertEqual(first_pack["sha256"], second_pack["sha256"])
+
+        duplicate = capability_snapshot()
+        duplicate["visual_direction"] = {"shot-type": "近景", "shot_type": "远景"}
+        with self.assertRaisesRegex(ProviderError, "规范化重名键"):
+            normalize_bootstrap_capability_snapshot(duplicate, duplicate["goal"])
+
+    def test_bootstrap_maps_only_explicit_equivalent_risk_levels(self):
+        cases = {
+            "low": "low",
+            "LOW": "low",
+            "低": "low",
+            "低风险": "low",
+            "medium": "medium",
+            "中": "medium",
+            "中风险": "medium",
+            "high": "high",
+            "高": "high",
+            "高风险": "high",
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                raw = capability_snapshot()
+                raw["risk_level"] = value
+                normalized = normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+                self.assertEqual(normalized["risk_level"], expected)
+        for value in ("moderate", "较高", "一般", "1"):
+            with self.subTest(rejected=value):
+                raw = capability_snapshot()
+                raw["risk_level"] = value
+                with self.assertRaises(ProviderError):
+                    normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+
+    def test_bootstrap_rejects_unsafe_or_malformed_snapshot_shapes(self):
+        cases = {}
+
+        unknown = capability_snapshot()
+        unknown["extra"] = "unexpected"
+        cases["unknown_field"] = unknown
+
+        missing = capability_snapshot()
+        missing.pop("industry")
+        cases["missing_field"] = missing
+
+        nested = capability_snapshot()
+        nested["audience"] = {"segment": "上班族"}
+        cases["nested_object"] = nested
+
+        nested_visual = capability_snapshot()
+        nested_visual["visual_direction"] = {"layout": {"position": "center"}}
+        cases["nested_visual_object"] = nested_visual
+
+        mixed = capability_snapshot()
+        mixed["tone"] = ["克制", 3]
+        cases["mixed_list"] = mixed
+
+        url_value = capability_snapshot()
+        url_value["tone"] = ["参见 https://example.com"]
+        cases["url"] = url_value
+
+        compatibility_url = capability_snapshot()
+        compatibility_url["tone"] = ["参见 \uff48\uff54\uff54\uff50\uff53\uff1a\uff0f\uff0fexample.com"]
+        cases["compatibility_url"] = compatibility_url
+
+        compatibility_path = capability_snapshot()
+        compatibility_path["audience"] = "\uff23\uff1a\uff3cUsers\uff3copaque"
+        cases["compatibility_path"] = compatibility_path
+
+        command_value = capability_snapshot()
+        command_value["visual_direction"] = {"构图": "powershell -enc AAA"}
+        cases["command"] = command_value
+
+        compatibility_command = capability_snapshot()
+        compatibility_command["visual_direction"] = {
+            "构图": "\uff50\uff4f\uff57\uff45\uff52\uff53\uff48\uff45\uff4c\uff4c \uff0d\uff45\uff4e\uff43 AAA"
+        }
+        cases["compatibility_command"] = compatibility_command
+
+        secret_value = capability_snapshot()
+        secret_value["preferred_terms"] = ["sk-1234567890abcdef"]
+        cases["secret"] = secret_value
+
+        sensitive_key = capability_snapshot()
+        sensitive_key["visual_direction"] = {"api_key": "只做信息卡片"}
+        cases["sensitive_key"] = sensitive_key
+
+        empty = capability_snapshot()
+        empty["label"] = "   "
+        cases["empty_required"] = empty
+
+        null_value = capability_snapshot()
+        null_value["industry"] = None
+        cases["null"] = null_value
+
+        number_value = capability_snapshot()
+        number_value["audience"] = 7
+        cases["number"] = number_value
+
+        boolean_value = capability_snapshot()
+        boolean_value["content_purpose"] = True
+        cases["boolean"] = boolean_value
+
+        wrong_goal = capability_snapshot()
+        wrong_goal["goal"] = "模型擅自改写后的其他目标"
+        cases["goal_mismatch"] = wrong_goal
+
+        for name, raw in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ProviderError) as raised:
+                    normalize_bootstrap_capability_snapshot(
+                        raw,
+                        capability_snapshot()["goal"],
+                    )
+                details = raised.exception.details
+                self.assertIsInstance(details, dict)
+                self.assertEqual(
+                    set(details),
+                    {"missing_fields", "unknown_fields", "field_types", "list_element_types"},
+                )
+                serialized = json.dumps(details, ensure_ascii=False)
+                self.assertNotIn("sk-1234567890abcdef", serialized)
+                self.assertNotIn("https://example.com", serialized)
+                self.assertNotIn("powershell -enc AAA", serialized)
+
+    def test_bootstrap_structure_diagnostics_contain_types_but_no_values(self):
+        raw = capability_snapshot()
+        raw.pop("industry")
+        raw["unexpected"] = {"secret": "sk-1234567890abcdef"}
+        raw["api_key=sk-1234567890abcdef"] = "should not enter diagnostics"
+        raw["customer-id-440123199001011234"] = "should not enter diagnostics"
+        raw["tone"] = ["克制", 3, False]
+        details = bootstrap_capability_schema_diagnostics(raw)
+        self.assertEqual(details["missing_fields"], ["industry"])
+        self.assertEqual(details["unknown_fields"], ["<redacted-unknown-field>"])
+        self.assertEqual(details["field_types"]["tone"], "array")
+        self.assertEqual(details["list_element_types"]["tone"], ["boolean", "number", "string"])
+        serialized = json.dumps(details, ensure_ascii=False)
+        self.assertNotIn("sk-1234567890abcdef", serialized)
+        self.assertNotIn("克制", serialized)
+        self.assertNotIn("customer-id-440123199001011234", serialized)
+        self.assertNotIn("unexpected", serialized)
+        error = ProviderError("schema failed", details=details)
+        self.assertIn("missing_fields", str(error))
+        self.assertNotIn("sk-1234567890abcdef", str(error))
+        self.assertNotIn("克制", str(error))
+        self.assertNotIn("customer-id-440123199001011234", str(error))
+
+    def test_bootstrap_structure_diagnostic_sanitizer_is_exact_and_fail_closed(self):
+        diagnostic = {
+            "list_element_types": {"tone": ["string", "number", "string"]},
+            "field_types": {"tone": "array", "label": "object"},
+            "unknown_fields": ["<redacted-unknown-field>"],
+            "missing_fields": ["industry", "industry"],
+        }
+        self.assertEqual(
+            sanitize_bootstrap_schema_diagnostic(diagnostic),
+            {
+                "missing_fields": ["industry"],
+                "unknown_fields": ["<redacted-unknown-field>"],
+                "field_types": {"label": "object", "tone": "array"},
+                "list_element_types": {"tone": ["string", "number"]},
+            },
+        )
+        malicious = []
+        extra_key = copy.deepcopy(diagnostic)
+        extra_key["raw_message"] = "must-not-survive"
+        malicious.append(extra_key)
+        raw_unknown = copy.deepcopy(diagnostic)
+        raw_unknown["unknown_fields"] = ["customer-id-440123199001011234"]
+        malicious.append(raw_unknown)
+        for unsafe in (
+            "https://unsafe.example/path",
+            "C:" + r"\Users\operator\secret.txt",
+            "powershell -enc opaque",
+            "api_key=opaque-credential",
+            "cookie=session-value",
+            "authorization=" + "Bea" + "rer opaque-value",
+        ):
+            unsafe_type = copy.deepcopy(diagnostic)
+            unsafe_type["field_types"]["label"] = unsafe
+            malicious.append(unsafe_type)
+        unknown_key = copy.deepcopy(diagnostic)
+        unknown_key["field_types"]["customer-secret"] = "string"
+        malicious.append(unknown_key)
+        unsafe_list = copy.deepcopy(diagnostic)
+        unsafe_list["list_element_types"]["tone"] = ["string", "api_key=opaque"]
+        malicious.append(unsafe_list)
+        for value in malicious:
+            with self.subTest(value=list(value)):
+                self.assertIsNone(sanitize_bootstrap_schema_diagnostic(value))
+
+    def test_bootstrap_adapter_still_uses_final_pack_constraints_and_stable_hash(self):
+        raw = capability_snapshot()
+        raw["platforms"] = "抖音"
+        raw["visual_direction"] = {"构图": "证据卡片优先"}
+        raw["risk_level"] = "中风险"
+        adapted = normalize_bootstrap_capability_snapshot(raw, raw["goal"])
+        first = normalize_capability_pack(adapted, raw["goal"], "deepseek")
+        second = normalize_capability_pack(adapted, raw["goal"], "deepseek")
+        self.assertEqual(first["sha256"], second["sha256"])
+        self.assertIn("事实性主张必须有可追溯证据", first["snapshot"]["evidence_requirements"])
+        self.assertIn(
+            "不得虚构事实、数据、用户证言、案例或来源",
+            first["snapshot"]["prohibited_claims"],
+        )
+
+    def test_bootstrap_semantic_budget_success_and_failure_counts_are_preserved(self):
+        failed_budget = BudgetLedger(limit=3)
+        failed_subject = OpenAICompatibleProvider(
+            {"base_url": "https://api.deepseek.com", "model": "test-model"},
+            "test-only-key",
+            failed_budget,
+        )
+        failed_token = failed_budget.begin("project_bootstrap")
+        failed_budget.finish(failed_token, ok=True)
+        failed_subject._last_budget_token = failed_token
+        malformed = capability_snapshot()
+        malformed["tone"] = ["克制", 3]
+        failed_subject._chat_json = lambda *args, **kwargs: {  # type: ignore[method-assign]
+            "capability_pack": malformed,
+            "candidates": candidates(),
+        }
+        with self.assertRaises(ProviderError):
+            failed_subject.bootstrap_project(malformed["goal"])
+        self.assertEqual(failed_budget.snapshot()["attempted"], 1)
+        self.assertEqual(failed_budget.snapshot()["succeeded"], 0)
+        self.assertEqual(failed_budget.snapshot()["failed"], 1)
+        self.assertEqual(failed_budget.snapshot()["events"][0]["error_type"], "invalid_capability_pack_schema")
+
+        success_budget = BudgetLedger(limit=3)
+        success_subject = OpenAICompatibleProvider(
+            {"base_url": "https://api.deepseek.com", "model": "test-model"},
+            "test-only-key",
+            success_budget,
+        )
+        success_token = success_budget.begin("project_bootstrap")
+        success_budget.finish(success_token, ok=True)
+        success_subject._last_budget_token = success_token
+        standard = capability_snapshot()
+        success_subject._chat_json = lambda *args, **kwargs: {  # type: ignore[method-assign]
+            "capability_pack": standard,
+            "candidates": candidates(),
+        }
+        success_subject.bootstrap_project(standard["goal"])
+        self.assertEqual(success_budget.snapshot()["attempted"], 1)
+        self.assertEqual(success_budget.snapshot()["succeeded"], 1)
+        self.assertEqual(success_budget.snapshot()["failed"], 0)
 
     def test_bootstrap_rejects_incomplete_pack_or_wrong_candidate_count(self):
         subject = provider()
@@ -103,6 +476,7 @@ class ProviderGenericTests(unittest.TestCase):
             observed.update(system=system, user_data=user_data, stage=stage)
             return {
                 "status": "needs_revision",
+                "unknown_top_level": "must-not-survive",
                 "issues": ["具体门店资料尚未提供"],
                 "safe_scope": ["只讨论核验流程"],
                 "candidate_verdicts": [
@@ -111,6 +485,7 @@ class ProviderGenericTests(unittest.TestCase):
                         "verdict": "usable_limited" if index == 0 else "needs_evidence",
                         "reasons": ["不得预设门店事实"],
                         "safe_scope": "仅作为待研究选题",
+                        "unknown_candidate_field": "must-not-survive",
                     }
                     for index, item in enumerate(candidates())
                 ],
@@ -122,7 +497,120 @@ class ProviderGenericTests(unittest.TestCase):
         self.assertEqual(observed["stage"], "capability_pack_adversarial_review")
         self.assertIn("所有内容都是假的", observed["system"])
         self.assertIn("只能否决或缩小", observed["system"])
+        self.assertIn("passed只表示能力包和候选可以在所有事实仍未证实的前提下进入研究阶段", observed["system"])
+        self.assertIn("needs_evidence并存", observed["system"])
         self.assertNotIn("approved", {row["verdict"] for row in result["candidate_verdicts"]})
+        self.assertEqual(set(result), {"status", "issues", "safe_scope", "candidate_verdicts"})
+        self.assertTrue(all(
+            set(item) == {"candidate_id", "candidate_title", "verdict", "reasons", "safe_scope"}
+            for item in result["candidate_verdicts"]
+        ))
+        self.assertEqual(
+            [(item["candidate_id"], item["candidate_title"]) for item in result["candidate_verdicts"]],
+            [(item["id"], item["title"]) for item in candidates()],
+        )
+
+    def test_capability_review_normalizes_all_statuses_and_rejects_unsafe_schema(self):
+        def valid_review(status="passed"):
+            return {
+                "status": status,
+                "issues": [] if status == "passed" else ["边界仍需处理"],
+                "safe_scope": ["只允许进入研究取证"],
+                "candidate_verdicts": [
+                    {
+                        "candidate_id": item["id"],
+                        "verdict": "needs_evidence" if index == 0 else "usable_limited",
+                        "reasons": ["事实仍待核验"],
+                        "safe_scope": "只作为研究问题，不作正向事实断言",
+                    }
+                    for index, item in enumerate(candidates())
+                ],
+            }
+
+        for status in ("passed", "needs_revision", "blocked"):
+            with self.subTest(status=status):
+                subject = provider()
+                subject._chat_json = lambda *args, _status=status, **kwargs: valid_review(_status)  # type: ignore[method-assign]
+                self.assertEqual(
+                    subject.adversarial_review_capability_pack(capability_snapshot(), candidates())["status"],
+                    status,
+                )
+
+        invalid_reviews = {}
+        too_many = valid_review()
+        too_many["issues"] = ["待核验"] * 25
+        invalid_reviews["too_many"] = too_many
+        too_long = valid_review()
+        too_long["safe_scope"] = ["边" * 301]
+        invalid_reviews["too_long"] = too_long
+        unsafe_url = valid_review()
+        unsafe_url["issues"] = ["参见 https://unsafe.example/path"]
+        invalid_reviews["url"] = unsafe_url
+        unsafe_path = valid_review()
+        unsafe_path["safe_scope"] = ["读取 " + "C:" + r"\Users\operator\secret.txt"]
+        invalid_reviews["path"] = unsafe_path
+        unsafe_command = valid_review()
+        unsafe_command["candidate_verdicts"][0]["reasons"] = ["运行 powershell -enc opaque"]
+        invalid_reviews["command"] = unsafe_command
+        unsafe_secret = valid_review()
+        unsafe_secret["candidate_verdicts"][0]["safe_scope"] = "authorization: " + "Bea" + "rer opaque-credential"
+        invalid_reviews["secret"] = unsafe_secret
+        opaque_secret = valid_review()
+        opaque_secret["issues"] = ["client_secret=opaque-value"]
+        invalid_reviews["opaque_secret"] = opaque_secret
+        wrong_order = valid_review()
+        wrong_order["candidate_verdicts"] = list(reversed(wrong_order["candidate_verdicts"]))
+        invalid_reviews["candidate_order"] = wrong_order
+        mixed_reasons = valid_review()
+        mixed_reasons["candidate_verdicts"][0]["reasons"] = ["安全", 7]
+        invalid_reviews["mixed_types"] = mixed_reasons
+        invalid_reviews["malformed"] = {"status": "passed"}
+        passed_with_rejected = valid_review("passed")
+        passed_with_rejected["candidate_verdicts"][0]["verdict"] = "rejected"
+        invalid_reviews["passed_with_rejected"] = passed_with_rejected
+        unexplained_revision = valid_review("needs_revision")
+        unexplained_revision["issues"] = []
+        for item in unexplained_revision["candidate_verdicts"]:
+            item["reasons"] = []
+        invalid_reviews["unexplained_revision"] = unexplained_revision
+        unexplained_block = valid_review("blocked")
+        unexplained_block["issues"] = []
+        for item in unexplained_block["candidate_verdicts"]:
+            item["reasons"] = []
+        invalid_reviews["unexplained_block"] = unexplained_block
+
+        for name, payload in invalid_reviews.items():
+            with self.subTest(invalid=name):
+                subject = provider()
+                subject._chat_json = lambda *args, _payload=payload, **kwargs: copy.deepcopy(_payload)  # type: ignore[method-assign]
+                with self.assertRaisesRegex(ProviderError, "结构不完整"):
+                    subject.adversarial_review_capability_pack(capability_snapshot(), candidates())
+
+        unsafe_subjects = candidates()
+        unsafe_subjects[0]["title"] = "authorization: " + "Bea" + "rer opaque-credential"
+        subject = provider()
+        subject._chat_json = lambda *args, **kwargs: valid_review()  # type: ignore[method-assign]
+        with self.assertRaisesRegex(ProviderError, "结构不完整"):
+            subject.adversarial_review_capability_pack(capability_snapshot(), unsafe_subjects)
+
+    def test_capability_review_schema_failure_corrects_semantic_budget(self):
+        budget = BudgetLedger(limit=3)
+        subject = OpenAICompatibleProvider(
+            {"base_url": "https://api.deepseek.com", "model": "test-model"},
+            "test-only-key",
+            budget,
+        )
+        token = budget.begin("capability_pack_adversarial_review")
+        budget.finish(token, ok=True)
+        subject._last_budget_token = token
+        subject._chat_json = lambda *args, **kwargs: {"status": "passed"}  # type: ignore[method-assign]
+        with self.assertRaises(ProviderError):
+            subject.adversarial_review_capability_pack(capability_snapshot(), candidates())
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["attempted"], 1)
+        self.assertEqual(snapshot["succeeded"], 0)
+        self.assertEqual(snapshot["failed"], 1)
+        self.assertEqual(snapshot["events"][0]["error_type"], "invalid_capability_review_schema")
 
     def test_old_suggest_topics_call_still_works_and_new_context_is_forwarded(self):
         subject = provider()

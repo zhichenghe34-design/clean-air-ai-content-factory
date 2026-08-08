@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+import unicodedata
 import uuid
 import urllib.error
 import urllib.parse
@@ -13,7 +14,16 @@ from typing import Any, Callable
 
 
 class ProviderError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.details = details
+
+    def __str__(self) -> str:
+        message = super().__str__()
+        if self.details is None:
+            return message
+        diagnostic = json.dumps(self.details, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return f"{message}；结构诊断：{diagnostic}"
 
 
 CAPABILITY_SNAPSHOT_FIELDS = (
@@ -42,6 +52,492 @@ CAPABILITY_SNAPSHOT_LIST_FIELDS = {
     "visual_direction",
     "assumptions",
 }
+CAPABILITY_SNAPSHOT_REQUIRED_LIST_FIELDS = {"platforms", "tone", "assumptions"}
+
+_BOOTSTRAP_SCALAR_LIMITS = {
+    "label": 80,
+    "industry": 80,
+    "goal": 200,
+    "audience": 80,
+    "content_purpose": 160,
+    "risk_level": 16,
+}
+_BOOTSTRAP_LIST_LIMITS = {
+    "platforms": 12,
+    "tone": 12,
+    "preferred_terms": 24,
+    "avoided_terms": 24,
+    "evidence_requirements": 24,
+    "prohibited_claims": 24,
+    "visual_direction": 12,
+    "assumptions": 16,
+}
+_BOOTSTRAP_RISK_LEVELS = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "低": "low",
+    "中": "medium",
+    "高": "high",
+    "低风险": "low",
+    "中风险": "medium",
+    "高风险": "high",
+}
+_BOOTSTRAP_FORBIDDEN_VISUAL_KEYS = {
+    "prompt",
+    "system_prompt",
+    "developer_prompt",
+    "instruction_prompt",
+    "path",
+    "filepath",
+    "directory",
+    "command",
+    "cmd",
+    "shell",
+    "script",
+    "code",
+    "secret",
+    "secrets",
+    "api_key",
+    "apikey",
+    "token",
+    "access_token",
+    "password",
+    "cookie",
+    "authorization",
+    "url",
+    "endpoint",
+    "headers",
+    "密钥",
+    "口令",
+    "密码",
+    "令牌",
+    "路径",
+    "命令",
+    "网址",
+    "链接",
+}
+_BOOTSTRAP_SENSITIVE_VISUAL_KEY_TOKENS = {
+    "auth",
+    "authorization",
+    "bearer",
+    "cookie",
+    "credential",
+    "credentials",
+    "jwt",
+    "oauth",
+    "password",
+    "secret",
+    "token",
+}
+_BOOTSTRAP_SENSITIVE_VISUAL_KEY_SUBSTRINGS = {
+    "accesskey",
+    "apikey",
+    "authorization",
+    "authentication",
+    "authn",
+    "clientkey",
+    "cookie",
+    "credential",
+    "passwd",
+    "password",
+    "privatekey",
+    "pwd",
+    "secret",
+    "token",
+}
+_BOOTSTRAP_SENSITIVE_VISUAL_KEY_SEQUENCES = {
+    ("access", "key"),
+    ("api", "key"),
+    ("client", "key"),
+    ("private", "key"),
+}
+_BOOTSTRAP_SENSITIVE_VISUAL_KEY_MARKERS = (
+    "密钥",
+    "口令",
+    "密码",
+    "令牌",
+    "授权",
+    "认证",
+    "凭据",
+)
+_BOOTSTRAP_URL_RE = re.compile(r"(?i)(?:https?|file|ftp)://")
+_BOOTSTRAP_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|(?:^|\s)/(?:etc|home|users|var|tmp)/|\.\.[\\/])")
+_BOOTSTRAP_SECRET_RE = re.compile(
+    r"(?i)(?:api[_ -]?key|access[_ -]?token|password|authorization|cookie)\s*[:=]\s*\S+|\bsk-[A-Za-z0-9_-]{12,}\b"
+)
+_BOOTSTRAP_COMMAND_RE = re.compile(
+    r"(?i)(?:\b(?:powershell|cmd\.exe|bash|zsh)\s+(?:-[a-z]|/c)"
+    r"|\b(?:curl|wget)\s+(?:-[A-Za-z]+\s+)*(?:https?|ftp)://"
+    r"|\brm\s+-rf\b|\binvoke-expression\b|\bsubprocess\.)"
+)
+_BOOTSTRAP_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+_CAPABILITY_REVIEW_STATUSES = {"passed", "needs_revision", "blocked"}
+_CAPABILITY_REVIEW_VERDICTS = {"usable_limited", "needs_evidence", "rejected"}
+_CAPABILITY_REVIEW_LIST_LIMITS = {
+    "issues": 24,
+    "safe_scope": 24,
+    "reasons": 12,
+}
+_CAPABILITY_REVIEW_TEXT_LIMIT = 300
+_CAPABILITY_REVIEW_SECRET_RE = re.compile(
+    r"(?i)(?:(?:api|access|refresh|client|consumer|webhook|signing)[_ -]?)?"
+    r"(?:key|token|secret|password|passwd|pwd|cookie|credential|authorization)\s*[:=]\s*\S+"
+    r"|\bbearer\s+\S+|\bsk-[A-Za-z0-9_-]{12,}\b"
+)
+
+
+def _bootstrap_value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, (int, float)):
+        return "number"
+    return "other"
+
+
+def bootstrap_capability_schema_diagnostics(value: Any) -> dict[str, Any]:
+    """Describe only schema shape; never retain model-provided content values."""
+
+    if not isinstance(value, dict):
+        return {
+            "missing_fields": list(CAPABILITY_SNAPSHOT_FIELDS),
+            "unknown_fields": [],
+            "field_types": {"capability_pack": _bootstrap_value_type(value)},
+            "list_element_types": {},
+        }
+    string_keys = {key for key in value if isinstance(key, str)}
+    missing = [field for field in CAPABILITY_SNAPSHOT_FIELDS if field not in string_keys]
+    has_unknown = any(key not in CAPABILITY_SNAPSHOT_FIELDS for key in string_keys) or any(
+        not isinstance(key, str) for key in value
+    )
+    unknown = ["<redacted-unknown-field>"] if has_unknown else []
+    field_types = {
+        field: _bootstrap_value_type(value[field])
+        for field in CAPABILITY_SNAPSHOT_FIELDS
+        if field in value
+    }
+    list_element_types = {
+        field: sorted({_bootstrap_value_type(item) for item in value[field]})
+        for field in CAPABILITY_SNAPSHOT_LIST_FIELDS
+        if isinstance(value.get(field), list)
+    }
+    return {
+        "missing_fields": missing,
+        "unknown_fields": unknown,
+        "field_types": field_types,
+        "list_element_types": list_element_types,
+    }
+
+
+_BOOTSTRAP_DIAGNOSTIC_FIELDS = {
+    "missing_fields",
+    "unknown_fields",
+    "field_types",
+    "list_element_types",
+}
+_BOOTSTRAP_DIAGNOSTIC_TYPES = {
+    "null",
+    "boolean",
+    "string",
+    "array",
+    "object",
+    "number",
+    "other",
+}
+
+
+def sanitize_bootstrap_schema_diagnostic(value: Any) -> dict[str, Any] | None:
+    """Revalidate shape-only diagnostics without trusting exception details."""
+
+    if not isinstance(value, dict) or set(value) != _BOOTSTRAP_DIAGNOSTIC_FIELDS:
+        return None
+    missing = value.get("missing_fields")
+    unknown = value.get("unknown_fields")
+    field_types = value.get("field_types")
+    list_element_types = value.get("list_element_types")
+    if (
+        not isinstance(missing, list)
+        or len(missing) > len(CAPABILITY_SNAPSHOT_FIELDS)
+        or any(not isinstance(item, str) or item not in CAPABILITY_SNAPSHOT_FIELDS for item in missing)
+        or unknown not in ([], ["<redacted-unknown-field>"])
+        or not isinstance(field_types, dict)
+        or len(field_types) > len(CAPABILITY_SNAPSHOT_FIELDS) + 1
+        or any(
+            not isinstance(key, str)
+            or key not in {*CAPABILITY_SNAPSHOT_FIELDS, "capability_pack"}
+            or not isinstance(item, str)
+            or item not in _BOOTSTRAP_DIAGNOSTIC_TYPES
+            for key, item in field_types.items()
+        )
+        or not isinstance(list_element_types, dict)
+        or len(list_element_types) > len(CAPABILITY_SNAPSHOT_LIST_FIELDS)
+    ):
+        return None
+    for key, types in list_element_types.items():
+        if (
+            not isinstance(key, str)
+            or key not in CAPABILITY_SNAPSHOT_LIST_FIELDS
+            or not isinstance(types, list)
+            or len(types) > len(_BOOTSTRAP_DIAGNOSTIC_TYPES)
+            or any(not isinstance(item, str) or item not in _BOOTSTRAP_DIAGNOSTIC_TYPES for item in types)
+        ):
+            return None
+    missing_set = set(missing)
+    ordered_types = ("null", "boolean", "string", "array", "object", "number", "other")
+    field_order = ("capability_pack", *CAPABILITY_SNAPSHOT_FIELDS)
+    return {
+        "missing_fields": [field for field in CAPABILITY_SNAPSHOT_FIELDS if field in missing_set],
+        "unknown_fields": list(unknown),
+        "field_types": {field: field_types[field] for field in field_order if field in field_types},
+        "list_element_types": {
+            field: [item for item in ordered_types if item in set(list_element_types[field])]
+            for field in CAPABILITY_SNAPSHOT_LIST_FIELDS
+            if field in list_element_types
+        },
+    }
+
+
+def _raise_bootstrap_schema(message: str, raw_pack: Any) -> None:
+    raise ProviderError(message, details=bootstrap_capability_schema_diagnostics(raw_pack))
+
+
+def _assert_bootstrap_safe_text(value: str, *, field: str, maximum: int) -> str:
+    text = value.strip()
+    safety_view = unicodedata.normalize("NFKC", text).strip()
+    if not safety_view or len(text) > maximum or len(safety_view) > maximum:
+        raise ProviderError(f"项目启动接口返回的{field}为空或超过长度限制")
+    if (
+        _BOOTSTRAP_CONTROL_RE.search(safety_view)
+        or _BOOTSTRAP_URL_RE.search(safety_view)
+        or _BOOTSTRAP_PATH_RE.search(safety_view)
+        or _BOOTSTRAP_COMMAND_RE.search(safety_view)
+        or _BOOTSTRAP_SECRET_RE.search(safety_view)
+    ):
+        raise ProviderError(f"项目启动接口返回的{field}包含非声明式内容")
+    return text
+
+
+def _normalize_capability_review_text_list(value: Any, *, field: str) -> list[str]:
+    if not isinstance(value, list) or len(value) > _CAPABILITY_REVIEW_LIST_LIMITS[field]:
+        raise ProviderError("行业能力包反证审核接口返回的文本列表无效")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ProviderError("行业能力包反证审核接口返回的文本列表无效")
+        normalized = _assert_bootstrap_safe_text(
+            item,
+            field=f"capability_review.{field}",
+            maximum=_CAPABILITY_REVIEW_TEXT_LIMIT,
+        )
+        if _CAPABILITY_REVIEW_SECRET_RE.search(unicodedata.normalize("NFKC", normalized)):
+            raise ProviderError("行业能力包反证审核接口返回的文本列表包含秘密样式内容")
+        result.append(normalized)
+    return result
+
+
+def normalize_capability_review(
+    value: Any,
+    candidate_subjects: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return a bounded review tied to the exact server-validated subjects."""
+
+    if not isinstance(value, dict) or value.get("status") not in _CAPABILITY_REVIEW_STATUSES:
+        raise ProviderError("行业能力包反证审核接口返回的结构不完整")
+    subjects: list[dict[str, str]] = []
+    for subject in candidate_subjects:
+        if (
+            not isinstance(subject, dict)
+            or not isinstance(subject.get("id"), str)
+            or not isinstance(subject.get("title"), str)
+        ):
+            raise ProviderError("行业能力包反证审核接口返回的候选身份无效")
+        candidate_id = _assert_bootstrap_safe_text(
+            subject.get("id"),
+            field="capability_review.subject.id",
+            maximum=80,
+        )
+        candidate_title = _assert_bootstrap_safe_text(
+            subject.get("title"),
+            field="capability_review.subject.title",
+            maximum=80,
+        )
+        subjects.append({"candidate_id": candidate_id, "candidate_title": candidate_title})
+    candidate_ids = [item["candidate_id"] for item in subjects]
+    issues = _normalize_capability_review_text_list(value.get("issues"), field="issues")
+    safe_scope = _normalize_capability_review_text_list(value.get("safe_scope"), field="safe_scope")
+    raw_verdicts = value.get("candidate_verdicts")
+    if not isinstance(raw_verdicts, list) or len(raw_verdicts) != len(candidate_ids):
+        raise ProviderError("行业能力包反证审核接口返回的结构不完整")
+    verdicts: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_verdicts):
+        if not isinstance(item, dict):
+            raise ProviderError("行业能力包反证审核接口返回的结构不完整")
+        candidate_id = item.get("candidate_id")
+        verdict = item.get("verdict")
+        candidate_scope = item.get("safe_scope")
+        if (
+            not isinstance(candidate_id, str)
+            or verdict not in _CAPABILITY_REVIEW_VERDICTS
+            or not isinstance(candidate_scope, str)
+        ):
+            raise ProviderError("行业能力包反证审核接口返回的结构不完整")
+        normalized_scope = _assert_bootstrap_safe_text(
+            candidate_scope,
+            field="capability_review.candidate.safe_scope",
+            maximum=_CAPABILITY_REVIEW_TEXT_LIMIT,
+        )
+        if _CAPABILITY_REVIEW_SECRET_RE.search(unicodedata.normalize("NFKC", normalized_scope)):
+            raise ProviderError("行业能力包反证审核接口返回的候选范围包含秘密样式内容")
+        verdicts.append({
+            "candidate_id": _assert_bootstrap_safe_text(
+                candidate_id,
+                field="capability_review.candidate_id",
+                maximum=80,
+            ),
+            "verdict": verdict,
+            "reasons": _normalize_capability_review_text_list(item.get("reasons"), field="reasons"),
+            "safe_scope": normalized_scope,
+            # The reviewer is not trusted to repeat titles. Bind the verdict to
+            # the already validated input subject so diagnostics cannot attach
+            # it to a later local replacement that happens to reuse the ID.
+            "candidate_title": subjects[index]["candidate_title"],
+        })
+    if [item["candidate_id"] for item in verdicts] != candidate_ids:
+        raise ProviderError("行业能力包反证审核接口返回的候选顺序无效")
+    if value["status"] == "passed" and any(item["verdict"] == "rejected" for item in verdicts):
+        raise ProviderError("行业能力包反证审核接口返回的全局通过与候选拒绝相互冲突")
+    if value["status"] in {"needs_revision", "blocked"} and not (
+        issues or any(item["reasons"] for item in verdicts)
+    ):
+        raise ProviderError("行业能力包反证审核接口返回的非通过裁决缺少可执行解释")
+    return {
+        "status": value["status"],
+        "issues": issues,
+        "safe_scope": safe_scope,
+        "candidate_verdicts": verdicts,
+    }
+
+
+def _normalize_bootstrap_scalar(value: Any, *, field: str, maximum: int) -> str:
+    if isinstance(value, list):
+        if len(value) != 1 or not isinstance(value[0], str):
+            raise ProviderError(f"项目启动接口返回的{field}必须是字符串或单项字符串数组")
+        value = value[0]
+    if not isinstance(value, str):
+        raise ProviderError(f"项目启动接口返回的{field}必须是字符串")
+    return _assert_bootstrap_safe_text(value, field=field, maximum=maximum)
+
+
+def _normalize_bootstrap_list(value: Any, *, field: str) -> list[str]:
+    if isinstance(value, str):
+        values: list[Any] = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        raise ProviderError(f"项目启动接口返回的{field}必须是字符串数组")
+    if len(values) > _BOOTSTRAP_LIST_LIMITS[field]:
+        raise ProviderError(f"项目启动接口返回的{field}项目过多")
+    if field in CAPABILITY_SNAPSHOT_REQUIRED_LIST_FIELDS and not values:
+        raise ProviderError(f"项目启动接口返回的{field}不能为空")
+    result: list[str] = []
+    for item in values:
+        if not isinstance(item, str):
+            raise ProviderError(f"项目启动接口返回的{field}包含非字符串元素")
+        result.append(_assert_bootstrap_safe_text(item, field=field, maximum=300))
+    return result
+
+
+def _normalized_bootstrap_visual_key(value: str) -> str:
+    safety_view = unicodedata.normalize("NFKC", value)
+    camel_split = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", safety_view)
+    normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", camel_split.casefold()).strip("_")
+    if not normalized:
+        raise ProviderError("项目启动接口返回的visual_direction键无法规范化")
+    tokens = tuple(token for token in normalized.split("_") if token)
+    token_set = set(tokens)
+    collapsed = "".join(tokens)
+    has_sensitive_sequence = any(
+        all(sequence[index] == tokens[start + index] for index in range(len(sequence)))
+        for sequence in _BOOTSTRAP_SENSITIVE_VISUAL_KEY_SEQUENCES
+        for start in range(len(tokens) - len(sequence) + 1)
+    )
+    if (
+        normalized in _BOOTSTRAP_FORBIDDEN_VISUAL_KEYS
+        or token_set.intersection(_BOOTSTRAP_SENSITIVE_VISUAL_KEY_TOKENS)
+        or any(term in collapsed for term in _BOOTSTRAP_SENSITIVE_VISUAL_KEY_SUBSTRINGS)
+        or has_sensitive_sequence
+        or any(marker in normalized for marker in _BOOTSTRAP_SENSITIVE_VISUAL_KEY_MARKERS)
+    ):
+        raise ProviderError("项目启动接口返回的visual_direction包含敏感键")
+    return normalized
+
+
+def _normalize_bootstrap_visual_object(value: dict[Any, Any]) -> list[str]:
+    if not 1 <= len(value) <= 12:
+        raise ProviderError("项目启动接口返回的visual_direction对象必须包含1到12项")
+    entries: list[tuple[str, str, str]] = []
+    normalized_keys: set[str] = set()
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise ProviderError("项目启动接口返回的visual_direction对象必须是扁平字符串映射")
+        clean_key = key.strip()
+        clean_key = _assert_bootstrap_safe_text(clean_key, field="visual_direction键", maximum=80)
+        normalized_key = _normalized_bootstrap_visual_key(clean_key)
+        if normalized_key in normalized_keys:
+            raise ProviderError("项目启动接口返回的visual_direction包含规范化重名键")
+        normalized_keys.add(normalized_key)
+        clean_value = _assert_bootstrap_safe_text(item, field="visual_direction值", maximum=200)
+        entries.append((normalized_key, clean_key, clean_value))
+    entries.sort(key=lambda entry: entry[0])
+    return [f"{clean_key}：{clean_value}" for _, clean_key, clean_value in entries]
+
+
+def normalize_bootstrap_capability_snapshot(raw_pack: Any, goal: str) -> dict[str, Any]:
+    """Safely normalize only the unversioned Provider bootstrap snapshot.
+
+    This adapter tolerates a few harmless representation differences while
+    preserving the exact top-level whitelist. The result must still pass
+    ``normalize_capability_pack`` before it can become an executable pack.
+    """
+
+    diagnostics = bootstrap_capability_schema_diagnostics(raw_pack)
+    if not isinstance(raw_pack, dict) or diagnostics["missing_fields"] or diagnostics["unknown_fields"]:
+        _raise_bootstrap_schema("项目启动接口返回的行业能力包结构不完整", raw_pack)
+    normalized: dict[str, Any] = {}
+    try:
+        for field in CAPABILITY_SNAPSHOT_FIELDS:
+            value = raw_pack[field]
+            if field == "visual_direction" and isinstance(value, dict):
+                normalized[field] = _normalize_bootstrap_visual_object(value)
+            elif field in CAPABILITY_SNAPSHOT_LIST_FIELDS:
+                normalized[field] = _normalize_bootstrap_list(value, field=field)
+            else:
+                normalized[field] = _normalize_bootstrap_scalar(
+                    value,
+                    field=field,
+                    maximum=_BOOTSTRAP_SCALAR_LIMITS[field],
+                )
+        normalized["risk_level"] = _BOOTSTRAP_RISK_LEVELS.get(normalized["risk_level"].casefold(), "")
+        if not normalized["risk_level"]:
+            raise ProviderError("项目启动接口返回的风险等级无效")
+        authoritative_goal = str(goal).strip()
+        if normalized["goal"] != authoritative_goal:
+            raise ProviderError("项目启动接口重复的goal与用户输入不一致")
+        normalized["goal"] = authoritative_goal
+    except ProviderError as exc:
+        if exc.details is None:
+            exc.details = diagnostics
+        raise
+    return normalized
 
 
 def _validate_topic_candidates(value: Any, *, add_ids: bool = False) -> list[dict[str, Any]]:
@@ -320,31 +816,17 @@ class OpenAICompatibleProvider:
             count_budget=True,
         )
         raw_pack = result.get("capability_pack")
-        if not isinstance(raw_pack, dict) or set(raw_pack) != set(CAPABILITY_SNAPSHOT_FIELDS):
+        try:
+            normalized_pack = normalize_bootstrap_capability_snapshot(raw_pack, goal)
+        except ProviderError:
             self._mark_semantic_failure("invalid_capability_pack_schema")
-            raise ProviderError("项目启动接口返回的行业能力包结构不完整")
-        for field in CAPABILITY_SNAPSHOT_FIELDS:
-            value = raw_pack.get(field)
-            if field in CAPABILITY_SNAPSHOT_LIST_FIELDS:
-                if (
-                    not isinstance(value, list)
-                    or any(not isinstance(item, str) or not item.strip() for item in value)
-                    or (field in {"platforms", "tone", "assumptions"} and not value)
-                ):
-                    self._mark_semantic_failure("invalid_capability_pack_schema")
-                    raise ProviderError("项目启动接口返回的行业能力包字段类型无效")
-            elif not isinstance(value, str) or not value.strip():
-                self._mark_semantic_failure("invalid_capability_pack_schema")
-                raise ProviderError("项目启动接口返回的行业能力包字段类型无效")
-        if raw_pack.get("risk_level") not in {"low", "medium", "high"}:
-            self._mark_semantic_failure("invalid_capability_pack_schema")
-            raise ProviderError("项目启动接口返回的风险等级无效")
+            raise
         try:
             candidates = _validate_topic_candidates(result.get("candidates"), add_ids=True)
         except ProviderError:
             self._mark_semantic_failure("invalid_topic_schema")
             raise
-        return {"capability_pack": dict(raw_pack), "candidates": candidates}
+        return {"capability_pack": normalized_pack, "candidates": candidates}
 
     def adversarial_review_capability_pack(
         self,
@@ -352,7 +834,6 @@ class OpenAICompatibleProvider:
         candidates: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Veto or narrow a generated pack without inventing replacement facts."""
-        candidate_ids = [str(item.get("id") or f"topic-{index}") for index, item in enumerate(candidates, start=1)]
         system = (
             "你是与项目启动Agent独立的反证审核员。以‘能力包和候选中的所有内容都是假的’为初始前提。"
             "只检查越界、未经证实的企业或产品事实、伪造证言/认证/排名、证据要求缺口、高风险行业承诺和"
@@ -362,6 +843,12 @@ class OpenAICompatibleProvider:
             "needs_revision或blocked；issues和safe_scope必须是字符串数组。candidate_verdicts必须与输入"
             "候选一一对应并保持原candidate_id，每项字段为candidate_id,verdict,reasons,safe_scope；"
             "verdict只能是usable_limited、needs_evidence或rejected，reasons为字符串数组，safe_scope为字符串。"
+            "裁决协议：passed只表示能力包和候选可以在所有事实仍未证实的前提下进入研究阶段，绝不表示企业事实"
+            "或候选结论已经证实。当未知内容已明确写入assumptions、evidence_requirements和prohibited_claims，"
+            "候选采用问题式、流程式或待核验角度且没有正向事实断言时，可以判passed。全局passed可以与单个候选"
+            "needs_evidence并存，因为研究阶段负责取证；但该候选必须给出非空safe_scope，且不得含正向事实断言。"
+            "needs_revision仅用于当前文本仍含未经证实断言或边界缺口、必须修改后才能进入研究。blocked用于无法通过"
+            "限定用途安全进入研究的高风险内容、虚构事实或把memory当作证据。不得自动把needs_revision或blocked升级为passed。"
         )
         result = self._chat_json(
             system,
@@ -369,29 +856,11 @@ class OpenAICompatibleProvider:
             stage="capability_pack_adversarial_review",
             count_budget=True,
         )
-        verdicts = result.get("candidate_verdicts")
-        if (
-            result.get("status") not in {"passed", "needs_revision", "blocked"}
-            or not isinstance(result.get("issues"), list)
-            or any(not isinstance(item, str) for item in result["issues"])
-            or not isinstance(result.get("safe_scope"), list)
-            or any(not isinstance(item, str) for item in result["safe_scope"])
-            or not isinstance(verdicts, list)
-            or len(verdicts) != len(candidates)
-            or not all(
-                isinstance(item, dict)
-                and isinstance(item.get("candidate_id"), str)
-                and item.get("verdict") in {"usable_limited", "needs_evidence", "rejected"}
-                and isinstance(item.get("reasons"), list)
-                and all(isinstance(reason, str) for reason in item["reasons"])
-                and isinstance(item.get("safe_scope"), str)
-                for item in verdicts
-            )
-            or [item.get("candidate_id") for item in verdicts] != candidate_ids
-        ):
+        try:
+            return normalize_capability_review(result, candidates)
+        except ProviderError as exc:
             self._mark_semantic_failure("invalid_capability_review_schema")
-            raise ProviderError("行业能力包反证审核接口返回的结构不完整")
-        return result
+            raise ProviderError("行业能力包反证审核接口返回的结构不完整") from exc
 
     def suggest_topics(
         self,
