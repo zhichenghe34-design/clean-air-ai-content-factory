@@ -921,7 +921,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         try:
                             capability_review = normalize_capability_review(
                                 audit,
-                                [str(item.get("id", "")) for item in raw],
+                                raw,
                             )
                         except ProviderError:
                             capability_review_failure_kind = "invalid_schema"

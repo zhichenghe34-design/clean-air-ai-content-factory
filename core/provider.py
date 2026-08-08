@@ -278,19 +278,39 @@ def _normalize_capability_review_text_list(value: Any, *, field: str) -> list[st
 
 def normalize_capability_review(
     value: Any,
-    candidate_ids: list[str],
+    candidate_subjects: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Return the strict, bounded review schema without retaining model extras."""
+    """Return a bounded review tied to the exact server-validated subjects."""
 
     if not isinstance(value, dict) or value.get("status") not in _CAPABILITY_REVIEW_STATUSES:
         raise ProviderError("行业能力包反证审核接口返回的结构不完整")
+    subjects: list[dict[str, str]] = []
+    for subject in candidate_subjects:
+        if (
+            not isinstance(subject, dict)
+            or not isinstance(subject.get("id"), str)
+            or not isinstance(subject.get("title"), str)
+        ):
+            raise ProviderError("行业能力包反证审核接口返回的候选身份无效")
+        candidate_id = _assert_bootstrap_safe_text(
+            subject.get("id"),
+            field="capability_review.subject.id",
+            maximum=80,
+        )
+        candidate_title = _assert_bootstrap_safe_text(
+            subject.get("title"),
+            field="capability_review.subject.title",
+            maximum=80,
+        )
+        subjects.append({"candidate_id": candidate_id, "candidate_title": candidate_title})
+    candidate_ids = [item["candidate_id"] for item in subjects]
     issues = _normalize_capability_review_text_list(value.get("issues"), field="issues")
     safe_scope = _normalize_capability_review_text_list(value.get("safe_scope"), field="safe_scope")
     raw_verdicts = value.get("candidate_verdicts")
     if not isinstance(raw_verdicts, list) or len(raw_verdicts) != len(candidate_ids):
         raise ProviderError("行业能力包反证审核接口返回的结构不完整")
     verdicts: list[dict[str, Any]] = []
-    for item in raw_verdicts:
+    for index, item in enumerate(raw_verdicts):
         if not isinstance(item, dict):
             raise ProviderError("行业能力包反证审核接口返回的结构不完整")
         candidate_id = item.get("candidate_id")
@@ -318,6 +338,10 @@ def normalize_capability_review(
             "verdict": verdict,
             "reasons": _normalize_capability_review_text_list(item.get("reasons"), field="reasons"),
             "safe_scope": normalized_scope,
+            # The reviewer is not trusted to repeat titles. Bind the verdict to
+            # the already validated input subject so diagnostics cannot attach
+            # it to a later local replacement that happens to reuse the ID.
+            "candidate_title": subjects[index]["candidate_title"],
         })
     if [item["candidate_id"] for item in verdicts] != candidate_ids:
         raise ProviderError("行业能力包反证审核接口返回的候选顺序无效")
@@ -742,7 +766,6 @@ class OpenAICompatibleProvider:
         candidates: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Veto or narrow a generated pack without inventing replacement facts."""
-        candidate_ids = [str(item.get("id") or f"topic-{index}") for index, item in enumerate(candidates, start=1)]
         system = (
             "你是与项目启动Agent独立的反证审核员。以‘能力包和候选中的所有内容都是假的’为初始前提。"
             "只检查越界、未经证实的企业或产品事实、伪造证言/认证/排名、证据要求缺口、高风险行业承诺和"
@@ -766,7 +789,7 @@ class OpenAICompatibleProvider:
             count_budget=True,
         )
         try:
-            return normalize_capability_review(result, candidate_ids)
+            return normalize_capability_review(result, candidates)
         except ProviderError as exc:
             self._mark_semantic_failure("invalid_capability_review_schema")
             raise ProviderError("行业能力包反证审核接口返回的结构不完整") from exc

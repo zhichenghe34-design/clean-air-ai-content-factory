@@ -49,6 +49,7 @@ class IsolatedInstanceTests(unittest.TestCase):
                         "candidate_verdicts": [
                             {
                                 "candidate_id": f"topic-{index}",
+                                "candidate_title": f"被审核原候选标题{index}",
                                 "verdict": "needs_evidence",
                                 "reasons": [f"候选{index}仍缺公开依据"],
                                 "safe_scope": "只可进入研究取证",
@@ -74,12 +75,18 @@ class IsolatedInstanceTests(unittest.TestCase):
                 [
                     {
                         "candidate_id": f"topic-{index}",
+                        "candidate_title": f"被审核原候选标题{index}",
                         "verdict": "needs_evidence",
                         "reasons": [f"候选{index}仍缺公开依据"],
                         "safe_scope": "只可进入研究取证",
                     }
                     for index in range(1, 4)
                 ],
+            )
+            first_subject = diagnostic["capability_review_summary"]["candidate_verdicts"][0]
+            self.assertEqual(
+                (first_subject["candidate_title"], first_subject["candidate_id"], first_subject["verdict"], first_subject["reasons"]),
+                ("被审核原候选标题1", "topic-1", "needs_evidence", ["候选1仍缺公开依据"]),
             )
             self.assertFalse(diagnostic["automatic_paid_retry_started"])
             self.assertEqual(diagnostic["tasks_created"], 0)

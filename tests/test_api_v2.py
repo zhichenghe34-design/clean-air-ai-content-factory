@@ -685,15 +685,34 @@ class ApiV2Tests(unittest.TestCase):
                     self.assertIn("仅允许进入研究，不代表事实已证实", result["screening"])
                     candidate_titles = {item["id"]: item["title"] for item in result["candidates"]}
                     review_verdicts = {
-                        item["candidate_id"]: item["verdict"]
+                        item["candidate_id"]: (item["candidate_title"], item["verdict"])
                         for item in result["capability_review"]["candidate_verdicts"]
                     }
                     self.assertEqual(candidate_titles, {item["id"]: item["title"] for item in candidates})
-                    self.assertEqual(review_verdicts, {"topic-1": "needs_evidence", "topic-2": "usable_limited", "topic-3": "usable_limited"})
+                    self.assertEqual(review_verdicts, {
+                        "topic-1": ("点餐流程问题1", "needs_evidence"),
+                        "topic-2": ("点餐流程问题2", "usable_limited"),
+                        "topic-3": ("点餐流程问题3", "usable_limited"),
+                    })
                 else:
                     self.assertEqual(result["source"], "local_safe_agent")
                     self.assertEqual(result["capability_pack"]["audit"]["status"], "local_safe_fallback")
                     self.assertIn("已安全降级", result["screening"])
+                    returned_titles = {item["id"]: item["title"] for item in result["candidates"]}
+                    reviewed_subjects = {
+                        item["candidate_id"]: item["candidate_title"]
+                        for item in result["capability_review"]["candidate_verdicts"]
+                    }
+                    self.assertEqual(reviewed_subjects, {
+                        "topic-1": "点餐流程问题1",
+                        "topic-2": "点餐流程问题2",
+                        "topic-3": "点餐流程问题3",
+                    })
+                    self.assertNotEqual(returned_titles, reviewed_subjects)
+                    self.assertEqual(
+                        result["capability_review"]["candidate_verdicts"][0]["reasons"],
+                        ["尚待公开证据"],
+                    )
                 self.assertEqual(app.job_store.list(), [])
 
         malformed_goal = "为本地餐饮门店制作可信点餐流程视频-malformed"

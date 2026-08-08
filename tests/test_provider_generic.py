@@ -456,7 +456,14 @@ class ProviderGenericTests(unittest.TestCase):
         self.assertIn("needs_evidence并存", observed["system"])
         self.assertNotIn("approved", {row["verdict"] for row in result["candidate_verdicts"]})
         self.assertEqual(set(result), {"status", "issues", "safe_scope", "candidate_verdicts"})
-        self.assertTrue(all(set(item) == {"candidate_id", "verdict", "reasons", "safe_scope"} for item in result["candidate_verdicts"]))
+        self.assertTrue(all(
+            set(item) == {"candidate_id", "candidate_title", "verdict", "reasons", "safe_scope"}
+            for item in result["candidate_verdicts"]
+        ))
+        self.assertEqual(
+            [(item["candidate_id"], item["candidate_title"]) for item in result["candidate_verdicts"]],
+            [(item["id"], item["title"]) for item in candidates()],
+        )
 
     def test_capability_review_normalizes_all_statuses_and_rejects_unsafe_schema(self):
         def valid_review(status="passed"):
@@ -533,6 +540,13 @@ class ProviderGenericTests(unittest.TestCase):
                 subject._chat_json = lambda *args, _payload=payload, **kwargs: copy.deepcopy(_payload)  # type: ignore[method-assign]
                 with self.assertRaisesRegex(ProviderError, "结构不完整"):
                     subject.adversarial_review_capability_pack(capability_snapshot(), candidates())
+
+        unsafe_subjects = candidates()
+        unsafe_subjects[0]["title"] = "authorization: " + "Bea" + "rer opaque-credential"
+        subject = provider()
+        subject._chat_json = lambda *args, **kwargs: valid_review()  # type: ignore[method-assign]
+        with self.assertRaisesRegex(ProviderError, "结构不完整"):
+            subject.adversarial_review_capability_pack(capability_snapshot(), unsafe_subjects)
 
     def test_capability_review_schema_failure_corrects_semantic_budget(self):
         budget = BudgetLedger(limit=3)

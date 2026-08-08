@@ -43,7 +43,15 @@ def safe_review_summary(review: Any) -> dict[str, Any]:
 
     verdicts = {"usable_limited", "needs_evidence", "rejected"}
     try:
-        normalized = normalize_capability_review(review, ["topic-1", "topic-2", "topic-3"])
+        raw_verdicts = review.get("candidate_verdicts") if isinstance(review, dict) else None
+        if not isinstance(raw_verdicts, list):
+            raise ProviderError("行业能力包反证审核接口返回的结构不完整")
+        subjects = [
+            {"id": item.get("candidate_id"), "title": item.get("candidate_title")}
+            if isinstance(item, dict) else {}
+            for item in raw_verdicts
+        ]
+        normalized = normalize_capability_review(review, subjects)
     except ProviderError:
         return {
             "status": "invalid_schema",
@@ -59,6 +67,7 @@ def safe_review_summary(review: Any) -> dict[str, Any]:
         counts[item["verdict"]] += 1
         candidates.append({
             "candidate_id": item["candidate_id"],
+            "candidate_title": item["candidate_title"],
             "verdict": item["verdict"],
             "reasons": item["reasons"][:4],
             "safe_scope": item["safe_scope"],

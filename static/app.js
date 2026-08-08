@@ -277,11 +277,15 @@ function renderTopicChoices(result = state.topicResponse || {}) {
     const scopes = Array.isArray(review.safe_scope) ? review.safe_scope.filter(item => typeof item === "string" && item.trim()).slice(0, 2) : [];
     if (issues.length) reviewParts.push(`原因：${issues.join("；")}`);
     if (scopes.length) reviewParts.push(`允许范围：${scopes.join("；")}`);
-    const candidateNotes = Array.isArray(review.candidate_verdicts) ? review.candidate_verdicts.slice(0, 2).map((item, index) => {
+    // A non-passed review describes the rejected Provider subjects, while the
+    // buttons below are new local replacements. Keep those explanations global
+    // so identical topic IDs cannot visually bind them to the replacement list.
+    const candidateNotes = review.status === "passed" && Array.isArray(review.candidate_verdicts) ? review.candidate_verdicts.slice(0, 2).map(item => {
       const reasons = Array.isArray(item?.reasons) ? item.reasons.filter(reason => typeof reason === "string" && reason.trim()).slice(0, 1) : [];
       const scope = typeof item?.safe_scope === "string" ? item.safe_scope.trim() : "";
+      const title = typeof item?.candidate_title === "string" ? item.candidate_title.trim() : "";
       const detail = [reasons[0], scope ? `范围：${scope}` : ""].filter(Boolean).join("；");
-      return detail ? `候选${index + 1}${verdictLabels[item?.verdict] || "待核验"}：${detail}` : "";
+      return detail && title ? `被审核候选“${title}”${verdictLabels[item?.verdict] || "待核验"}：${detail}` : "";
     }).filter(Boolean) : [];
     if (candidateNotes.length) reviewParts.push(candidateNotes.join("；"));
   }
