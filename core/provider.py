@@ -129,16 +129,21 @@ _BOOTSTRAP_SENSITIVE_VISUAL_KEY_TOKENS = {
     "secret",
     "token",
 }
-_BOOTSTRAP_SENSITIVE_VISUAL_KEY_FRAGMENTS = {
+_BOOTSTRAP_SENSITIVE_VISUAL_KEY_SUBSTRINGS = {
     "accesskey",
     "apikey",
     "authorization",
-    "clientsecret",
+    "authentication",
+    "authn",
+    "clientkey",
     "cookie",
     "credential",
+    "passwd",
     "password",
     "privatekey",
-    "refreshtoken",
+    "pwd",
+    "secret",
+    "token",
 }
 _BOOTSTRAP_SENSITIVE_VISUAL_KEY_SEQUENCES = {
     ("access", "key"),
@@ -273,6 +278,7 @@ def _normalized_bootstrap_visual_key(value: str) -> str:
         raise ProviderError("项目启动接口返回的visual_direction键无法规范化")
     tokens = tuple(token for token in normalized.split("_") if token)
     token_set = set(tokens)
+    collapsed = "".join(tokens)
     has_sensitive_sequence = any(
         all(sequence[index] == tokens[start + index] for index in range(len(sequence)))
         for sequence in _BOOTSTRAP_SENSITIVE_VISUAL_KEY_SEQUENCES
@@ -281,7 +287,7 @@ def _normalized_bootstrap_visual_key(value: str) -> str:
     if (
         normalized in _BOOTSTRAP_FORBIDDEN_VISUAL_KEYS
         or token_set.intersection(_BOOTSTRAP_SENSITIVE_VISUAL_KEY_TOKENS)
-        or any(fragment in token for token in tokens for fragment in _BOOTSTRAP_SENSITIVE_VISUAL_KEY_FRAGMENTS)
+        or any(term in collapsed for term in _BOOTSTRAP_SENSITIVE_VISUAL_KEY_SUBSTRINGS)
         or has_sensitive_sequence
         or any(marker in normalized for marker in _BOOTSTRAP_SENSITIVE_VISUAL_KEY_MARKERS)
     ):
