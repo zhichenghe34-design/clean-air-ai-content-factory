@@ -254,7 +254,7 @@ def probe_preinstalled_runtimes(
     probes: list[tuple[str, list[str], Path, Mapping[str, str]]] = [
         (
             "MPT_RUNTIME_INVALID",
-            [str(config.mpt_python), "-I", "-c", "import fastapi, uvicorn"],
+            [str(config.mpt_python), "-I", "-B", "-c", "import fastapi, uvicorn"],
             config.mpt_root,
             build_engine_environment(os.environ, config),
         )
@@ -263,7 +263,7 @@ def probe_preinstalled_runtimes(
         probes.append(
             (
                 "APP_RUNTIME_INVALID",
-                [str(config.app_python), "-I", "-c", "import PIL, ddgs, langgraph"],
+                [str(config.app_python), "-I", "-B", "-c", "import PIL, ddgs, langgraph"],
                 config.project_root,
                 {**os.environ, "PYTHONUTF8": "1"},
             )

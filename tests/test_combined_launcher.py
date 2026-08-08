@@ -263,7 +263,13 @@ class CombinedLauncherTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, b"", b"")
 
         probe_preinstalled_runtimes(self.config, runner=fake_runner)
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(
+            commands,
+            [
+                [str(self.config.mpt_python), "-I", "-B", "-c", "import fastapi, uvicorn"],
+                [str(self.config.app_python), "-I", "-B", "-c", "import PIL, ddgs, langgraph"],
+            ],
+        )
         flattened = " ".join(value for command in commands for value in command).lower()
         for forbidden in ("pip", "uv sync", "npm", "download", "install"):
             self.assertNotIn(forbidden, flattened)
