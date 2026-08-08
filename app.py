@@ -40,7 +40,15 @@ from core.orchestrator import (
     validate_topic_input,
 )
 from core.production import DEFAULT_INPUT, ProductionRunner, estimate_narration_duration, review_script
-from core.provider import BudgetLedger, OpenAICompatibleProvider, ProviderError, normalize_capability_review
+from core.provider import (
+    BudgetLedger,
+    CAPABILITY_SNAPSHOT_FIELDS,
+    CAPABILITY_SNAPSHOT_LIST_FIELDS,
+    OpenAICompatibleProvider,
+    ProviderError,
+    normalize_capability_review,
+    sanitize_bootstrap_schema_diagnostic,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -117,6 +125,65 @@ def capability_review_failure_from_budget(budget: BudgetLedger) -> str:
             return "invalid_schema"
         return "provider_unavailable"
     return "provider_unavailable"
+
+
+def bootstrap_failure_from_budget(budget: BudgetLedger) -> str:
+    for event in reversed(budget.snapshot().get("events", [])):
+        if event.get("stage") not in {"project_bootstrap", "capability_pack_bootstrap"}:
+            continue
+        if event.get("error_type") == "invalid_capability_pack_schema":
+            return "invalid_capability_pack_schema"
+        if event.get("error_type") == "invalid_topic_schema":
+            return "invalid_topic_schema"
+        return "provider_unavailable"
+    return "provider_unavailable"
+
+
+def bootstrap_schema_diagnostic_summary(diagnostic: dict | None) -> str:
+    """Describe only fixed schema categories and known field names."""
+
+    if not isinstance(diagnostic, dict):
+        return "项目启动能力包未通过安全结构校验"
+    parts: list[str] = []
+    missing = diagnostic.get("missing_fields", [])
+    if missing:
+        parts.append(f"缺少字段：{'、'.join(missing)}")
+    if diagnostic.get("unknown_fields"):
+        parts.append("含未知字段")
+    wrong_types: list[str] = []
+    for field, actual in diagnostic.get("field_types", {}).items():
+        if field == "capability_pack":
+            allowed = {"object"}
+        elif field in CAPABILITY_SNAPSHOT_LIST_FIELDS:
+            allowed = {"string", "array"}
+            if field == "visual_direction":
+                allowed.add("object")
+        else:
+            allowed = {"string", "array"}
+        if actual not in allowed:
+            wrong_types.append(field)
+    if wrong_types:
+        parts.append(f"字段类型不符：{'、'.join(wrong_types)}")
+    mixed_lists = [
+        field
+        for field, types in diagnostic.get("list_element_types", {}).items()
+        if any(item != "string" for item in types)
+    ]
+    if mixed_lists:
+        parts.append(f"列表元素类型不符：{'、'.join(mixed_lists)}")
+    return "；".join(parts) if parts else "项目启动能力包未通过安全结构校验"
+
+
+def bootstrap_failure_screening(failure_kind: str, diagnostic: dict | None) -> str:
+    if failure_kind == "passed":
+        return "项目启动结构校验通过"
+    if failure_kind == "invalid_capability_pack_schema":
+        return bootstrap_schema_diagnostic_summary(diagnostic)
+    if failure_kind == "invalid_topic_schema":
+        return "项目启动候选结构无效"
+    if failure_kind == "provider_unavailable":
+        return "项目启动 Provider 或传输不可用"
+    return "项目启动结构诊断未执行"
 
 
 def store_topic_selection_bundle(goal: str, pack: dict, candidates: list[dict]) -> str:
@@ -863,6 +930,8 @@ class AppHandler(BaseHTTPRequestHandler):
         pack = supplied_pack
         capability_review: dict | None = None
         capability_review_failure_kind = "not_run"
+        bootstrap_failure_kind = "not_run"
+        bootstrap_schema_diagnostic: dict | None = None
         reviewed_candidate_titles: dict[str, str] | None = None
         source = "deepseek_bootstrap"
         notice = ""
@@ -899,6 +968,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         bootstrap = None
                     else:
                         startup_memory_rules = self._startup_memory_rules(goal)
+                        bootstrap_failure_kind = "provider_unavailable"
                         bootstrap = bootstrap_method(goal, excluded, startup_memory_rules)
                     if bootstrap is None:
                         pass
@@ -910,6 +980,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         if not isinstance(raw_snapshot, dict) or not isinstance(raw, list):
                             raise ProviderError("项目启动结果缺少行业能力包或三个候选")
                         pack = normalize_capability_pack(raw_snapshot, goal, "deepseek")
+                        bootstrap_failure_kind = "passed"
                         review_method = getattr(provider, "adversarial_review_capability_pack", None)
                         if pretask_budget.snapshot()["remaining"] <= 0 or not callable(review_method):
                             raise ProviderError("动态行业能力包缺少独立反证审核额度或审核器")
@@ -954,18 +1025,29 @@ class AppHandler(BaseHTTPRequestHandler):
                         pack = normalize_capability_pack(
                             audited_snapshot, goal, "deepseek", audit=normalized_audit,
                         )
-            except (ProviderError, TypeError, ValueError):
+            except (ProviderError, TypeError, ValueError) as exc:
+                if bootstrap_failure_kind != "passed" and pack is None:
+                    bootstrap_failure_kind = bootstrap_failure_from_budget(pretask_budget)
+                    if bootstrap_failure_kind == "invalid_capability_pack_schema" and isinstance(exc, ProviderError):
+                        bootstrap_schema_diagnostic = sanitize_bootstrap_schema_diagnostic(exc.details)
                 if capability_review_failure_kind == "provider_unavailable":
                     capability_review_failure_kind = capability_review_failure_from_budget(pretask_budget)
                 pack = supplied_pack or self._local_pack_with_startup_memory(goal)
                 raw = self._safe_topic_candidates(excluded, goal, pack)
                 source = "local_safe_agent"
-                notice = {
-                    "needs_revision": "动态行业能力包需要修改后重新审核，已切换到本地安全能力包。",
-                    "blocked": "动态行业能力包被反证审核阻止，已切换到本地安全能力包。",
-                    "invalid_schema": "反证审核结构或候选身份无效，已切换到本地安全能力包。",
-                    "provider_unavailable": "Provider 或传输未返回可用审核结果，已切换到本地安全能力包。",
-                }.get(capability_review_failure_kind, "反证审核未执行，已切换到本地安全能力包。")
+                if bootstrap_failure_kind == "invalid_capability_pack_schema":
+                    notice = f"{bootstrap_schema_diagnostic_summary(bootstrap_schema_diagnostic)}，已切换到本地安全能力包。"
+                elif bootstrap_failure_kind == "invalid_topic_schema":
+                    notice = "项目启动候选结构无效，已切换到本地安全候选。"
+                elif bootstrap_failure_kind == "provider_unavailable":
+                    notice = "项目启动 Provider 或传输不可用，已切换到本地安全能力包。"
+                else:
+                    notice = {
+                        "needs_revision": "动态行业能力包需要修改后重新审核，已切换到本地安全能力包。",
+                        "blocked": "动态行业能力包被反证审核阻止，已切换到本地安全能力包。",
+                        "invalid_schema": "反证审核结构或候选身份无效，已切换到本地安全能力包。",
+                        "provider_unavailable": "Provider 或传输未返回可用审核结果，已切换到本地安全能力包。",
+                    }.get(capability_review_failure_kind, "反证审核未执行，已切换到本地安全能力包。")
         if pack is None:
             pack = self._local_pack_with_startup_memory(goal)
         candidates, used_local_fallback = self._normalize_topic_candidates(raw, excluded, goal, pack)
@@ -1002,6 +1084,10 @@ class AppHandler(BaseHTTPRequestHandler):
             capability_review,
             failure_kind=capability_review_failure_kind,
         )
+        bootstrap_screening = bootstrap_failure_screening(
+            bootstrap_failure_kind,
+            bootstrap_schema_diagnostic,
+        )
         selection_bundle_id = store_topic_selection_bundle(goal, pack, candidates)
         return {
             "goal": goal,
@@ -1012,6 +1098,9 @@ class AppHandler(BaseHTTPRequestHandler):
             "selection_bundle_expires_in_seconds": SELECTION_BUNDLE_TTL_SECONDS,
             "capability_pack": pack,
             "capability_review": capability_review,
+            "capability_review_failure_kind": capability_review_failure_kind,
+            "bootstrap_failure_kind": bootstrap_failure_kind,
+            "bootstrap_schema_diagnostic": bootstrap_schema_diagnostic,
             "context": {
                 "project_id": pack["id"],
                 "industry_pack_id": pack["id"],
@@ -1027,7 +1116,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 "material_count": 0,
             },
             "learning": learning_store.memory_snapshot(pack["id"]),
-            "screening": f"{review_screening}；{budget_note}。",
+            "screening": f"{bootstrap_screening}；{review_screening}；{budget_note}。",
             # Keep the topic-specific public field used by the released UI and
             # expose the shared name used by /api/agent/plan as well.
             "topic_provider_budget": budget,

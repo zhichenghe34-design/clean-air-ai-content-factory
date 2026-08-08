@@ -674,6 +674,9 @@ class ApiV2Tests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 result = json.loads(body)
                 self.assertEqual(result["capability_review"]["status"], status_name)
+                self.assertEqual(result["bootstrap_failure_kind"], "passed")
+                self.assertIsNone(result["bootstrap_schema_diagnostic"])
+                self.assertEqual(result["capability_review_failure_kind"], status_name)
                 self.assertEqual(set(result["capability_review"]), {"status", "issues", "safe_scope", "candidate_verdicts"})
                 self.assertEqual(result["pretask_provider_budget"]["attempted"], 2)
                 self.assertIn("可有限使用 2", result["screening"])
@@ -873,9 +876,125 @@ class ApiV2Tests(unittest.TestCase):
         result = json.loads(body)
         self.assertEqual(result["source"], "local_safe_agent")
         self.assertIsNone(result["capability_review"])
+        self.assertEqual(result["bootstrap_failure_kind"], "passed")
+        self.assertIsNone(result["bootstrap_schema_diagnostic"])
+        self.assertEqual(result["capability_review_failure_kind"], "provider_unavailable")
         self.assertIn("Provider 或传输不可用", result["screening"])
         self.assertNotIn("结构或候选身份无效", result["screening"])
         self.assertNotIn("opaque transport detail", body)
+        self.assertEqual(app.job_store.list(), [])
+
+    def test_bootstrap_failure_diagnostics_are_strict_visible_and_stage_separated(self):
+        base = {
+            "missing_fields": [],
+            "unknown_fields": [],
+            "field_types": {},
+            "list_element_types": {},
+        }
+        cases = {
+            "missing": (
+                {**base, "missing_fields": ["industry", "label", "industry"]},
+                "缺少字段：label、industry",
+            ),
+            "unknown": (
+                {**base, "unknown_fields": ["<redacted-unknown-field>"]},
+                "含未知字段",
+            ),
+            "scalar_type": (
+                {**base, "field_types": {"label": "object"}},
+                "字段类型不符：label",
+            ),
+            "mixed_list": (
+                {**base, "field_types": {"tone": "array"}, "list_element_types": {"tone": ["number", "string"]}},
+                "列表元素类型不符：tone",
+            ),
+        }
+
+        class BootstrapFailureProvider:
+            def __init__(self, budget, details, error_type="invalid_capability_pack_schema"):
+                self.budget = budget
+                self.details = details
+                self.error_type = error_type
+
+            def bootstrap_project(self, _goal, _excluded, _rules):
+                token = self.budget.begin("project_bootstrap")
+                self.budget.finish(token, ok=False, error_type=self.error_type)
+                raise app.ProviderError("raw provider body must-not-survive", details=self.details)
+
+        for name, (details, expected_text) in cases.items():
+            with self.subTest(case=name):
+                goal = f"餐饮项目启动结构诊断-{name}"
+                with mock.patch.object(
+                    app.AppHandler,
+                    "_provider",
+                    new=lambda _handler, budget=None, _details=details: BootstrapFailureProvider(budget, _details),
+                ):
+                    status, _, body = self.request(
+                        "POST", "/api/agent/topics", {"goal": goal, "excluded_topics": []}, self.secure_headers()
+                    )
+                self.assertEqual(status, 200)
+                result = json.loads(body)
+                self.assertEqual(result["bootstrap_failure_kind"], "invalid_capability_pack_schema")
+                self.assertEqual(
+                    set(result["bootstrap_schema_diagnostic"]),
+                    {"missing_fields", "unknown_fields", "field_types", "list_element_types"},
+                )
+                self.assertEqual(result["capability_review_failure_kind"], "not_run")
+                self.assertIsNone(result["capability_review"])
+                self.assertIn(expected_text, result["screening"])
+                self.assertIn(expected_text, result["notice"])
+                self.assertNotIn("raw provider body", body)
+
+        malicious_details = [
+            {**base, "raw_message": "https://unsafe.example/path"},
+            {**base, "unknown_fields": ["customer-id-440123199001011234"]},
+            {**base, "field_types": {"label": "C:" + r"\Users\operator\secret.txt"}},
+            {**base, "field_types": {"label": "powershell -enc opaque"}},
+            {**base, "field_types": {"label": "api_key=opaque-credential"}},
+            {**base, "field_types": {"label": "cookie=session-value"}},
+            {**base, "field_types": {"label": "authorization=" + "Bea" + "rer opaque-value"}},
+        ]
+        for index, details in enumerate(malicious_details):
+            with self.subTest(malicious=index):
+                goal = f"餐饮恶意结构诊断-{index}"
+                with mock.patch.object(
+                    app.AppHandler,
+                    "_provider",
+                    new=lambda _handler, budget=None, _details=details: BootstrapFailureProvider(budget, _details),
+                ):
+                    status, _, body = self.request(
+                        "POST", "/api/agent/topics", {"goal": goal, "excluded_topics": []}, self.secure_headers()
+                    )
+                self.assertEqual(status, 200)
+                result = json.loads(body)
+                self.assertEqual(result["bootstrap_failure_kind"], "invalid_capability_pack_schema")
+                self.assertIsNone(result["bootstrap_schema_diagnostic"])
+                self.assertEqual(result["capability_review_failure_kind"], "not_run")
+                self.assertIn("未通过安全结构校验", result["screening"])
+                for forbidden in (
+                    "unsafe.example", "customer-id", "Users", "powershell", "opaque-credential", "session-value", "Bea" + "rer",
+                ):
+                    self.assertNotIn(forbidden, body)
+
+        for error_type, expected_kind in (
+            ("ProviderError", "provider_unavailable"),
+            ("invalid_topic_schema", "invalid_topic_schema"),
+        ):
+            with self.subTest(error_type=error_type):
+                goal = f"餐饮项目启动失败分类-{error_type}"
+                with mock.patch.object(
+                    app.AppHandler,
+                    "_provider",
+                    new=lambda _handler, budget=None, _error=error_type: BootstrapFailureProvider(budget, base, _error),
+                ):
+                    status, _, body = self.request(
+                        "POST", "/api/agent/topics", {"goal": goal, "excluded_topics": []}, self.secure_headers()
+                    )
+                result = json.loads(body)
+                self.assertEqual(status, 200)
+                self.assertEqual(result["bootstrap_failure_kind"], expected_kind)
+                self.assertIsNone(result["bootstrap_schema_diagnostic"])
+                self.assertEqual(result["capability_review_failure_kind"], "not_run")
         self.assertEqual(app.job_store.list(), [])
 
     def test_agent_topics_and_provider_status_are_truthful(self):

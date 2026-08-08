@@ -238,6 +238,74 @@ def bootstrap_capability_schema_diagnostics(value: Any) -> dict[str, Any]:
     }
 
 
+_BOOTSTRAP_DIAGNOSTIC_FIELDS = {
+    "missing_fields",
+    "unknown_fields",
+    "field_types",
+    "list_element_types",
+}
+_BOOTSTRAP_DIAGNOSTIC_TYPES = {
+    "null",
+    "boolean",
+    "string",
+    "array",
+    "object",
+    "number",
+    "other",
+}
+
+
+def sanitize_bootstrap_schema_diagnostic(value: Any) -> dict[str, Any] | None:
+    """Revalidate shape-only diagnostics without trusting exception details."""
+
+    if not isinstance(value, dict) or set(value) != _BOOTSTRAP_DIAGNOSTIC_FIELDS:
+        return None
+    missing = value.get("missing_fields")
+    unknown = value.get("unknown_fields")
+    field_types = value.get("field_types")
+    list_element_types = value.get("list_element_types")
+    if (
+        not isinstance(missing, list)
+        or len(missing) > len(CAPABILITY_SNAPSHOT_FIELDS)
+        or any(not isinstance(item, str) or item not in CAPABILITY_SNAPSHOT_FIELDS for item in missing)
+        or unknown not in ([], ["<redacted-unknown-field>"])
+        or not isinstance(field_types, dict)
+        or len(field_types) > len(CAPABILITY_SNAPSHOT_FIELDS) + 1
+        or any(
+            not isinstance(key, str)
+            or key not in {*CAPABILITY_SNAPSHOT_FIELDS, "capability_pack"}
+            or not isinstance(item, str)
+            or item not in _BOOTSTRAP_DIAGNOSTIC_TYPES
+            for key, item in field_types.items()
+        )
+        or not isinstance(list_element_types, dict)
+        or len(list_element_types) > len(CAPABILITY_SNAPSHOT_LIST_FIELDS)
+    ):
+        return None
+    for key, types in list_element_types.items():
+        if (
+            not isinstance(key, str)
+            or key not in CAPABILITY_SNAPSHOT_LIST_FIELDS
+            or not isinstance(types, list)
+            or len(types) > len(_BOOTSTRAP_DIAGNOSTIC_TYPES)
+            or any(not isinstance(item, str) or item not in _BOOTSTRAP_DIAGNOSTIC_TYPES for item in types)
+        ):
+            return None
+    missing_set = set(missing)
+    ordered_types = ("null", "boolean", "string", "array", "object", "number", "other")
+    field_order = ("capability_pack", *CAPABILITY_SNAPSHOT_FIELDS)
+    return {
+        "missing_fields": [field for field in CAPABILITY_SNAPSHOT_FIELDS if field in missing_set],
+        "unknown_fields": list(unknown),
+        "field_types": {field: field_types[field] for field in field_order if field in field_types},
+        "list_element_types": {
+            field: [item for item in ordered_types if item in set(list_element_types[field])]
+            for field in CAPABILITY_SNAPSHOT_LIST_FIELDS
+            if field in list_element_types
+        },
+    }
+
+
 def _raise_bootstrap_schema(message: str, raw_pack: Any) -> None:
     raise ProviderError(message, details=bootstrap_capability_schema_diagnostics(raw_pack))
 

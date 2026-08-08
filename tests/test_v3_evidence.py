@@ -148,6 +148,60 @@ class IsolatedInstanceTests(unittest.TestCase):
             self.assertEqual(diagnostic["capability_review_summary"]["candidate_verdicts"], [])
             self.assertNotIn("raw provider payload", diagnostic_text)
 
+    def test_bootstrap_capture_revalidates_project_schema_diagnostic(self):
+        safe_diagnostic = {
+            "missing_fields": ["industry"],
+            "unknown_fields": ["<redacted-unknown-field>"],
+            "field_types": {"label": "object", "tone": "array"},
+            "list_element_types": {"tone": ["number", "string"]},
+        }
+        malicious_diagnostic = {
+            **safe_diagnostic,
+            "raw_message": "authorization=" + "Bea" + "rer must-not-survive C:" + r"\Users\operator\secret.txt",
+        }
+        for label, supplied, expected in (
+            ("safe", safe_diagnostic, {
+                "missing_fields": ["industry"],
+                "unknown_fields": ["<redacted-unknown-field>"],
+                "field_types": {"label": "object", "tone": "array"},
+                "list_element_types": {"tone": ["string", "number"]},
+            }),
+            ("malicious", malicious_diagnostic, None),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory(prefix="shiyi-bootstrap-schema-") as temporary:
+                root = Path(temporary)
+                formal, isolated = root / "formal.json", root / "isolated.json"
+                formal.write_text('{"protected":"ciphertext"}\n', encoding="utf-8")
+                isolated.write_bytes(formal.read_bytes())
+                fake_api = mock.Mock()
+                fake_api.request.side_effect = [
+                    {"ok": True, "connection_verified": True, "model": "test-model"},
+                    {
+                        "source": "local_safe_agent",
+                        "notice": "项目启动结构无效，已安全降级",
+                        "screening": "项目启动能力包未通过安全结构校验；反证审核未执行",
+                        "candidates": [{}, {}, {}],
+                        "capability_pack": {"audit": {"status": "local_safe_fallback"}},
+                        "capability_review": None,
+                        "capability_review_failure_kind": "not_run",
+                        "bootstrap_failure_kind": "invalid_capability_pack_schema",
+                        "bootstrap_schema_diagnostic": supplied,
+                        "pretask_provider_budget": {"attempted": 1, "limit": 3},
+                    },
+                ]
+                with mock.patch.object(capture_v3_bootstrap, "LocalApi", return_value=fake_api):
+                    with self.assertRaises(capture_v3_bootstrap.BootstrapError):
+                        capture_v3_bootstrap.capture(
+                            "http://127.0.0.1:8785", root / "output", "餐饮内容验证", formal, isolated,
+                        )
+                diagnostic_text = (root / "output" / "bootstrap-diagnostic.json").read_text(encoding="utf-8")
+                diagnostic = json.loads(diagnostic_text)
+                self.assertEqual(diagnostic["bootstrap_failure_kind"], "invalid_capability_pack_schema")
+                self.assertEqual(diagnostic["bootstrap_schema_diagnostic"], expected)
+                self.assertEqual(diagnostic["capability_review_failure_kind"], "not_run")
+                self.assertNotIn("must-not-survive", diagnostic_text)
+                self.assertNotIn("Users", diagnostic_text)
+
     def test_rejects_formal_runtime_repo_and_disk_root(self):
         safe = Path(tempfile.gettempdir()) / "shiyi-v03-safe-storage-test"
         for unsafe in (

@@ -14,6 +14,7 @@ from core.provider import (
     ProviderError,
     bootstrap_capability_schema_diagnostics,
     normalize_bootstrap_capability_snapshot,
+    sanitize_bootstrap_schema_diagnostic,
 )
 from core.strict_audit import strict_audit_research
 from core.web_agent import EXACT_EVIDENCE_RULES, WebResearchAgent, normalize_research_result
@@ -347,6 +348,50 @@ class ProviderGenericTests(unittest.TestCase):
         self.assertNotIn("sk-1234567890abcdef", str(error))
         self.assertNotIn("克制", str(error))
         self.assertNotIn("customer-id-440123199001011234", str(error))
+
+    def test_bootstrap_structure_diagnostic_sanitizer_is_exact_and_fail_closed(self):
+        diagnostic = {
+            "list_element_types": {"tone": ["string", "number", "string"]},
+            "field_types": {"tone": "array", "label": "object"},
+            "unknown_fields": ["<redacted-unknown-field>"],
+            "missing_fields": ["industry", "industry"],
+        }
+        self.assertEqual(
+            sanitize_bootstrap_schema_diagnostic(diagnostic),
+            {
+                "missing_fields": ["industry"],
+                "unknown_fields": ["<redacted-unknown-field>"],
+                "field_types": {"label": "object", "tone": "array"},
+                "list_element_types": {"tone": ["string", "number"]},
+            },
+        )
+        malicious = []
+        extra_key = copy.deepcopy(diagnostic)
+        extra_key["raw_message"] = "must-not-survive"
+        malicious.append(extra_key)
+        raw_unknown = copy.deepcopy(diagnostic)
+        raw_unknown["unknown_fields"] = ["customer-id-440123199001011234"]
+        malicious.append(raw_unknown)
+        for unsafe in (
+            "https://unsafe.example/path",
+            "C:" + r"\Users\operator\secret.txt",
+            "powershell -enc opaque",
+            "api_key=opaque-credential",
+            "cookie=session-value",
+            "authorization=" + "Bea" + "rer opaque-value",
+        ):
+            unsafe_type = copy.deepcopy(diagnostic)
+            unsafe_type["field_types"]["label"] = unsafe
+            malicious.append(unsafe_type)
+        unknown_key = copy.deepcopy(diagnostic)
+        unknown_key["field_types"]["customer-secret"] = "string"
+        malicious.append(unknown_key)
+        unsafe_list = copy.deepcopy(diagnostic)
+        unsafe_list["list_element_types"]["tone"] = ["string", "api_key=opaque"]
+        malicious.append(unsafe_list)
+        for value in malicious:
+            with self.subTest(value=list(value)):
+                self.assertIsNone(sanitize_bootstrap_schema_diagnostic(value))
 
     def test_bootstrap_adapter_still_uses_final_pack_constraints_and_stable_hash(self):
         raw = capability_snapshot()

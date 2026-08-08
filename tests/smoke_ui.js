@@ -61,10 +61,17 @@ const batches = [
       contentType: 'application/json; charset=utf-8',
       body: JSON.stringify({
         selection_bundle_id: `selection-smoke-ui-${topicCalls}`,
-        source: 'deepseek',
+        source: topicCalls === 1 ? 'local_safe_agent' : 'deepseek',
         notice: `预任务 Provider 请求 ${topicCalls}/3，剩余 ${3 - topicCalls}；来源：DeepSeek。`,
-        screening: `已排除越域、夸大承诺和重复选题；公开依据将在研究阶段逐条核验；预任务 Provider 请求 ${topicCalls}/3，剩余 ${3 - topicCalls}；来源：DeepSeek。`,
-        capability_review: {
+        screening: topicCalls === 1
+          ? '项目启动结构含未知字段；反证审核未执行；已切换到本地安全候选；预任务 Provider 请求 1/3，剩余 2。'
+          : `项目启动结构校验通过；已排除越域、夸大承诺和重复选题；公开依据将在研究阶段逐条核验；预任务 Provider 请求 ${topicCalls}/3，剩余 ${3 - topicCalls}；来源：DeepSeek。`,
+        bootstrap_failure_kind: topicCalls === 1 ? 'invalid_capability_pack_schema' : 'passed',
+        bootstrap_schema_diagnostic: topicCalls === 1 ? {
+          missing_fields: [], unknown_fields: ['<redacted-unknown-field>'], field_types: {}, list_element_types: {},
+        } : null,
+        capability_review_failure_kind: topicCalls === 1 ? 'not_run' : 'passed',
+        capability_review: topicCalls === 1 ? null : {
           status: topicCalls === 1 ? 'needs_revision' : 'passed',
           issues: ['门店资料仍待核验'],
           safe_scope: ['仅可作为研究问题'],
@@ -166,5 +173,5 @@ const batches = [
   };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
-  if (errors.length || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 本次连接已验证' || !providerVerifiedClass || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('研究阶段逐条核验') || !initialScreening.includes('反证审核需要修改') || !initialScreening.includes('原因：门店资料仍待核验') || !initialScreening.includes('允许范围：仅可作为研究问题') || initialScreening.includes('needs_evidence') || initialScreening.includes('候选1') || initialScreening.includes('ORIGINAL REVIEWED TITLE') || !refreshedScreening.includes('2/3') || !refreshedScreening.includes('被审核候选“测醛前为什么要先确认封闭时间？”') || refreshedScreening.includes('候选1') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow) process.exit(1);
+  if (errors.length || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 本次连接已验证' || !providerVerifiedClass || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('项目启动结构含未知字段') || !initialScreening.includes('反证审核未执行') || initialScreening.includes('needs_evidence') || initialScreening.includes('候选1') || initialScreening.includes('ORIGINAL REVIEWED TITLE') || initialScreening.includes('<redacted-unknown-field>') || !refreshedScreening.includes('2/3') || !refreshedScreening.includes('项目启动结构校验通过') || !refreshedScreening.includes('被审核候选“测醛前为什么要先确认封闭时间？”') || refreshedScreening.includes('候选1') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow) process.exit(1);
 })();

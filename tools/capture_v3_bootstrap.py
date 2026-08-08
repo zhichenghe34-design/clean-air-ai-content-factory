@@ -17,7 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from core.provider import ProviderError, normalize_capability_review
+from core.provider import (
+    ProviderError,
+    normalize_capability_review,
+    sanitize_bootstrap_schema_diagnostic,
+)
 
 
 class BootstrapError(RuntimeError):
@@ -95,6 +99,17 @@ def safe_review_failure_kind(summary: dict[str, Any], screening: Any) -> str:
     return "invalid_schema"
 
 
+def safe_bootstrap_failure_kind(value: Any) -> str:
+    allowed = {
+        "not_run",
+        "provider_unavailable",
+        "invalid_capability_pack_schema",
+        "invalid_topic_schema",
+        "passed",
+    }
+    return str(value) if value in allowed else "provider_unavailable"
+
+
 class LocalApi:
     def __init__(self, base_url: str):
         parsed = urllib.parse.urlparse(base_url)
@@ -167,6 +182,12 @@ def capture(base_url: str, output_dir: Path, goal: str, formal_secret: Path, iso
     review_summary = safe_review_summary(review)
     review_failure_kind = safe_review_failure_kind(review_summary, topics.get("screening"))
     review_summary["failure_kind"] = review_failure_kind
+    bootstrap_failure_kind = safe_bootstrap_failure_kind(topics.get("bootstrap_failure_kind"))
+    bootstrap_schema_diagnostic = sanitize_bootstrap_schema_diagnostic(
+        topics.get("bootstrap_schema_diagnostic")
+    )
+    if bootstrap_failure_kind != "invalid_capability_pack_schema":
+        bootstrap_schema_diagnostic = None
     candidates = topics.get("candidates")
     formal_after = sha256(formal_secret)
     if formal_after != formal_before:
@@ -177,6 +198,7 @@ def capture(base_url: str, output_dir: Path, goal: str, formal_secret: Path, iso
         "source": topics["source"],
         "model": connection.get("model"),
         "pretask_provider_budget": budget,
+        "bootstrap_failure_kind": bootstrap_failure_kind,
         "formal_secret_sha256_before": formal_before,
         "formal_secret_sha256_after": formal_after,
         "isolated_secret_sha256_before": isolated_before,
@@ -206,6 +228,8 @@ def capture(base_url: str, output_dir: Path, goal: str, formal_secret: Path, iso
             "capability_review_status": review_summary["status"],
             "capability_review_failure_kind": review_failure_kind,
             "capability_review_summary": review_summary,
+            "bootstrap_failure_kind": bootstrap_failure_kind,
+            "bootstrap_schema_diagnostic": bootstrap_schema_diagnostic,
             "pretask_provider_budget": budget,
             "automatic_paid_retry_started": False,
             "tasks_created": 0,
