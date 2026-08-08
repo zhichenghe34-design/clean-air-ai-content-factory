@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.production_engine import (
     ENGINE_COMMIT,
@@ -14,6 +17,7 @@ from core.production_engine import (
     JsonTransportResponse,
     ProductionEngineAdapter,
     ProductionEngineError,
+    _samefile_root_anchor,
     validate_engine_base_url,
 )
 
@@ -355,6 +359,64 @@ class ProductionEngineAdapterTests(unittest.TestCase):
                             voice_strategy="edge_tts",
                             local_material_paths=[blocked],
                         )
+        self.assertEqual(transport.requests, [])
+
+    def test_samefile_root_anchor_accepts_windows_short_and_long_spellings(self):
+        long_root = Path("profiles/runneradmin/temp/materials")
+        short_root = Path("profiles/RUNNER~1/temp/materials")
+        candidate = short_root / "approved-source.mp4"
+
+        def fake_samefile(left, right):
+            return Path(left) == short_root and Path(right) == long_root
+
+        with patch("core.production_engine.os.path.samefile", side_effect=fake_samefile):
+            anchored = _samefile_root_anchor(long_root, candidate)
+        self.assertEqual(anchored, (short_root, ("approved-source.mp4",)))
+
+    def test_local_strategy_rejects_symlinked_material(self):
+        transport = FakeTransport()
+        with tempfile.TemporaryDirectory() as folder_name:
+            folder = Path(folder_name)
+            allowed = folder / "allowed"
+            allowed.mkdir()
+            outside = folder / "outside.mp4"
+            outside.write_bytes(b"outside")
+            link = allowed / "linked.mp4"
+            try:
+                link.symlink_to(outside)
+            except OSError:
+                self.skipTest("symbolic links are unavailable")
+            adapter = make_adapter(transport, local_material_root=allowed)
+            with self.assertRaises(ProductionEngineError) as raised:
+                adapter._resolve_local_materials("local", [link])
+        self.assertEqual(raised.exception.code, "local_material_symlink")
+        self.assertEqual(transport.requests, [])
+
+    @unittest.skipUnless(os.name == "nt" and hasattr(Path, "is_junction"), "NTFS Junction test")
+    def test_local_strategy_rejects_junctioned_material_directory(self):
+        transport = FakeTransport()
+        with tempfile.TemporaryDirectory() as folder_name:
+            folder = Path(folder_name)
+            allowed = folder / "allowed"
+            allowed.mkdir()
+            outside = folder / "outside"
+            outside.mkdir()
+            (outside / "asset.mp4").write_bytes(b"outside")
+            junction = allowed / "linked"
+            created = subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+                check=False,
+                capture_output=True,
+            )
+            if created.returncode != 0:
+                self.skipTest("cannot create NTFS Junction")
+            try:
+                adapter = make_adapter(transport, local_material_root=allowed)
+                with self.assertRaises(ProductionEngineError) as raised:
+                    adapter._resolve_local_materials("local", [junction / "asset.mp4"])
+                self.assertEqual(raised.exception.code, "local_material_symlink")
+            finally:
+                os.rmdir(junction)
         self.assertEqual(transport.requests, [])
 
     def test_local_strategy_sends_only_loopback_paths_and_publishes_hashes(self):

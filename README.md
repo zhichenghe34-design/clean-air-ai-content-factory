@@ -172,7 +172,7 @@ npm.cmd run test:flow
 .\.venv\Scripts\python.exe tools\verify_committed_media.py
 ```
 
-Python 测试由 `unittest discover` 动态发现，当前 222 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及 MoneyPrinterTurbo 适配器、两道人审绑定、失败运行隔离、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、两道人工作业门禁、窄屏无溢出与零前端错误。CI 使用可注入的假配音/渲染适配器完成快速确定性 E2E。
+Python 测试由 `unittest discover` 动态发现，当前 225 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及 MoneyPrinterTurbo 适配器、两道人审绑定、失败运行隔离、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、两道人工作业门禁、窄屏无溢出与零前端错误。CI 使用可注入的假配音/渲染适配器完成快速确定性 E2E。
 
 ## v2 历史比赛材料（只读基线）
 

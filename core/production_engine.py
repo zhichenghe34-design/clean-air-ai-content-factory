@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import re
+import stat
 import time
 import uuid
 from dataclasses import dataclass
@@ -489,6 +490,28 @@ def _artifact_metadata(root: Path, path: Path, name: str, mime: str) -> Producti
     )
 
 
+def _is_reparse_point(path: Path) -> bool:
+    info = os.lstat(path)
+    junction = getattr(path, "is_junction", None)
+    return bool(
+        stat.S_ISLNK(info.st_mode)
+        or (callable(junction) and junction())
+        or getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _samefile_root_anchor(root: Path, candidate: Path) -> tuple[Path, tuple[str, ...]] | None:
+    """Find candidate's root ancestor by file identity, not its path spelling."""
+    for ancestor in (candidate, *candidate.parents):
+        try:
+            if os.path.samefile(ancestor, root):
+                return ancestor, candidate.relative_to(ancestor).parts
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 class ProductionEngineAdapter:
     """Submit a pre-approved script to a pinned, loopback-only MPT service."""
 
@@ -722,14 +745,23 @@ class ProductionEngineAdapter:
                 "Local material strategy requires a configured material root.",
                 stage="validation",
             )
-        if self.local_material_root.is_symlink():
+        raw_root = Path(os.path.abspath(self.local_material_root))
+        try:
+            unsafe_root = _is_reparse_point(raw_root)
+        except OSError as exc:
+            raise ProductionEngineError(
+                "invalid_local_material_root",
+                "Local material root does not exist.",
+                stage="validation",
+            ) from exc
+        if unsafe_root:
             raise ProductionEngineError(
                 "unsafe_local_material_root",
-                "Local material root cannot be a symbolic link.",
+                "Local material root cannot be a symbolic link or junction.",
                 stage="validation",
             )
         try:
-            root = self.local_material_root.resolve(strict=True)
+            root = raw_root.resolve(strict=True)
         except OSError as exc:
             raise ProductionEngineError(
                 "invalid_local_material_root",
@@ -749,7 +781,7 @@ class ProductionEngineAdapter:
                 stage="validation",
             )
         resolved_paths: list[Path] = []
-        seen: set[Path] = set()
+        seen: list[Path] = []
         for raw_path in local_material_paths:
             if not isinstance(raw_path, (str, os.PathLike)):
                 raise ProductionEngineError(
@@ -758,48 +790,66 @@ class ProductionEngineAdapter:
                     stage="validation",
                 )
             supplied = Path(raw_path)
-            candidate = supplied if supplied.is_absolute() else root / supplied
-            lexical = candidate.absolute()
-            try:
-                lexical.relative_to(root)
-            except ValueError as exc:
+            candidate = supplied if supplied.is_absolute() else raw_root / supplied
+            lexical = Path(os.path.abspath(candidate))
+            anchored = _samefile_root_anchor(root, lexical)
+            if anchored is None:
                 raise ProductionEngineError(
                     "local_material_outside_root",
                     "Local material must stay within the configured root.",
                     stage="validation",
-                ) from exc
-            relative_parts = lexical.relative_to(root).parts
-            cursor = root
-            for part in relative_parts:
-                cursor = cursor / part
-                if cursor.is_symlink():
+                )
+            anchor, relative_parts = anchored
+            cursor = anchor
+            try:
+                path_chain = [cursor]
+                for part in relative_parts:
+                    cursor = cursor / part
+                    path_chain.append(cursor)
+                if any(_is_reparse_point(path) for path in path_chain):
                     raise ProductionEngineError(
                         "local_material_symlink",
-                        "Symbolic links are not allowed as local materials.",
+                        "Symbolic links and junctions are not allowed as local materials.",
                         stage="validation",
                     )
-            try:
-                resolved = lexical.resolve(strict=True)
-                resolved.relative_to(root)
-            except (OSError, ValueError) as exc:
+            except ProductionEngineError:
+                raise
+            except OSError as exc:
                 raise ProductionEngineError(
                     "local_material_outside_root",
                     "Local material is missing or outside the configured root.",
                     stage="validation",
                 ) from exc
+            try:
+                resolved = lexical.resolve(strict=True)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ProductionEngineError(
+                    "local_material_outside_root",
+                    "Local material is missing or outside the configured root.",
+                    stage="validation",
+                ) from exc
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                if _samefile_root_anchor(root, resolved) is None:
+                    raise ProductionEngineError(
+                        "local_material_outside_root",
+                        "Local material is missing or outside the configured root.",
+                        stage="validation",
+                    )
             if not resolved.is_file() or resolved.suffix.lower() != ".mp4":
                 raise ProductionEngineError(
                     "invalid_local_material",
                     "Local material must be an existing MP4 file.",
                     stage="validation",
                 )
-            if resolved in seen:
+            if any(os.path.samefile(resolved, previous) for previous in seen):
                 raise ProductionEngineError(
                     "duplicate_local_material",
                     "Duplicate local material is not allowed.",
                     stage="validation",
                 )
-            seen.add(resolved)
+            seen.append(resolved)
             resolved_paths.append(resolved)
         return tuple(resolved_paths)
 
