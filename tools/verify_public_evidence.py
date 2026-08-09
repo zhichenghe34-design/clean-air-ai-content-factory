@@ -8,9 +8,21 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import unicodedata
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from core.review_policy import (
+    approval_validation_line,
+    classify_approval_record,
+    evidence_status_for_policy,
+    normalize_review_policy,
+)
 
 
 CANONICAL = [
@@ -224,6 +236,27 @@ def _engine_contract(
     return "legacy_v2", errors
 
 
+def _validate_mpt_review_contract(
+    manifest: dict[str, Any], approval_modes: list[str]
+) -> list[str]:
+    """Bind the v0.3 evidence claim to one explicit server-pinned review policy."""
+    raw_policy = manifest.get("review_policy")
+    if not isinstance(raw_policy, dict):
+        return ["MPT manifest 缺少显式有效的 review_policy"]
+    try:
+        policy = normalize_review_policy(raw_policy)
+    except (TypeError, ValueError):
+        return ["MPT manifest 的 review_policy 无效"]
+
+    errors: list[str] = []
+    policy_mode = policy["stage_review_mode"]
+    if len(approval_modes) != 2 or any(mode != policy_mode for mode in approval_modes):
+        errors.append("MPT manifest 的 review_policy 与两道阶段审查身份不一致")
+    if manifest.get("evidence_status") != evidence_status_for_policy(policy):
+        errors.append("MPT manifest 的 evidence_status 与 review_policy 不一致")
+    return errors
+
+
 def _validate_mpt_evidence(
     folder: Path,
     engine_report: dict[str, Any],
@@ -326,7 +359,7 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
     research_approval = approvals.get("research", {})
     compliance_approval = approvals.get("compliance", {})
     if research_approval.get("status") != "approved" or compliance_approval.get("status") != "approved":
-        errors.append("两道人工审批未全部通过")
+        errors.append("两道阶段审查门禁未全部通过")
     source_research_hash = research_approval.get("source_artifact_sha256", research_approval.get("artifact_sha256"))
     if research_approval.get("artifact_sha256") != source_research_hash:
         errors.append("研究审批原始哈希记录不一致")
@@ -339,9 +372,25 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
         errors.append("合规审批哈希与 review.json 不一致")
     if compliance_approval.get("script_sha256") != sha256(folder / "approved_script.json"):
         errors.append("合规审批脚本哈希不一致")
+    approval_modes: list[str] = []
     for gate in (research_approval, compliance_approval):
         if not gate.get("reviewer") or not gate.get("reviewed_at"):
-            errors.append("人工审批缺少操作者或时间")
+            errors.append("阶段审查缺少操作者或时间")
+        mode, identity_errors = classify_approval_record(
+            gate, allow_legacy_human=contract == "legacy_v2"
+        )
+        errors.extend(identity_errors)
+        if mode:
+            approval_modes.append(mode)
+    validation_text = (folder / "VALIDATION.md").read_text(encoding="utf-8")
+    expected_approval_line, line_errors = approval_validation_line(
+        approvals, allow_legacy_human=contract == "legacy_v2"
+    )
+    errors.extend(line_errors)
+    if expected_approval_line and expected_approval_line not in validation_text:
+        errors.append("VALIDATION.md 的审查身份说明与 approvals.json 不一致")
+    if contract == "mpt_v0.3":
+        errors.extend(_validate_mpt_review_contract(manifest, approval_modes))
 
     run_report = json.loads((folder / "run_report.json").read_text(encoding="utf-8"))
     engine_summary = run_report.get("production_engine")

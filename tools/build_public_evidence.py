@@ -5,10 +5,17 @@ import json
 import mimetypes
 import re
 import shutil
+import sys
 import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from core.review_policy import approval_validation_line
 
 from verify_public_evidence import (
     CANONICAL,
@@ -60,6 +67,13 @@ def main() -> int:
     missing = sorted(name for name in needed if not (source / name).is_file())
     if missing:
         raise SystemExit(f"源运行缺少产物：{', '.join(missing)}")
+    source_approvals = json.loads((source / "approvals.json").read_text(encoding="utf-8"))
+    approval_line, approval_errors = approval_validation_line(
+        source_approvals,
+        allow_legacy_human=evidence_contract == "legacy_v2",
+    )
+    if approval_errors:
+        raise SystemExit("源运行审批身份无效：" + "; ".join(approval_errors))
 
     temp_parent = output.parent
     temp_parent.mkdir(parents=True, exist_ok=True)
@@ -112,7 +126,7 @@ def main() -> int:
             f"- 单任务 Provider 预算：`{source_manifest.get('budget', {}).get('attempted')}/7 attempted`\n"
             f"- 成片：`{media['duration_seconds']}` 秒，`{media['width']}×{media['height']}`，`{media['video_codec']}/{media['audio_codec']}`\n"
             f"- {subtitle_contract_text}\n"
-            "- 审批：研究 finding 逐项决定与最终脚本合规放行均来自用户本人操作；自动流程不代签。\n"
+            f"- {approval_line}\n"
             f"- 公开副本脱敏：research.json 中 {redacted_email_count} 处来源页联系邮箱替换为 [REDACTED_EMAIL]；原审批哈希保留在 approvals.json，公开副本哈希另行记录。\n"
             "- 脱敏：包内不含 Key、Cookie、Authorization、本机绝对路径、原始配置、邮箱或手机号。\n"
             "- 清单：公开包加入本说明，并对公开副本重新计算逐文件大小与 SHA-256。\n"

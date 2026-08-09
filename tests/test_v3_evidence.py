@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from core.capability_pack import normalize_capability_pack
+from core.review_policy import AGENT_TEST_IDENTITY, CODEX_TEST_REVIEWER, HUMAN_IDENTITY
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
@@ -355,13 +356,31 @@ class V3EvidenceTests(unittest.TestCase):
             (task / "voice.wav").write_bytes(b"RIFF-test")
             (task / "final.mp4").write_bytes(b"mp4-test")
             approvals = {
-                "research": {"status": "approved", "reviewer": "何sir", "reviewed_at": "2026-08-08T12:00:00+08:00", "artifact_sha256": verify_v3_evidence.sha256(task / "research.json")},
-                "compliance": {"status": "approved", "reviewer": "何sir", "reviewed_at": "2026-08-08T12:10:00+08:00", "artifact_sha256": verify_v3_evidence.sha256(task / "review.json"), "script_sha256": verify_v3_evidence.sha256(task / "approved_script.json")},
+                "research": {
+                    "status": "approved",
+                    "reviewer": "何sir",
+                    **HUMAN_IDENTITY,
+                    "reviewed_at": "2026-08-08T12:00:00+08:00",
+                    "artifact_sha256": verify_v3_evidence.sha256(task / "research.json"),
+                },
+                "compliance": {
+                    "status": "approved",
+                    "reviewer": "何sir",
+                    **HUMAN_IDENTITY,
+                    "reviewed_at": "2026-08-08T12:10:00+08:00",
+                    "artifact_sha256": verify_v3_evidence.sha256(task / "review.json"),
+                    "script_sha256": verify_v3_evidence.sha256(task / "approved_script.json"),
+                },
             }
             self._write_json(task / "approvals.json", approvals)
             self._write_json(task / "manifest.json", {
                 "schema_version": 2, "status": "complete", "stage": "render",
                 "job_id": self.jobs[index - 1], "run_id": f"run-{index}",
+                "review_policy": {
+                    "stage_review_mode": "human",
+                    "final_human_acceptance_required": False,
+                },
+                "evidence_status": "human_stage_reviews_complete",
                 "capability_pack": {"id": self.pack["id"], "sha256": self.pack["sha256"]},
                 "learning_rule_ids": [self.rule_id],
                 "budget": {"limit": 7, "attempted": 2 if index == 1 else 0, "succeeded": 1 if index == 1 else 0},
@@ -398,17 +417,31 @@ class V3EvidenceTests(unittest.TestCase):
         self.assertTrue(any("Job ID" in error for error in errors))
         self.assertTrue(any("能力包哈希" in error for error in errors))
 
-    def test_rejects_rule_not_adopted_and_fake_human_approval(self):
+    def test_rejects_rule_not_adopted_and_agent_test_review(self):
         output = self._build("adoption")
         report = json.loads((output / "task-2-local" / "run_report.json").read_text(encoding="utf-8"))
         report["learning_rule_ids"] = []
         self._write_json(output / "task-2-local" / "run_report.json", report)
         approvals = json.loads((output / "task-2-local" / "approvals.json").read_text(encoding="utf-8"))
-        approvals["research"]["reviewer"] = "agent"
+        approvals["research"].update(
+            {"reviewer": CODEX_TEST_REVIEWER, **AGENT_TEST_IDENTITY}
+        )
         self._write_json(output / "task-2-local" / "approvals.json", approvals)
         errors, _ = verify_v3_evidence.verify(output)
         self.assertTrue(any("没有实际采用" in error for error in errors))
         self.assertTrue(any("不是有效人工审批" in error for error in errors))
+
+        policy_output = self._build("manifest-agent-policy")
+        manifest_path = policy_output / "task-2-local" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["review_policy"] = {
+            "stage_review_mode": "agent_test",
+            "final_human_acceptance_required": True,
+        }
+        manifest["evidence_status"] = "test_only_pending_human_acceptance"
+        self._write_json(manifest_path, manifest)
+        policy_errors, _ = verify_v3_evidence.verify(policy_output)
+        self.assertTrue(any("review_policy 不是正式人工审查" in error for error in policy_errors))
 
     def test_rejects_provider_mode_impersonation(self):
         output = self._build("provider")

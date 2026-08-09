@@ -651,7 +651,7 @@ class ProductionEngineAdapter:
         if values["approved"] is not True:
             raise ProductionEngineError(
                 "approval_required",
-                "A current human compliance approval is required.",
+                "A current stage-review compliance approval is required.",
                 stage="authorization",
             )
         script = values["script"]

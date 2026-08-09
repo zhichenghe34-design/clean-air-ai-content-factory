@@ -7,6 +7,7 @@ param(
     [string]$Ffmpeg,
     [string]$Ffprobe,
     [string]$MaterialRoot,
+    [switch]$AgentTestReview,
     [switch]$NoOpen,
     [switch]$PreflightOnly
 )
@@ -47,6 +48,7 @@ if (-not [string]::IsNullOrWhiteSpace($AppPython)) { $arguments += @("--app-pyth
 if (-not [string]::IsNullOrWhiteSpace($Ffmpeg)) { $arguments += @("--ffmpeg", $Ffmpeg) }
 if (-not [string]::IsNullOrWhiteSpace($Ffprobe)) { $arguments += @("--ffprobe", $Ffprobe) }
 if (-not [string]::IsNullOrWhiteSpace($MaterialRoot)) { $arguments += @("--material-root", $MaterialRoot) }
+if ($AgentTestReview) { $arguments += "--agent-test-review" }
 if ($NoOpen) { $arguments += "--no-open" }
 if ($PreflightOnly) { $arguments += "--preflight-only" }
 

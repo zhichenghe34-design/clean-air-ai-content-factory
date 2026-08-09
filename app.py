@@ -57,6 +57,7 @@ from core.provider import (
     normalize_capability_review,
     sanitize_bootstrap_schema_diagnostic,
 )
+from core.review_policy import AGENT_TEST_REVIEW, HUMAN_STAGE_REVIEW
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -68,7 +69,12 @@ CATALOG_FILE = APP_DIR / "catalog" / "package-catalog.json"
 
 config_store = ConfigStore(RUNTIME_DIR)
 config_store.ensure_storage_layout()
-job_store = JobStore(RUNTIME_DIR)
+STAGE_REVIEW_MODE = (
+    AGENT_TEST_REVIEW
+    if os.environ.get("SHIYI_AGENT_TEST_REVIEW", "").strip() == "1"
+    else HUMAN_STAGE_REVIEW
+)
+job_store = JobStore(RUNTIME_DIR, stage_review_mode=STAGE_REVIEW_MODE)
 learning_store = LearningStore(RUNTIME_DIR)
 capability_registry = CapabilityPackRegistry(RUNTIME_DIR)
 package_catalog = PackageCatalog(CATALOG_FILE)
@@ -801,6 +807,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "name": "时宜 Agent 内容工厂",
             "version": "0.3.0",
             "schema_version": 2,
+            "review_policy": dict(job_store.review_policy),
             "time": datetime.now().astimezone().isoformat(timespec="seconds"),
             "provider": config["provider"]["name"],
             "model": config["provider"]["model"],

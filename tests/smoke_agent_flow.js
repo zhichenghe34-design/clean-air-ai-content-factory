@@ -1,5 +1,22 @@
 const { chromium } = require('playwright');
 
+const AGENT_TEST_POLICY = {
+  stage_review_mode: 'agent_test',
+  final_human_acceptance_required: true,
+};
+const AGENT_TEST_REVIEWER = 'Codex 测试代理';
+const EMPTY_RESEARCH_REVIEW_NOTE = '本次确认无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板';
+const AGENT_COMPLIANCE_NOTE = 'Codex 测试代理已核对最终脚本、合规结果与审批哈希；仅用于受控测试。';
+const AGENT_TEST_IDENTITY = {
+  reviewer: AGENT_TEST_REVIEWER,
+  actor_type: 'agent',
+  review_mode: 'test',
+  interaction_mode: 'browser_operated',
+  authority: 'test_progress_only',
+  human_approval_claimed: false,
+  test_only: true,
+};
+
 (async () => {
   const executablePath = process.env.CODEX_UI_BROWSER || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
   const browser = await chromium.launch({ headless: true, executablePath });
@@ -22,6 +39,7 @@ const { chromium } = require('playwright');
   const createKeys = [];
   let authorizeRequests = 0;
   let researchApprovalPayload = null;
+  let complianceApprovalPayload = null;
   let detailJobReads = 0;
   let detailArtifactRequests = 0;
   let detailRunRequests = 0;
@@ -85,6 +103,7 @@ const { chromium } = require('playwright');
         created_at: '2026-08-01T15:00:00+08:00',
         production_input: input,
         approvals: { research: { status: 'pending' }, compliance: { status: 'pending' } },
+        review_policy: { ...AGENT_TEST_POLICY },
         budget: { limit: 7, attempted: 0, succeeded: 0, failed: 0 },
         runs: [],
         artifacts: [],
@@ -215,12 +234,27 @@ const { chromium } = require('playwright');
   await page.route('**/api/jobs/fake-job/approvals/research', async route => {
     calls.push('research-approval');
     researchApprovalPayload = await route.request().postDataJSON();
-    job = { ...job, status: 'research_approved', approvals: { ...job.approvals, research: { status: 'approved' } } };
+    job = {
+      ...job,
+      status: 'research_approved',
+      approvals: {
+        ...job.approvals,
+        research: { status: 'approved', ...AGENT_TEST_IDENTITY, note: researchApprovalPayload.note },
+      },
+    };
     return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) });
   });
-  await page.route('**/api/jobs/fake-job/approvals/compliance', route => {
+  await page.route('**/api/jobs/fake-job/approvals/compliance', async route => {
     calls.push('compliance-approval');
-    job = { ...job, status: 'compliance_approved', approvals: { ...job.approvals, compliance: { status: 'approved' } } };
+    complianceApprovalPayload = await route.request().postDataJSON();
+    job = {
+      ...job,
+      status: 'compliance_approved',
+      approvals: {
+        ...job.approvals,
+        compliance: { status: 'approved', ...AGENT_TEST_IDENTITY, note: complianceApprovalPayload.note },
+      },
+    };
     return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) });
   });
 
@@ -228,19 +262,62 @@ const { chromium } = require('playwright');
   await page.locator('#topicCandidates .topic-option').nth(1).click();
   await page.locator('#startSelectedTopic').click();
   await page.getByRole('heading', { name: '本次没有可采信的外部证据' }).waitFor();
-  await page.getByRole('button', { name: '确认边界并继续' }).click();
-  const retryButton = page.getByRole('button', { name: '重试当前步骤' });
-  await retryButton.waitFor();
-  await page.locator('#appMenuButton').click();
-  await page.locator('#appMenu [data-view="jobs"]').click();
+  const researchCallsBeforeDetails = calls.length;
+  const researchRunsBeforeDetails = runRequests;
+  const researchHomeRequiresDetails = await page.getByRole('button', { name: '进入代理测试审查' }).isVisible()
+    && await page.getByRole('button', { name: '确认边界并继续' }).count() === 0;
+  await page.getByRole('button', { name: '进入代理测试审查' }).click();
+  await page.locator('#view-jobs.active #researchApprovalPanel:not([hidden])').waitFor();
+  const researchHomeDidNotApprove = calls.length === researchCallsBeforeDetails
+    && runRequests === researchRunsBeforeDetails
+    && researchApprovalPayload === null;
+  const researchReviewerLocked = await page.locator('#researchReviewer').inputValue() === AGENT_TEST_REVIEWER
+    && await page.locator('#researchReviewer').evaluate(node => node.readOnly);
+  const researchNotePrefilled = await page.locator('#researchNote').inputValue() === EMPTY_RESEARCH_REVIEW_NOTE;
+  await page.locator('#submitResearchBtn').click();
+  await page.waitForFunction(() => document.querySelector('#jobDetailBadge')?.textContent === '研究已确认');
+  const researchApprovalDidNotAutoRun = runRequests === researchRunsBeforeDetails;
+  const researchApprovalIsAgentTest = researchApprovalPayload?.reviewer === AGENT_TEST_REVIEWER
+    && researchApprovalPayload?.note === EMPTY_RESEARCH_REVIEW_NOTE
+    && job.approvals.research?.review_mode === 'test'
+    && job.approvals.research?.human_approval_claimed === false
+    && job.approvals.research?.test_only === true;
+  await page.locator('#rerunJobBtn').click();
   const listRetryButton = page.locator('#jobList button[data-action="run"][data-job-id="fake-job"]');
   await listRetryButton.waitFor();
+  await page.waitForFunction(() => {
+    const button = document.querySelector('#jobList button[data-action="run"][data-job-id="fake-job"]');
+    return button && !button.disabled;
+  });
+  const explicitResearchAdvance = runRequests === 2;
   await listRetryButton.evaluate(button => { button.click(); button.click(); });
-  await page.waitForFunction(() => [...document.querySelectorAll('#jobList .pill')].some(node => node.textContent.includes('待你确认最终脚本')));
+  await page.waitForFunction(() => [...document.querySelectorAll('#jobList .pill')].some(node => node.textContent.includes('待审查最终脚本')));
   await page.locator('#homeButton').click();
   await page.getByRole('heading', { name: '最终脚本已通过自动合规检查' }).waitFor();
-  await page.getByRole('button', { name: '确认脚本并渲染' }).click();
-  await page.getByRole('heading', { name: '成片已经完成' }).waitFor();
+  const complianceCallsBeforeDetails = calls.length;
+  const complianceRunsBeforeDetails = runRequests;
+  const complianceHomeRequiresDetails = await page.getByRole('button', { name: '进入代理测试审查' }).isVisible()
+    && await page.getByRole('button', { name: '确认脚本并渲染' }).count() === 0;
+  await page.getByRole('button', { name: '进入代理测试审查' }).click();
+  await page.locator('#view-jobs.active #complianceApprovalPanel:not([hidden])').waitFor();
+  const complianceHomeDidNotApprove = calls.length === complianceCallsBeforeDetails
+    && runRequests === complianceRunsBeforeDetails
+    && complianceApprovalPayload === null;
+  const complianceReviewerLocked = await page.locator('#complianceReviewer').inputValue() === AGENT_TEST_REVIEWER
+    && await page.locator('#complianceReviewer').evaluate(node => node.readOnly);
+  const complianceNotePrefilled = await page.locator('#complianceNote').inputValue() === AGENT_COMPLIANCE_NOTE;
+  await page.locator('#submitComplianceBtn').click();
+  await page.waitForFunction(() => document.querySelector('#jobDetailBadge')?.textContent === '脚本已确认');
+  const complianceApprovalDidNotAutoRun = runRequests === complianceRunsBeforeDetails;
+  const complianceApprovalIsAgentTest = complianceApprovalPayload?.reviewer === AGENT_TEST_REVIEWER
+    && complianceApprovalPayload?.note === AGENT_COMPLIANCE_NOTE
+    && job.approvals.compliance?.review_mode === 'test'
+    && job.approvals.compliance?.human_approval_claimed === false
+    && job.approvals.compliance?.test_only === true;
+  await page.locator('#rerunJobBtn').click();
+  await page.locator('#homeButton').click();
+  await page.getByRole('heading', { name: '测试成片已经完成，等待用户最终验收' }).waitFor();
+  const explicitComplianceAdvance = runRequests === 4;
   const completedOpenEnabled = await page.locator('#jobList button[data-action="open"][data-job-id="fake-job"]').isEnabled();
 
   await page.locator('#appMenuButton').click();
@@ -251,7 +328,7 @@ const { chromium } = require('playwright');
   await page.locator('#jobList button[data-action="open"][data-job-id="running-detail-job"]').click();
   await page.waitForFunction(() => document.querySelector('#researchFindings')?.textContent.includes('产物发布中'));
   const staleFindingClearedDuringPending = !(await page.locator('#researchFindings').innerText()).includes('旧任务 finding 不应保留');
-  await page.waitForFunction(() => document.querySelector('#jobDetailBadge')?.textContent === '待你确认研究证据'
+  await page.waitForFunction(() => document.querySelector('#jobDetailBadge')?.textContent === '待审查研究证据'
     && document.querySelector('#researchFindings')?.textContent.includes('新的详情 finding'));
   const staleFindingAbsentAfterRecovery = !(await page.locator('#researchFindings').innerText()).includes('旧任务 finding 不应保留');
 
@@ -262,10 +339,14 @@ const { chromium } = require('playwright');
   const emptyResearchBoundaryConfirmed = researchApprovalPayload
     && Array.isArray(researchApprovalPayload.findings)
     && researchApprovalPayload.findings.length === 0
-    && researchApprovalPayload.note === '本人确认本次无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板';
+    && researchApprovalPayload.note === EMPTY_RESEARCH_REVIEW_NOTE;
+  const humanImpersonationAbsent = ![researchApprovalPayload, complianceApprovalPayload]
+    .some(payload => payload?.reviewer === '本机会话用户')
+    && job.approvals.research?.human_approval_claimed === false
+    && job.approvals.compliance?.human_approval_claimed === false;
   const unexpectedErrors = errors.filter(message => !/net::ERR_CONNECTION_FAILED|status of 404 \(Not Found\)|status of 500 \(Internal Server Error\)/.test(message));
-  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, authorizeRequests, runKeys, noAutomaticRunReplay, logicalAttemptKeysAreUnique, maxConcurrentRunRequests, pollsDuringLongRun, injectedPollFailures, recoveredPolls, researchArtifactRequests, detailJobReads, detailArtifactRequests, detailRunRequests, staleFindingClearedDuringPending, staleFindingAbsentAfterRecovery, completedOpenEnabled, emptyResearchBoundaryConfirmed, expectedFailureSignals: errors, unexpectedErrors };
+  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, authorizeRequests, runKeys, noAutomaticRunReplay, logicalAttemptKeysAreUnique, maxConcurrentRunRequests, pollsDuringLongRun, injectedPollFailures, recoveredPolls, researchArtifactRequests, detailJobReads, detailArtifactRequests, detailRunRequests, staleFindingClearedDuringPending, staleFindingAbsentAfterRecovery, completedOpenEnabled, emptyResearchBoundaryConfirmed, researchHomeRequiresDetails, researchHomeDidNotApprove, researchReviewerLocked, researchNotePrefilled, researchApprovalDidNotAutoRun, researchApprovalIsAgentTest, explicitResearchAdvance, complianceHomeRequiresDetails, complianceHomeDidNotApprove, complianceReviewerLocked, complianceNotePrefilled, complianceApprovalDidNotAutoRun, complianceApprovalIsAgentTest, explicitComplianceAdvance, humanImpersonationAbsent, expectedFailureSignals: errors, unexpectedErrors };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
-  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || authorizeRequests !== 1 || !noAutomaticRunReplay || !logicalAttemptKeysAreUnique || maxConcurrentRunRequests !== 1 || pollsDuringLongRun < 2 || injectedPollFailures !== 1 || recoveredPolls < 1 || researchArtifactRequests < 2 || detailJobReads < 3 || detailArtifactRequests < 2 || detailRunRequests !== 0 || !staleFindingClearedDuringPending || !staleFindingAbsentAfterRecovery || !completedOpenEnabled || !emptyResearchBoundaryConfirmed) process.exit(1);
+  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || authorizeRequests !== 1 || !noAutomaticRunReplay || !logicalAttemptKeysAreUnique || maxConcurrentRunRequests !== 1 || pollsDuringLongRun < 2 || injectedPollFailures !== 1 || recoveredPolls < 1 || researchArtifactRequests < 2 || detailJobReads < 3 || detailArtifactRequests < 2 || detailRunRequests !== 0 || !staleFindingClearedDuringPending || !staleFindingAbsentAfterRecovery || !completedOpenEnabled || !emptyResearchBoundaryConfirmed || !researchHomeRequiresDetails || !researchHomeDidNotApprove || !researchReviewerLocked || !researchNotePrefilled || !researchApprovalDidNotAutoRun || !researchApprovalIsAgentTest || !explicitResearchAdvance || !complianceHomeRequiresDetails || !complianceHomeDidNotApprove || !complianceReviewerLocked || !complianceNotePrefilled || !complianceApprovalDidNotAutoRun || !complianceApprovalIsAgentTest || !explicitComplianceAdvance || !humanImpersonationAbsent) process.exit(1);
 })();

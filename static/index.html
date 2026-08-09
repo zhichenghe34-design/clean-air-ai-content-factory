@@ -106,17 +106,17 @@
           <div id="jobList" class="job-list"></div>
         </article>
         <article class="panel job-detail" id="jobDetailPanel" hidden>
-          <div class="panel-head"><div><p class="eyebrow">人工复核详情</p><h3>证据审定、脚本精修与产物</h3></div><span id="jobDetailBadge" class="pill"></span></div>
+          <div class="panel-head"><div><p class="eyebrow">阶段审查详情</p><h3>证据审定、脚本精修与产物</h3></div><span id="jobDetailBadge" class="pill"></span></div>
           <div id="jobSummary" class="job-summary"></div>
           <section id="researchApprovalPanel" class="approval-panel" hidden>
-            <h3>研究证据审核</h3><p class="lead">严格审核 Agent 以“所有内容默认虚假”为前提反向举证；最终采用与否仍由你决定。</p>
+            <h3>研究证据审核</h3><p class="lead">严格审核 Agent 以“所有内容默认虚假”为前提反向举证；测试模式由 Codex 逐项审查，正式模式仍由用户确认。</p>
             <div id="researchFindings" class="finding-list"></div>
-            <div class="approval-fields"><label>审批人<input id="researchReviewer" autocomplete="off" value="本机会话用户"></label><label>审核结论<select id="researchDecision"><option value="approved">批准可用证据并进入下一步</option><option value="rejected">退回研究并要求返工</option></select></label><label>审批备注<input id="researchNote" autocomplete="off" placeholder="可选"></label></div>
+            <div class="approval-fields"><label>审查执行者<input id="researchReviewer" autocomplete="off"></label><label>审核结论<select id="researchDecision"><option value="approved">批准可用证据并进入下一步</option><option value="rejected">退回研究并要求返工</option></select></label><label>审查备注<input id="researchNote" autocomplete="off" placeholder="测试代理必须说明核验范围"></label></div>
             <div class="action-row"><button id="submitResearchBtn" class="primary" type="button">提交审核并进入下一步</button></div>
           </section>
           <section id="complianceApprovalPanel" class="approval-panel" hidden>
             <h3>最终脚本合规门禁</h3><p id="complianceSummary" class="lead"></p>
-            <div class="approval-fields"><label>审批人<input id="complianceReviewer" autocomplete="off" value="本机会话用户"></label><label>审核结论<select id="complianceDecision"><option value="approved">批准脚本并进入渲染</option><option value="rejected">退回脚本并要求改稿</option></select></label><label>审批备注<input id="complianceNote" autocomplete="off" placeholder="可选"></label></div>
+            <div class="approval-fields"><label>审查执行者<input id="complianceReviewer" autocomplete="off"></label><label>审核结论<select id="complianceDecision"><option value="approved">批准脚本并进入渲染</option><option value="rejected">退回脚本并要求改稿</option></select></label><label>审查备注<input id="complianceNote" autocomplete="off" placeholder="测试代理必须说明核验范围"></label></div>
             <div class="action-row"><button id="submitComplianceBtn" class="primary" type="button">提交审核并进入渲染</button></div>
           </section>
           <label>当前待审脚本<textarea id="approvedScriptInput" rows="9" placeholder="内容阶段完成后在此显示待审脚本"></textarea></label><div id="durationEstimate" class="hint"></div>
@@ -143,7 +143,7 @@
           </article>
           <article class="panel">
             <p class="eyebrow">执行边界</p><h3>本地安全模式</h3>
-            <div class="safety-list"><div><strong>目录扫描</strong><span>只读</span></div><div><strong>模型调度</strong><span>仅登记工具</span></div><div><strong>素材上传</strong><span>默认关闭</span></div><div><strong>未知外部命令</strong><span>默认关闭</span></div><div><strong>合规结论</strong><span>必须人工确认</span></div></div>
+            <div class="safety-list"><div><strong>目录扫描</strong><span>只读</span></div><div><strong>模型调度</strong><span>仅登记工具</span></div><div><strong>素材上传</strong><span>默认关闭</span></div><div><strong>未知外部命令</strong><span>默认关闭</span></div><div><strong>阶段审查</strong><span id="reviewModeState">正式人审</span></div></div>
           </article>
           <article class="panel storage-settings">
             <p class="eyebrow">本地资源库</p><h3>存储位置</h3>

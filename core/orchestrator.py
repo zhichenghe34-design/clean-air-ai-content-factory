@@ -22,6 +22,13 @@ from core.capability_pack import (
     validate_goal,
 )
 from core.capability_registry import CapabilityPackRegistry, CapabilityPackRegistryError
+from core.review_policy import (
+    HUMAN_STAGE_REVIEW,
+    approval_identity,
+    build_review_policy,
+    evidence_status_for_policy,
+    normalize_review_policy,
+)
 
 
 PIPELINE = [
@@ -63,7 +70,7 @@ PRODUCTION_INPUT_FIELDS = {
 PLAN_FIELDS = {"goal", "summary", "steps", "missing", "estimated_cost_level", "planner"}
 PLAN_STEP_FIELDS = {"id", "name", "capability", "tool_id", "input", "output", "requires_approval", "risk"}
 EMPTY_RESEARCH_APPROVAL_NOTE = (
-    "本人确认本次无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板"
+    "本次确认无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板"
 )
 
 
@@ -317,10 +324,14 @@ def local_fallback_plan(goal: str, tools: list[dict[str, Any]]) -> dict[str, Any
 
 
 class JobStore:
-    def __init__(self, runtime_dir: Path):
+    def __init__(self, runtime_dir: Path, *, stage_review_mode: str = HUMAN_STAGE_REVIEW):
         self.runtime_dir = Path(runtime_dir)
         self.jobs_dir = self.runtime_dir / "jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.review_policy = build_review_policy(stage_review_mode)
+        except ValueError as exc:
+            raise WorkflowError("任务审查策略无效") from exc
         self.capability_registry = CapabilityPackRegistry(self.runtime_dir)
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
@@ -364,6 +375,7 @@ class JobStore:
                 "research": {"status": "pending"},
                 "compliance": {"status": "pending"},
             },
+            "review_policy": dict(self.review_policy),
             "runs": [],
             "active_run_id": None,
             "current_run_id": None,
@@ -577,7 +589,8 @@ class JobStore:
         digest = file_sha256(research_path)
         if payload.get("artifact_sha256") != digest:
             raise ConflictError("研究文件已经变化，请刷新后重新审批")
-        reviewer = self._reviewer(payload)
+        identity = self._review_identity(job, payload)
+        reviewer = identity["reviewer"]
         decision = str(payload.get("decision", ""))
         if decision not in {"approved", "rejected"}:
             raise UnprocessableError("decision必须是approved或rejected")
@@ -611,16 +624,18 @@ class JobStore:
             if finding_decisions:
                 raise UnprocessableError("无finding的本地安全模板确认不得提交finding决定")
             empty_finding_confirmation = True
+        note = (
+            EMPTY_RESEARCH_APPROVAL_NOTE
+            if empty_finding_confirmation
+            else str(payload.get("note", "")).strip()[:1000]
+        )
+        self._require_agent_test_note(identity, note)
         record = {
             "status": decision,
-            "reviewer": reviewer,
+            **identity,
             "reviewed_at": now_iso(),
             "artifact_sha256": digest,
-            "note": (
-                EMPTY_RESEARCH_APPROVAL_NOTE
-                if empty_finding_confirmation
-                else str(payload.get("note", "")).strip()[:1000]
-            ),
+            "note": note,
             "findings": list(submitted.values()),
         }
         if empty_finding_confirmation:
@@ -633,7 +648,12 @@ class JobStore:
         job["status"] = "research_approved" if decision == "approved" else "awaiting_research_revision"
         job["updated_at"] = now_iso()
         self._write(folder / "job.json", job)
-        self._event(folder, "research_reviewed", {"decision": decision, "reviewer": reviewer, "artifact_sha256": digest})
+        self._event(folder, "research_reviewed", {
+            "decision": decision,
+            "reviewer": reviewer,
+            "review_mode": identity["review_mode"],
+            "artifact_sha256": digest,
+        })
         return self._public(job)
 
     def approve_compliance(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -651,22 +671,30 @@ class JobStore:
         script_digest = file_sha256(script_path)
         if payload.get("artifact_sha256") != review_digest or payload.get("script_sha256") != script_digest:
             raise ConflictError("脚本或合规文件已经变化，请刷新后重新审批")
-        reviewer = self._reviewer(payload)
+        identity = self._review_identity(job, payload)
+        reviewer = identity["reviewer"]
         decision = str(payload.get("decision", ""))
         if decision not in {"approved", "rejected"}:
             raise UnprocessableError("decision必须是approved或rejected")
+        note = str(payload.get("note", "")).strip()[:1000]
+        self._require_agent_test_note(identity, note)
         job["approvals"]["compliance"] = {
             "status": decision,
-            "reviewer": reviewer,
+            **identity,
             "reviewed_at": now_iso(),
             "artifact_sha256": review_digest,
             "script_sha256": script_digest,
-            "note": str(payload.get("note", "")).strip()[:1000],
+            "note": note,
         }
         job["status"] = "compliance_approved" if decision == "approved" else "awaiting_script_revision"
         job["updated_at"] = now_iso()
         self._write(folder / "job.json", job)
-        self._event(folder, "compliance_reviewed", {"decision": decision, "reviewer": reviewer, "artifact_sha256": review_digest})
+        self._event(folder, "compliance_reviewed", {
+            "decision": decision,
+            "reviewer": reviewer,
+            "review_mode": identity["review_mode"],
+            "artifact_sha256": review_digest,
+        })
         return self._public(job)
 
     def invalidate_pending_content(self, job_id: str, reason: str) -> dict[str, Any]:
@@ -1027,7 +1055,7 @@ class JobStore:
                 self._sync_steps(job)
                 self._write(folder / "job.json", job)
                 self._event(folder, "approval_invalidated", {"gate": "research"})
-                raise ConflictError("研究文件已变化，原人工审批已失效，请重新审核")
+                raise ConflictError("研究文件已变化，原阶段审查已失效，请重新审核")
 
         if stage == "render":
             compliance = approvals.get("compliance", {})
@@ -1048,7 +1076,7 @@ class JobStore:
                 self._sync_steps(job)
                 self._write(folder / "job.json", job)
                 self._event(folder, "approval_invalidated", {"gate": "compliance"})
-                raise ConflictError("脚本或合规文件已变化，原人工审批已失效，请重新审核")
+                raise ConflictError("脚本或合规文件已变化，原阶段审查已失效，请重新审核")
 
     def _next_stage(self, job: dict[str, Any]) -> str:
         status = job.get("status")
@@ -1062,7 +1090,7 @@ class JobStore:
             return str(job["last_failed_stage"])
         if status in RUNNING_STATES:
             raise ConflictError("任务正在运行")
-        raise ConflictError("当前状态必须先完成人工门禁，不能继续运行", details={"status": status})
+        raise ConflictError("当前状态必须先完成阶段审查门禁，不能继续运行", details={"status": status})
 
     def _prepare_research(self, path: Path) -> None:
         data = self._scrub_automatic_human_labels(json.loads(path.read_text(encoding="utf-8")))
@@ -1102,7 +1130,7 @@ class JobStore:
             "evaluated_at": now_iso(),
             "artifact_sha256": digest,
             "policy": str(audit.get("policy", "assume_all_claims_false")),
-            "reason": "没有任何finding完成反向举证，自动退回研究；未生成或冒充人工审批。",
+                    "reason": "没有任何finding完成反向举证，自动退回研究；未生成或冒充阶段审查记录。",
         }
         job["status"] = "awaiting_research_revision"
         self._event(folder, "research_auto_rejected", {"artifact_sha256": digest, "engine": "strict_adversarial_audit"})
@@ -1201,6 +1229,8 @@ class JobStore:
                 "research": job.get("approvals", {}).get("research", {}).get("artifact_sha256"),
                 "compliance": job.get("approvals", {}).get("compliance", {}).get("artifact_sha256"),
             },
+            "review_policy": normalize_review_policy(job.get("review_policy")),
+            "evidence_status": evidence_status_for_policy(job.get("review_policy")),
             "started_at": run["started_at"],
             "finished_at": now_iso(),
             "budget": runner.budget.snapshot() if getattr(runner, "budget", None) is not None else job.get("budget"),
@@ -1313,11 +1343,17 @@ class JobStore:
             elif status == "failed" and state.get("status") == "running":
                 state["status"] = "failed"
 
-    def _reviewer(self, payload: dict[str, Any]) -> str:
-        reviewer = str(payload.get("reviewer", "")).strip()
-        if not 2 <= len(reviewer) <= 80:
-            raise UnprocessableError("审批人名称必须在2到80字之间")
-        return reviewer
+    def _review_identity(self, job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            policy = normalize_review_policy(job.get("review_policy"))
+            return approval_identity(policy["stage_review_mode"], str(payload.get("reviewer", "")))
+        except ValueError as exc:
+            raise UnprocessableError(str(exc)) from exc
+
+    @staticmethod
+    def _require_agent_test_note(identity: dict[str, Any], note: str) -> None:
+        if identity.get("review_mode") == "test" and len(note.strip()) < 8:
+            raise UnprocessableError("代理测试审查必须留下至少8字的核验备注")
 
     def _load_raw(self, job_id: str) -> tuple[dict[str, Any], Path]:
         if not job_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in job_id):

@@ -17,6 +17,7 @@ from core.orchestrator import (
 )
 from core.provider import BudgetLedger, ProviderError, validate_provider_base_url, validate_provider_response_url
 from core.production import ProductionRunner, build_local_variants, estimate_narration_duration, review_script
+from core.review_policy import CODEX_TEST_REVIEWER
 from core.secrets import protect_secret, unprotect_secret
 
 
@@ -147,7 +148,7 @@ def advance_to_content_gate(jobs, job, runner):
     finding = research["findings"][0]
     job = jobs.approve_research(job["id"], {
         "decision": "approved",
-        "reviewer": "测试审核员",
+        "reviewer": "何sir",
         "note": "测试审批",
         "artifact_sha256": file_sha256(research_path),
         "findings": [{"finding_id": finding["finding_id"], "decision": "approved", "evidence_type": "paraphrase"}],
@@ -160,7 +161,7 @@ def approve_compliance(jobs, job):
     script_path = jobs.resolve_review_artifact(job["id"], "approved_script.json")
     return jobs.approve_compliance(job["id"], {
         "decision": "approved",
-        "reviewer": "测试审核员",
+        "reviewer": "何sir",
         "note": "测试审批",
         "artifact_sha256": file_sha256(review_path),
         "script_sha256": file_sha256(script_path),
@@ -193,6 +194,87 @@ class V2WorkflowTests(unittest.TestCase):
             self.assertTrue(manifest["approval_hashes"]["compliance"])
             self.assertEqual(jobs.resolve_artifact(job["id"], "final.mp4").read_bytes(), b"fake:final.mp4")
 
+    def test_agent_test_review_is_server_bound_and_never_claims_human_approval(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="agent_test")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            self.assertEqual(job["review_policy"], {
+                "stage_review_mode": "agent_test",
+                "final_human_acceptance_required": True,
+            })
+            runner = FakeStageRunner()
+            job = jobs.approve(job["id"])
+            job = jobs.advance(job["id"], runner, "agent-test-research")
+            research_path = jobs.resolve_review_artifact(job["id"], "research.json")
+            finding = json.loads(research_path.read_text(encoding="utf-8"))["findings"][0]
+            with self.assertRaises(UnprocessableError):
+                jobs.approve_research(job["id"], {
+                    "decision": "approved",
+                    "reviewer": "",
+                    "note": "代理已经检查研究依据",
+                    "artifact_sha256": file_sha256(research_path),
+                    "findings": [],
+                })
+            with self.assertRaises(UnprocessableError):
+                jobs.approve_research(job["id"], {
+                    "decision": "approved",
+                    "reviewer": "冒充用户",
+                    "note": "代理已经检查研究依据",
+                    "artifact_sha256": file_sha256(research_path),
+                    "findings": [{
+                        "finding_id": finding["finding_id"],
+                        "decision": "approved",
+                        "evidence_type": "paraphrase",
+                    }],
+                })
+            job = jobs.approve_research(job["id"], {
+                "decision": "approved",
+                "reviewer": CODEX_TEST_REVIEWER,
+                "note": "代理已经逐项检查研究依据和允许范围",
+                "artifact_sha256": file_sha256(research_path),
+                "findings": [{
+                    "finding_id": finding["finding_id"],
+                    "decision": "approved",
+                    "evidence_type": "paraphrase",
+                }],
+            })
+            research_approval = job["approvals"]["research"]
+            self.assertEqual(research_approval["reviewer"], CODEX_TEST_REVIEWER)
+            self.assertEqual(research_approval["actor_type"], "agent")
+            self.assertEqual(research_approval["review_mode"], "test")
+            self.assertEqual(research_approval["authority"], "test_progress_only")
+            self.assertFalse(research_approval["human_approval_claimed"])
+            self.assertTrue(research_approval["test_only"])
+
+            job = jobs.advance(job["id"], runner, "agent-test-content")
+            review_path = jobs.resolve_review_artifact(job["id"], "review.json")
+            script_path = jobs.resolve_review_artifact(job["id"], "approved_script.json")
+            with self.assertRaises(UnprocessableError):
+                jobs.approve_compliance(job["id"], {
+                    "decision": "approved",
+                    "reviewer": CODEX_TEST_REVIEWER,
+                    "note": "太短",
+                    "artifact_sha256": file_sha256(review_path),
+                    "script_sha256": file_sha256(script_path),
+                })
+            job = jobs.approve_compliance(job["id"], {
+                "decision": "approved",
+                "reviewer": CODEX_TEST_REVIEWER,
+                "note": "代理已经检查最终脚本和合规结果",
+                "artifact_sha256": file_sha256(review_path),
+                "script_sha256": file_sha256(script_path),
+            })
+            self.assertFalse(job["approvals"]["compliance"]["human_approval_claimed"])
+            job = jobs.advance(job["id"], runner, "agent-test-render")
+            manifest = json.loads(
+                jobs.resolve_artifact(job["id"], "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["evidence_status"], "test_only_pending_human_acceptance")
+            self.assertTrue(manifest["review_policy"]["final_human_acceptance_required"])
+
     def test_no_key_empty_research_requires_scoped_human_confirmation(self):
         with tempfile.TemporaryDirectory() as folder:
             jobs, job = self.make_job(folder)
@@ -208,7 +290,7 @@ class V2WorkflowTests(unittest.TestCase):
 
             job = jobs.approve_research(job["id"], {
                 "decision": "approved",
-                "reviewer": "测试审核员",
+                "reviewer": "何sir",
                 "note": "这条客户端备注不得覆盖固定边界",
                 "artifact_sha256": file_sha256(research_path),
                 "findings": [],
@@ -216,7 +298,7 @@ class V2WorkflowTests(unittest.TestCase):
             self.assertEqual(job["status"], "research_approved")
             self.assertEqual(
                 job["approvals"]["research"]["note"],
-                "本人确认本次无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板",
+                "本次确认无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板",
             )
             self.assertEqual(
                 job["approvals"]["research"]["empty_finding_confirmation"],
@@ -252,7 +334,7 @@ class V2WorkflowTests(unittest.TestCase):
                 with self.assertRaises(UnprocessableError):
                     jobs.approve_research(job["id"], {
                         "decision": "approved",
-                        "reviewer": "测试审核员",
+                        "reviewer": "何sir",
                         "note": "试图空审批",
                         "artifact_sha256": file_sha256(research_path),
                         "findings": [],
@@ -402,7 +484,7 @@ class V2WorkflowTests(unittest.TestCase):
             research = json.loads(jobs.resolve_review_artifact(job["id"], "research.json").read_text(encoding="utf-8"))
             with self.assertRaises(ConflictError):
                 jobs.approve_research(job["id"], {
-                    "decision": "approved", "reviewer": "测试审核员", "artifact_sha256": "0" * 64,
+                    "decision": "approved", "reviewer": "何sir", "artifact_sha256": "0" * 64,
                     "findings": [{"finding_id": research["findings"][0]["finding_id"], "decision": "approved", "evidence_type": "verbatim"}],
                 })
 
@@ -417,7 +499,7 @@ class V2WorkflowTests(unittest.TestCase):
             finding = research["findings"][0]
             job = jobs.approve_research(job["id"], {
                 "decision": "approved",
-                "reviewer": "测试审核员",
+                "reviewer": "何sir",
                 "artifact_sha256": file_sha256(research_path),
                 "findings": [{
                     "finding_id": finding["finding_id"],

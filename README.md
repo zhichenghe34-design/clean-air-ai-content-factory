@@ -1,6 +1,6 @@
 # 时宜 Agent 内容工厂 v0.3（组合式本地发布候选）
 
-一个可运行、可审核、可积累纠错经验的短视频内容工厂。计划中的 v0.3 正式主链先从本地确定性安全能力包出发，再完成三选一、研究、脚本、合规和成片；研究证据与最终脚本仍分别由人审批。MoneyPrinterTurbo 1.3.3 作为固定版本的本地视频生产引擎，我们的控制层继续负责证据、审批、预算、运行隔离、媒体复验和最终 manifest。
+一个可运行、可审核、可积累纠错经验的短视频内容工厂。计划中的 v0.3 正式主链先从本地确定性安全能力包出发，再完成三选一、研究、脚本、合规和成片。两道哈希门禁始终保留：正式模式由用户审核；受控测试模式由 Codex 通过本地浏览器逐项审查，记录明确标为 `test_only`，最终成片再交给用户验收和反馈。MoneyPrinterTurbo 1.3.3 作为固定版本的本地视频生产引擎，我们的控制层继续负责证据、审查、预算、运行隔离、媒体复验和最终 manifest。
 
 [![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.14-3776AB)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
@@ -10,7 +10,7 @@
 | 版本 | 当前状态 | 可下载 |
 |---|---|---|
 | v0.2.0 | 当前稳定发布 | 是 |
-| v0.3.0 MPT 组合版 | 本地发布候选；正式两道人审 E2E、最终包与远端 CI 尚待完成 | 否 |
+| v0.3.0 MPT 组合版 | 本地发布候选；代理测试审查 E2E、用户最终成片验收与新版封包尚待完成 | 否 |
 
 ## Windows 一键体验（当前稳定版 v0.2.0）
 
@@ -31,7 +31,7 @@
 
 > 当前截图、比赛 PDF、设计样片和真实 DeepSeek 证据包属于“净界除甲醛 v2”历史比赛基线，只证明该行业包的既有运行结果，不冒充通用 v3 的新联调证据。v3 视觉重设计尚未开始。
 
-默认首页采用 Agent 优先的轻交互：用户描述行业、受众和内容目标，系统使用带 SHA-256 的确定性安全能力包，并在每轮只给 3 个角度。选定后系统自动推进，只在“研究证据确认”和“最终脚本确认”两处停下。候选只是研究方向，不代表事实已经成立；严格反证和人工确认仍在任务链内执行。任务进行中可以继续输入纠错；当前界面先采用“安全阶段应用”的默认方式，显式“打断/不打断”双模式延期。
+默认首页采用 Agent 优先的轻交互：用户描述行业、受众和内容目标，系统使用带 SHA-256 的确定性安全能力包，并在每轮只给 3 个角度。选定后系统自动推进，只在“研究证据审查”和“最终脚本审查”两处停下。候选只是研究方向，不代表事实已经成立；严格反证和阶段审查仍在任务链内执行。正式模式由用户操作两处门禁；受控测试模式由 Codex 打开详细依据、通过浏览器操作两处门禁，用户只测试最终成片并反馈。任务进行中可以继续输入纠错；当前界面先采用“安全阶段应用”的默认方式，显式“打断/不打断”双模式延期。
 
 ## v3 通用内核新增
 
@@ -53,10 +53,10 @@
 
 ## 保留的 v2 安全与发布基线
 
-- 状态严格分为执行授权、研究、研究人工审定、内容生成、合规阻断/人工放行、渲染和完成；自动系统不再伪装成人工审核。
+- 状态严格分为执行授权、研究、研究阶段审查、内容生成、合规阻断/阶段放行、渲染和完成；测试代理审查与正式人审使用不可混淆的结构化身份，自动系统不再伪装成人工审核。
 - 每次推进使用独立 `run_id` 和 staging。失败尝试不会替换上一份成功成片，正式产物只从成功 manifest 解析。
-- 严格反证审核先逐项判定 finding；首页一次确认只采用已判定可用的内容并按安全转述写入逐项审批记录，详细页仍可逐条批准、拒绝或退回。文件哈希变化后审批立即失效。
-- 医疗因果、健康保证、绝对化表达及没有已批准证据支持的功效数字由本地规则阻断；自动通过后仍须最终人工放行。
+- 严格反证审核先逐项判定 finding；正式人审可从首页确认，代理测试审查必须进入详细页逐项检查后提交。文件哈希变化后原阶段审查立即失效。
+- 医疗因果、健康保证、绝对化表达及没有已批准证据支持的功效数字由本地规则阻断；自动通过后仍须经过当前任务固定的阶段审查门禁，代理测试模式也不能放行阻断脚本。
 - 同任务有进程锁和 PID 磁盘锁；同一次浏览器动作遇到网络结果不确定时使用同一个 `Idempotency-Key` 自动重放，用户明确点击重试则生成新 Key，并发点击仍只执行一次。生产网络尝试在发出前计入每任务共享的 7 次硬预算，并在请求离开进程前通过 `fsync` 与原子替换持久化；崩溃恢复不会返还已经预留的额度。
 - 服务只监听 `127.0.0.1`。写接口要求随机会话 Cookie、CSRF、JSON Content-Type 和当前端口同源 Origin。
 - Provider 正式模式只接受 `https://api.deepseek.com` 或 `/v1`；每个最终响应和重定向 URL 还必须使用登记的模型/对话路径，且不得携带 userinfo、query 或 fragment。localhost 仅在 `SHIYI_ALLOW_TEST_PROVIDER=1` 时开放。
@@ -80,6 +80,12 @@ npm.cmd ci
 
 这条命令只启动工作台源码，不会自动启动 MoneyPrinterTurbo。v0.3 组合开发环境使用 `scripts/launch_combined.ps1` 同时启动两个回环服务，并要求 MPT、Python 与 FFmpeg 都已预装；最终便携包会把这些运行时和根目录双击入口一并封装，运行时不会下载依赖。
 
+受控测试时显式增加 `-AgentTestReview`。启动器默认清除父进程遗留的测试开关，只有本次显式参数才会把 `SHIYI_AGENT_TEST_REVIEW=1` 传给工作台；MoneyPrinterTurbo 不会收到这个标志。新任务会固定 `review_policy.stage_review_mode=agent_test`，两道记录均写明 `actor_type=agent`、`review_mode=test`、`human_approval_claimed=false`，最终 manifest 标为 `test_only_pending_human_acceptance`。普通启动仍固定为正式人审模式。
+
+```powershell
+.\scripts\launch_combined.ps1 -AgentTestReview
+```
+
 API Key 推荐放在环境变量：
 
 ```powershell
@@ -97,12 +103,12 @@ flowchart LR
     P["planned"] --> A["authorized"]
     A --> R["research_running"]
     R --> HR["awaiting_research_approval"]
-    HR -->|人工批准| C["content_running"]
+    HR -->|阶段审查通过| C["content_running"]
     HR -->|退回| RR["awaiting_research_revision"]
     C --> B["blocked_compliance"]
     C --> HC["awaiting_compliance_approval"]
     B --> SR["awaiting_script_revision"]
-    HC -->|人工批准| V["rendering"]
+    HC -->|阶段审查通过| V["rendering"]
     HC -->|退回| SR
     SR --> HC
     V --> D["complete"]
@@ -141,7 +147,7 @@ engine_report.json（组合引擎运行）
 | GET | `/api/learning` | 查看纠错事件和已经验证生成的本地 Skills |
 | GET | `/api/capability-packs` | 查看已发布能力包的脱敏摘要与历史版本数 |
 | POST | `/api/jobs/{id}/approve` | 首次执行授权 |
-| POST | `/api/jobs/{id}/run` | 只推进到下一道人工作业门禁，要求 `Idempotency-Key` |
+| POST | `/api/jobs/{id}/run` | 只推进到下一道阶段审查门禁，要求 `Idempotency-Key` |
 | POST | `/api/jobs/{id}/approvals/research` | 研究逐 finding 审定 |
 | POST | `/api/jobs/{id}/approvals/compliance` | 最终脚本合规放行 |
 | PATCH | `/api/jobs/{id}/script` | 人工改稿并重算本地合规/时长 |
@@ -172,7 +178,7 @@ npm.cmd run test:flow
 .\.venv\Scripts\python.exe tools\verify_committed_media.py
 ```
 
-Python 测试由 `unittest discover` 动态发现，当前 237 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及 MoneyPrinterTurbo 适配器、两道人审绑定、失败运行隔离、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、两道人工作业门禁、窄屏无溢出与零前端错误。CI 使用可注入的假配音/渲染适配器完成快速确定性 E2E。
+Python 测试由 `unittest discover` 动态发现，当前 244 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及 MoneyPrinterTurbo 适配器、结构化人审/代理测试身份绑定、失败运行隔离、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、代理测试必须进入详细页、两道门禁不静默代批、窄屏无溢出与零前端错误。CI 使用可注入的假配音/渲染适配器完成快速确定性 E2E。
 
 ## v2 历史比赛材料（只读基线）
 

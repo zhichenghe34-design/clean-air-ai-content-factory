@@ -187,6 +187,7 @@ class CombinedLauncherTests(unittest.TestCase):
             "AUTHORIZATION": "should-not-leak",
             "SHIYI_ALLOW_TEST_PROVIDER": "1",
             "SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS": "1",
+            "SHIYI_AGENT_TEST_REVIEW": "1",
             "PYTHONPATH": "C:\\outside-injection",
             "PYTHONHOME": "C:\\outside-runtime",
         }
@@ -212,8 +213,20 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertEqual(app_env["FFPROBE_PATH"], str(self.config.ffprobe))
         self.assertNotIn("SHIYI_ALLOW_TEST_PROVIDER", app_env)
         self.assertNotIn("SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS", app_env)
+        self.assertNotIn("SHIYI_AGENT_TEST_REVIEW", app_env)
         self.assertNotIn("PYTHONPATH", app_env)
         self.assertNotIn("PYTHONHOME", app_env)
+
+        agent_test_config = LauncherConfig(
+            **{**self.config.__dict__, "agent_test_review": True}
+        )
+        agent_test_env = build_app_environment(
+            parent,
+            agent_test_config,
+            app_port=18765,
+            mpt_port=19080,
+        )
+        self.assertEqual(agent_test_env["SHIYI_AGENT_TEST_REVIEW"], "1")
 
     def test_packaged_config_ignores_host_path_overrides_and_rejects_explicit_escape(self):
         (self.project / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")

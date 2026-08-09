@@ -197,6 +197,8 @@ class CombinedPortableTests(unittest.TestCase):
         )
         powershell_launcher = (inputs.output / "scripts" / "launch_combined.ps1").read_text(encoding="utf-8-sig")
         self.assertIn('@("-I", "-S", "-B", "-X", "utf8", $launcher', powershell_launcher)
+        self.assertIn("[switch]$AgentTestReview", powershell_launcher)
+        self.assertIn('if ($AgentTestReview) { $arguments += "--agent-test-review" }', powershell_launcher)
         self.assertNotRegex(launcher.casefold(), r"pip\s+install|uv\s+sync|npx\s+--yes")
         packaged_verifier = subprocess.run(
             [sys.executable, str(inputs.output / "tools/verify_combined_portable.py"), str(inputs.output), "--startup"],

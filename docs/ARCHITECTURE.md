@@ -20,11 +20,13 @@ Provider 地址经过规范化。正式模式只允许 DeepSeek 官方 HTTPS 域
 
 最终成功 render 才更新 `current_run_id`；对已验证成功媒体进行纯报告修正时，可发布独立的 `report_rebuild` 成功运行，预算与媒体哈希不变。普通产物地址只解析当前 run 的 manifest，历史地址必须显式携带成功的 render/report_rebuild `run_id`。旧任务读取时装饰为 `legacy_read_only`，原文件不改写。
 
-## 审批
+## 阶段审查
 
-研究审批绑定 `research.json` SHA-256，并对所有 `auto_review_status=eligible` finding 逐项提交决定与 `verbatim/paraphrase`。自动研究会删除模型输出中的人工审定人、人工时间与 `human_verified` 标签。
+研究审查绑定 `research.json` SHA-256，并对所有 `auto_review_status=eligible` finding 逐项提交决定与 `verbatim/paraphrase`。自动研究会删除模型输出中的人工审定人、人工时间与 `human_verified` 标签。
 
-合规审批同时绑定 `review.json` 与 `approved_script.json` SHA-256。人工改稿会重算本地审核和预计朗读时长、撤销旧合规审批，但研究文件未变化时保留研究审批。
+合规审查同时绑定 `review.json` 与 `approved_script.json` SHA-256。人工改稿会重算本地审核和预计朗读时长、撤销旧合规审查，但研究文件未变化时保留研究审查。
+
+每个新任务在创建时固定 `review_policy`，之后不能由浏览器载荷切换身份。普通启动使用 `human/formal`；只有组合启动器显式传入 `-AgentTestReview` 时使用 `agent/test`。代理测试模式的执行者由服务端固定为 `Codex 测试代理`，并写入 `test_only=true`、`human_approval_claimed=false`；它可以推进受控测试，但不构成用户本人签署，成功 manifest 仍等待用户最终成片验收。旧任务缺少该字段时只按历史正式人审口径兼容读取。
 
 ## 预算与并发
 
@@ -40,4 +42,4 @@ Provider 地址经过规范化。正式模式只允许 DeepSeek 官方 HTTPS 域
 
 ## Manifest
 
-最终 `manifest.json` 包含 job/run ID、输入哈希、研究/合规审批哈希、时间、预算统计，以及产物的名称、阶段、MIME、大小和 SHA-256。公开包以 manifest 为准复算文件，不信任报告中的自述状态。
+最终 `manifest.json` 包含 job/run ID、输入哈希、研究/合规审查哈希、结构化 `review_policy`、`evidence_status`、时间、预算统计，以及产物的名称、阶段、MIME、大小和 SHA-256。公开包以 manifest 为准复算文件，不信任报告中的自述状态；代理测试记录不得被包装成正式人审。

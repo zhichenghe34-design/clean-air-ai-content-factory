@@ -38,6 +38,7 @@ ENGINE_ENV_ALLOWLIST = (
 APP_RELEASE_FORBIDDEN_ENV = (
     "SHIYI_ALLOW_TEST_PROVIDER",
     "SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS",
+    "SHIYI_AGENT_TEST_REVIEW",
     "SHIYI_APP_EXECUTABLE",
     "SHIYI_APP_PYTHON",
     "SHIYI_MPT_ROOT",
@@ -86,6 +87,7 @@ class LauncherConfig:
     app_executable: Path | None = None
     app_python: Path | None = None
     app_script: Path | None = None
+    agent_test_review: bool = False
 
 
 def _require_file(path: Path, code: str, label: str) -> None:
@@ -400,6 +402,8 @@ def build_app_environment(
     # This value is sent only to the workbench. MPT receives the same exact
     # origin through its separate, secret-free environment below.
     environment["SHIYI_WORKBENCH_ORIGIN"] = f"http://{LOOPBACK_HOST}:{app_port}"
+    if config.agent_test_review:
+        environment["SHIYI_AGENT_TEST_REVIEW"] = "1"
     return environment
 
 
@@ -675,6 +679,7 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
             app_executable=None,
             app_python=shared_python,
             app_script=(project_root / "app.py").resolve(),
+            agent_test_review=bool(args.agent_test_review),
         )
     mpt_root = _default_path(
         args.mpt_root,
@@ -743,6 +748,7 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
         app_executable=app_executable,
         app_python=app_python,
         app_script=app_script,
+        agent_test_review=bool(args.agent_test_review),
     )
 
 
@@ -763,6 +769,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-timeout", type=float, default=60.0)
     parser.add_argument("--no-open", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument(
+        "--agent-test-review",
+        action="store_true",
+        help="仅用于受控测试：两道阶段门禁由Codex浏览器操作，记录不冒充人审",
+    )
     return parser
 
 

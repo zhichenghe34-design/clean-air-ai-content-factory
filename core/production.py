@@ -546,7 +546,7 @@ def _build_legacy_local_variants(
                 "id": item_id,
                 "hook_type": hook,
                 "script": _pad_safe_script(opening + core, minimum_seconds=45),
-                "reason": "只组合人工批准且通过严格反证审核的证据原意。",
+                "reason": "只组合阶段审查批准且通过严格反证审核的证据原意。",
                 "source": "local_evidence_bound",
                 "evidence_finding_ids": finding_ids,
             }
@@ -604,7 +604,7 @@ def build_local_variants(
                 break
         evidence_copy = "；".join(statements).rstrip("。") + "。"
         core = (
-            f"这次讨论“{safe_topic}”。当前只使用人工批准且严格通过的材料：{evidence_copy}"
+            f"这次讨论“{safe_topic}”。当前只使用阶段审查批准且严格通过的材料：{evidence_copy}"
             "这项结论只适用于原证据的对象、时间和范围，不能外推。"
             "其他说法继续核对来源和限制；未经批准的数字、功效、价格、业绩、保证、证言、认证和排名都不写入正文。"
             f"最后列出已证实、待确认和禁用内容，交给{safe_audience}复核。"
@@ -621,7 +621,7 @@ def build_local_variants(
                 "id": item_id,
                 "hook_type": hook,
                 "script": _pad_safe_script(opening + core),
-                "reason": "只使用人工批准且通过严格反证审核的claim或有限表述。",
+                "reason": "只使用阶段审查批准且通过严格反证审核的claim或有限表述。",
                 "source": "local_evidence_bound",
                 "evidence_finding_ids": finding_ids,
             }
@@ -785,7 +785,7 @@ def review_script(
         warnings.append({
             "type": "unsupported_numeric_claim",
             "level": "block",
-            "message": "功效、价格或业绩数字没有人工批准且严格通过的finding支持。",
+            "message": "功效、价格或业绩数字没有阶段审查批准且严格通过的finding支持。",
             "matches": unsupported_numbers,
         })
 
@@ -826,7 +826,7 @@ def review_script(
         warnings.append({
             "type": "unsupported_qualitative_claim",
             "level": "block",
-            "message": "脚本包含没有人工批准且严格通过的定性事实、来源或因果表述。",
+            "message": "脚本包含没有阶段审查批准且严格通过的定性事实、来源或因果表述。",
             "matches": qualitative_claims,
         })
 
@@ -862,7 +862,7 @@ def review_script(
         "warnings": warnings,
         "conditions_present": conditions,
         "human_confirmation_required": True,
-        "scope": "只允许使用人工批准且严格通过的证据；能力包与记忆只能收紧规则",
+        "scope": "只允许使用阶段审查批准且严格通过的证据；能力包与记忆只能收紧规则",
         "capability_pack_id": _pack_id(capability_pack),
         "learning_rule_ids": [
             str(item.get("rule_id")) for item in _normalized_learning_rules(learning_rules) if item.get("rule_id")
@@ -895,7 +895,7 @@ class ProductionRunner:
         self.production_engine_options = dict(production_engine_options or {})
 
     def run(self, folder: Path, production_input: dict[str, Any] | None = None) -> dict[str, Any]:
-        raise RuntimeError("v2生产线必须通过JobStore分阶段运行并完成人工门禁")
+        raise RuntimeError("v2生产线必须通过JobStore分阶段运行并完成阶段审查门禁")
 
     def run_research_stage(self, folder: Path, production_input: dict[str, Any] | None = None) -> dict[str, Any]:
         folder.mkdir(parents=True, exist_ok=True)
@@ -1020,7 +1020,7 @@ class ProductionRunner:
         config = dict(DEFAULT_INPUT)
         config.update(production_input or {})
         if approvals.get("research", {}).get("status") != "approved" or approvals.get("compliance", {}).get("status") != "approved":
-            raise RuntimeError("研究与合规人工门禁尚未全部批准")
+            raise RuntimeError("研究与合规阶段审查门禁尚未全部批准")
         approved = json.loads((folder / "approved_script.json").read_text(encoding="utf-8"))
         review = json.loads((folder / "review.json").read_text(encoding="utf-8"))
         if review.get("status") == "blocked" or review.get("blocked"):
