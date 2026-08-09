@@ -13,7 +13,7 @@ from core.discovery import ProjectDiscovery
 from core.motion_director import MotionPlanError, build_motion_plan, build_motion_project, derive_motion_segments, validate_motion_plan
 from core.orchestrator import JobStore, local_fallback_plan
 from core.provider import BudgetLedger, OpenAICompatibleProvider, ProviderError
-from core.production import DEFAULT_SCRIPT, ProductionRunner, review_script
+from core.production import DEFAULT_SCRIPT, ProductionRunner, build_local_variants, review_script
 from core.web_agent import WebResearchAgent, bind_exact_evidence_candidates, normalize_research_result
 from core.web_tools import TrustedWebToolRegistry
 
@@ -600,9 +600,33 @@ class ProductionTests(unittest.TestCase):
         segments = derive_motion_segments("气味小就代表甲醛少吗？", script)
         self.assertGreaterEqual(len(segments), 4)
         joined = "".join(item["caption"] for item in segments)
+        self.assertEqual(joined, script)
         self.assertIn("新家具", joined)
         self.assertNotIn("除醛率 99", joined)
         self.assertTrue(all(len(item["caption"]) <= 62 for item in segments))
+
+    def test_motion_segments_preserve_full_formal_local_safe_script(self):
+        pack = legacy_clean_air_pack()
+        script = build_local_variants(
+            "为什么数值低不代表安全？",
+            "准备入住的新房家庭",
+            capability_pack=pack,
+        )[0]["script"]
+        segments = derive_motion_segments(
+            "为什么数值低不代表安全？",
+            script,
+            capability_pack=pack,
+        )
+        self.assertEqual(
+            ProductionRunner._caption_binding_text("".join(item["caption"] for item in segments)),
+            ProductionRunner._caption_binding_text(script),
+        )
+        self.assertTrue(4 <= len(segments) <= 8)
+        self.assertTrue(all(1 <= len(item["caption"]) <= 62 for item in segments))
+
+    def test_motion_segments_fail_closed_instead_of_truncating_oversized_script(self):
+        with self.assertRaisesRegex(MotionPlanError, "完整字幕容量"):
+            derive_motion_segments("超长脚本", "甲" * (8 * 62 + 1))
 
 
 if __name__ == "__main__":

@@ -925,6 +925,15 @@ class AppHandler(BaseHTTPRequestHandler):
             if package.get("trust_status") == "approved_bundled_skill"
             for cap in package.get("capabilities", [])
         }
+        motion_summary = production_mode_summary("motion")
+        footage_summary = production_mode_summary("footage")
+        motion_status = {key: value for key, value in motion_summary.items() if key != "selected_mode"}
+        footage_status = {key: value for key, value in footage_summary.items() if key != "selected_mode"}
+        motion_status.update({"role": "primary", "selectable": motion_status.get("health") == "ready"})
+        footage_status.update({
+            "role": "secondary",
+            "selectable": footage_status.get("enabled") is True and footage_status.get("health") == "ready",
+        })
         return {
             "name": "时宜 Agent 内容工厂",
             "version": "0.3.0",
@@ -951,7 +960,15 @@ class AppHandler(BaseHTTPRequestHandler):
             "memory_count": len(learning_store.list_memories()),
             "learned_skill_count": len(learning_store.list_skills()),
             "dynamic_capability_pack_count": len(capability_registry.list()),
-            "production_engine": production_mode_summary("motion"),
+            # Kept for v0.2/v0.3 clients that expect one default engine.
+            "production_engine": motion_summary,
+            # This is an availability catalogue, not a claim that either engine
+            # was selected for a task.  Per-job selection remains on GET Job.
+            "production_engines": {
+                "default_mode": "motion",
+                "motion": motion_status,
+                "footage": footage_status,
+            },
         }
 
     def _discover(self, body: dict) -> dict:
@@ -1016,6 +1033,13 @@ class AppHandler(BaseHTTPRequestHandler):
 
         supplied_pack = production_input.get("capability_pack")
         normalized = validate_topic_input(production_input)
+        if normalized.get("production_mode") == "footage":
+            footage_status = production_mode_summary("footage")
+            if footage_status.get("enabled") is not True or footage_status.get("health") != "ready":
+                raise UnprocessableError(
+                    "实拍素材引擎尚未就绪，请选择纯动画或先完成MoneyPrinterTurbo启动校验",
+                    details={"production_mode": "footage", "engine_health": footage_status.get("health")},
+                )
         pack = normalized["capability_pack"]
         if supplied_pack is None or pack.get("source") in {"local", "legacy"}:
             pack = self._publish_capability_pack(pack)

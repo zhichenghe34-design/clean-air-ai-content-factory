@@ -306,7 +306,35 @@ function renderStatus() {
     : providerState === "configured"
       ? "已检测到 Key，尚未验证当前会话连接"
       : "尚未配置 DeepSeek API Key";
-  document.getElementById("portBadge").textContent = `${location.hostname}:${location.port || "80"} · v${state.status?.version || "0.2.0"}`;
+  const releaseVersion = state.status?.version || "0.3.0";
+  const engines = state.status?.production_engines || {};
+  const motion = engines.motion || state.status?.production_engine || {};
+  const footage = engines.footage || {};
+  const healthLabels = {
+    ready: "可用",
+    configured_unverified: "已配置，未通过启动校验",
+    unavailable: "不可用",
+    disabled: "未启用",
+    misconfigured: "配置异常",
+  };
+  const engineLabel = (summary, fallbackName) => {
+    const name = summary?.name || fallbackName;
+    const version = summary?.version ? ` ${summary.version}` : "";
+    return `${name}${version} · ${healthLabels[summary?.health] || summary?.health || "状态未知"}`;
+  };
+  const motionLabel = engineLabel(motion, "HyperFrames");
+  const footageLabel = engineLabel(footage, "MoneyPrinterTurbo");
+  const footageReady = footage?.enabled === true && footage?.health === "ready";
+  const footageInput = document.getElementById("productionModeFootage");
+  footageInput.disabled = !footageReady;
+  if (!footageReady && footageInput.checked) document.getElementById("productionModeMotion").checked = true;
+  document.getElementById("motionEngineStatus").textContent = motionLabel;
+  document.getElementById("footageEngineStatus").textContent = footageReady ? footageLabel : `${footageLabel}，暂不可选`;
+  document.getElementById("releaseVersionState").textContent = `v${releaseVersion}`;
+  document.getElementById("motionVersionState").textContent = motionLabel;
+  document.getElementById("footageVersionState").textContent = footageLabel;
+  document.getElementById("editionBadge").textContent = `v${releaseVersion}`;
+  document.getElementById("portBadge").textContent = `${location.hostname}:${location.port || "80"} · v${releaseVersion}`;
   document.getElementById("metricTools").textContent = state.status?.tool_count || 0;
   document.getElementById("metricCaps").textContent = state.status?.capabilities?.length || 0;
   document.getElementById("metricJobs").textContent = state.status?.job_count || 0;
@@ -413,10 +441,12 @@ async function startSelectedTopic() {
       selection_bundle_id: state.topicResponse?.selection_bundle_id,
       candidate_id: candidate.id,
       production_options: {
-      target_duration_seconds: 52,
-      pattern_card_ids: [],
-      voice_engine: "voxcpm2",
-      enable_web_research: true,
+        target_duration_seconds: 52,
+        pattern_card_ids: [],
+        voice_engine: "voxcpm2",
+        production_mode: document.querySelector('input[name="productionMode"]:checked')?.value === "footage"
+          && !document.getElementById("productionModeFootage").disabled ? "footage" : "motion",
+        enable_web_research: true,
       },
     };
     if (!createPayload.selection_bundle_id) throw new Error("选题凭证已失效，请重新生成三个候选");
@@ -737,7 +767,7 @@ function renderLatestArtifact() {
   }
   target.innerHTML = `<video id="latestVideo" class="latest-video" src="/api/jobs/${latest.id}/artifacts/final.mp4" preload="metadata" playsinline></video>
     <div class="latest-meta"><h3>${escapeHtml(latest.production_input?.topic || latest.id)}</h3><div class="latest-status"><img class="ui-icon" src="/icons/check.svg" alt="">${isAgentTestReview(latest) ? "代理测试审查完成 · 待用户最终验收" : "已完成 · 合规已确认"} · <span id="latestDuration">00:--</span></div>
-    <div class="latest-actions"><button id="latestPlayButton" class="primary latest-play" type="button"><img class="ui-icon" src="/icons/play.svg" alt="">播放</button><a href="/api/jobs/${latest.id}/artifacts/manifest.json" target="_blank" rel="noreferrer"><img class="ui-icon" src="/icons/download.svg" alt="">证据清单</a></div></div>`;
+    <div class="latest-actions"><button id="latestPlayButton" class="primary latest-play" type="button"><img class="ui-icon" src="/icons/play.svg" alt="">播放</button><a href="/api/jobs/${latest.id}/artifacts/final.mp4" download="shiyi-${escapeHtml(latest.id)}-final.mp4"><img class="ui-icon" src="/icons/download.svg" alt="">下载成片</a><a href="/api/jobs/${latest.id}/artifacts/manifest.json" target="_blank" rel="noreferrer">查看证据清单</a></div></div>`;
   const video = document.getElementById("latestVideo");
   video.addEventListener("loadedmetadata", () => {
     const duration = Number(video.duration || 0);
@@ -858,7 +888,7 @@ function renderRunHistory(job) {
   if (!job.runs?.length) { target.innerHTML = `<p class="lead">暂无运行尝试。</p>`; return; }
   target.innerHTML = [...job.runs].reverse().map(run => {
     const current = run.run_id === job.current_run_id;
-    const links = run.stage === "render" && run.status === "complete" ? `<a href="/api/jobs/${job.id}/runs/${run.run_id}/artifacts/manifest.json" target="_blank" rel="noreferrer">清单</a> <a href="/api/jobs/${job.id}/runs/${run.run_id}/artifacts/final.mp4" target="_blank" rel="noreferrer">成片</a>` : "不可公开";
+    const links = run.stage === "render" && run.status === "complete" ? `<a href="/api/jobs/${job.id}/runs/${run.run_id}/artifacts/manifest.json" target="_blank" rel="noreferrer">查看清单</a> <a href="/api/jobs/${job.id}/runs/${run.run_id}/artifacts/final.mp4" download="shiyi-${escapeHtml(job.id)}-${escapeHtml(run.run_id)}-final.mp4">下载成片</a>` : "不可公开";
     return `<div class="run-row ${current ? "current" : ""}"><div><strong>${escapeHtml(run.stage)} · ${escapeHtml(run.status)}</strong><small>${escapeHtml(run.run_id)}${current ? " · 当前成功" : ""}</small></div><div>${links}</div></div>`;
   }).join("");
 }
@@ -963,7 +993,9 @@ async function openJob(id, { job: suppliedJob = null, scroll = true, managePolli
   document.getElementById("rerunJobBtn").disabled = job.legacy_read_only || !runnableStates.has(job.status) || state.busyJobs.has(job.id);
   document.getElementById("durationEstimate").textContent = script ? `当前 ${script.length} 字；保存时按标点加权校验 35–75 秒，配音后只允许 0.75–1.5 倍安全变速。` : "内容阶段完成后才能人工改稿。";
   renderRunHistory(job);
-  document.getElementById("artifactLinks").innerHTML = (job.artifacts || []).map(name => `<a href="/api/jobs/${id}/artifacts/${name}" target="_blank" rel="noreferrer">${escapeHtml(artifactLabels[name] || name)}</a>`).join("");
+  document.getElementById("artifactLinks").innerHTML = (job.artifacts || []).map(name => name === "final.mp4"
+    ? `<a href="/api/jobs/${id}/artifacts/final.mp4" download="shiyi-${escapeHtml(id)}-final.mp4">下载成片</a>`
+    : `<a href="/api/jobs/${id}/artifacts/${name}" target="_blank" rel="noreferrer">${escapeHtml(artifactLabels[name] || name)}</a>`).join("");
   const video = document.getElementById("artifactVideo");
   if ((job.artifacts || []).includes("final.mp4")) { video.src = `/api/jobs/${id}/artifacts/final.mp4`; video.hidden = false; }
   else { video.hidden = true; video.removeAttribute("src"); }
@@ -1166,6 +1198,22 @@ document.getElementById("saveSettings").addEventListener("click", async () => {
     toast("设置已保存");
     await refresh({ syncHomeView: false });
   } catch (error) { toast(error.message, true); }
+});
+
+document.getElementById("clearApiKey").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  setBusy(button, true, "正在清除…");
+  try {
+    state.config = await api("/api/config", {
+      method: "POST",
+      body: JSON.stringify({ provider: { clear_api_key: true } }),
+    });
+    document.getElementById("apiKey").value = "";
+    await refresh({ syncHomeView: false });
+    renderSettings();
+    toast("已清除本机会话与 DPAPI 保存的 Key；环境变量中的 Key 不会被修改");
+  } catch (error) { toast(error.message, true); }
+  finally { setBusy(button, false); }
 });
 
 document.getElementById("testProvider").addEventListener("click", async () => {

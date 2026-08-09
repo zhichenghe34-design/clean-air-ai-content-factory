@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from core.motion_director import build_motion_plan, derive_motion_segments, validate_motion_plan
 from core.review_policy import (
     AGENT_TEST_IDENTITY,
     AGENT_TEST_REVIEW,
@@ -24,11 +27,17 @@ from tools.build_public_evidence import (
 from tools.verify_public_evidence import (
     MPT_ENGINE_ARTIFACTS,
     MPT_ENGINE_IDENTITY,
+    MOTION_ENGINE_IDENTITY,
+    MOTION_EVIDENCE_ARTIFACTS,
     _engine_contract,
+    _validate_motion_evidence,
     _validate_mpt_evidence,
     _validate_mpt_review_contract,
+    caption_binding_text,
+    evidence_artifacts_for_contract,
     sha256,
     validate_srt,
+    verify,
 )
 
 
@@ -294,6 +303,10 @@ class PublicEvidenceContractTests(unittest.TestCase):
                 validate_srt(captions, 5.5, "第一句，第二句。", contract="mpt_v0.3"),
                 [],
             )
+            self.assertEqual(
+                validate_srt(captions, 5.5, "第一句，第二句。", contract="motion_v0.3"),
+                [],
+            )
             mismatch = validate_srt(captions, 5.5, "完全不同的批准稿", contract="mpt_v0.3")
             self.assertTrue(any("正文" in error for error in mismatch))
 
@@ -320,7 +333,19 @@ class PublicEvidenceContractTests(unittest.TestCase):
         contract, errors = _engine_contract(mpt, mpt)
         self.assertEqual((contract, errors), ("mpt_v0.3", []))
 
+        motion = base | MOTION_EVIDENCE_ARTIFACTS
+        contract, errors = _engine_contract(motion, motion)
+        self.assertEqual((contract, errors), ("motion_v0.3", []))
+        self.assertEqual(
+            evidence_artifacts_for_contract(contract),
+            MOTION_EVIDENCE_ARTIFACTS,
+        )
+
         contract, errors = _engine_contract(base | {"engine_report.json"}, mpt)
+        self.assertEqual(contract, "legacy_v2")
+        self.assertTrue(errors)
+
+        contract, errors = _engine_contract(base | {"visual-qc.json"}, motion)
         self.assertEqual(contract, "legacy_v2")
         self.assertTrue(errors)
 
@@ -368,6 +393,178 @@ class PublicEvidenceContractTests(unittest.TestCase):
             self.assertEqual(_validate_mpt_evidence(folder, report, approved_script), [])
             report["engine"] = {**MPT_ENGINE_IDENTITY, "version": "latest"}
             self.assertTrue(_validate_mpt_evidence(folder, report, approved_script))
+
+    def test_motion_report_binds_engine_plan_captions_and_visual_qc(self):
+        approved_script = (
+            "先明确客户真正关心的问题，再逐项核对来源、对象、时间和适用边界。"
+            "没有完整证据时，不写未经批准的数字、功效、保证、证言或排名。"
+            "最后列出已证实内容、仍缺材料和下一步核验动作，让每一句都能复查。"
+        )
+        with tempfile.TemporaryDirectory() as folder_name:
+            folder = Path(folder_name)
+            final_video = folder / "final.mp4"
+            final_video.write_bytes(b"motion-video")
+            contact_sheet = folder / "contact-sheet.png"
+            contact_sheet.write_bytes(b"\x89PNG\r\n\x1a\n" + b"contact-sheet")
+            visual_qc = {
+                "schema_version": 1,
+                "status": "passed",
+                "sample_count": 12,
+                "blocking_reasons": [],
+                "review_reasons": [],
+                "checks": {"test_color_bars": {"status": "passed"}},
+                "frames": [{"index": index} for index in range(12)],
+                "video": {
+                    "name": "final.mp4",
+                    "size": final_video.stat().st_size,
+                    "sha256": sha256(final_video).upper(),
+                },
+            }
+            visual_path = folder / "visual-qc.json"
+            visual_path.write_text(json.dumps(visual_qc), encoding="utf-8")
+            plan = build_motion_plan(
+                "如何核验本地服务信息？",
+                "潜在客户",
+                derive_motion_segments("如何核验本地服务信息？", approved_script),
+                52.0,
+            )
+            (folder / "motion_plan.json").write_text(
+                json.dumps(plan, ensure_ascii=False), encoding="utf-8"
+            )
+            binding = caption_binding_text(approved_script)
+            validation = validate_motion_plan(plan)
+            report = {
+                "status": "complete",
+                "production_mode": "motion",
+                "production_engine": dict(MOTION_ENGINE_IDENTITY),
+                "render": {
+                    "mode": "animated_hyperframes",
+                    "production_mode": "motion",
+                    "duration_seconds": 52.0,
+                    "runtime_source": "packaged",
+                    "runtime_version": MOTION_ENGINE_IDENTITY["version"],
+                    "renderer": MOTION_ENGINE_IDENTITY["renderer"],
+                    "video_codec": "h264",
+                    "audio_codec": "aac",
+                    "width": 1080,
+                    "height": 1920,
+                    "motion_validation": validation,
+                    "caption_validation": {
+                        "status": "passed",
+                        "cue_count": len(plan["scenes"]),
+                        "text_sha256": hashlib.sha256(binding.encode("utf-8")).hexdigest().upper(),
+                    },
+                    "visual_qc": {
+                        "status": "passed",
+                        "sample_count": 12,
+                        "blocking_reasons": [],
+                        "review_reasons": [],
+                        "report_sha256": sha256(visual_path).upper(),
+                        "contact_sheet_sha256": sha256(contact_sheet).upper(),
+                    },
+                },
+            }
+            self.assertEqual(_validate_motion_evidence(folder, report, approved_script), [])
+
+            def srt_time(seconds: float) -> str:
+                milliseconds = round(seconds * 1000)
+                hours, remainder = divmod(milliseconds, 3_600_000)
+                minutes, remainder = divmod(remainder, 60_000)
+                whole_seconds, milliseconds = divmod(remainder, 1000)
+                return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d},{milliseconds:03d}"
+
+            caption_lines: list[str] = []
+            for index, scene in enumerate(plan["scenes"], start=1):
+                caption_lines.extend([
+                    str(index),
+                    f"{srt_time(scene['start'])} --> {srt_time(scene['end'])}",
+                    scene["caption"],
+                    "",
+                ])
+            (folder / "captions.srt").write_text("\n".join(caption_lines), encoding="utf-8")
+            json_payloads = {
+                "research.json": {"findings": []},
+                "insight.json": {},
+                "script_variants.json": {"variants": [{"script": approved_script}]},
+                "approved_script.json": {"script": approved_script},
+                "review.json": {"status": "needs_human", "blocked": False},
+                "run_report.json": report,
+            }
+            for name, payload in json_payloads.items():
+                (folder / name).write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+                )
+            (folder / "voice.wav").write_bytes(b"voice")
+            approvals = {
+                "research": {
+                    **self._approval("何sir", HUMAN_IDENTITY),
+                    "artifact_sha256": sha256(folder / "research.json"),
+                },
+                "compliance": {
+                    **self._approval("何sir", HUMAN_IDENTITY),
+                    "artifact_sha256": sha256(folder / "review.json"),
+                    "script_sha256": sha256(folder / "approved_script.json"),
+                },
+            }
+            (folder / "approvals.json").write_text(
+                json.dumps(approvals, ensure_ascii=False), encoding="utf-8"
+            )
+            approval_line, approval_errors = approval_validation_line(
+                approvals, allow_legacy_human=False
+            )
+            self.assertEqual(approval_errors, [])
+            (folder / "VALIDATION.md").write_text(approval_line + "\n", encoding="utf-8")
+            expected_files = {
+                "research.json", "insight.json", "script_variants.json",
+                "approved_script.json", "review.json", "voice.wav", "captions.srt",
+                "motion_plan.json", "final.mp4", "run_report.json", "approvals.json",
+                "VALIDATION.md", "contact-sheet.png", "visual-qc.json",
+            }
+            manifest = {
+                "schema_version": 2,
+                "stage": "render",
+                "status": "complete",
+                "budget": {"limit": 7, "attempted": 0},
+                "approval_hashes": {"research": sha256(folder / "research.json")},
+                "review_policy": {
+                    "stage_review_mode": HUMAN_STAGE_REVIEW,
+                    "final_human_acceptance_required": False,
+                },
+                "evidence_status": "human_stage_reviews_complete",
+                "artifacts": [
+                    {
+                        "name": name,
+                        "size": (folder / name).stat().st_size,
+                        "sha256": sha256(folder / name),
+                        "mime": mimetypes.guess_type(name)[0] or "application/octet-stream",
+                    }
+                    for name in sorted(expected_files)
+                ],
+            }
+            (folder / "manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+            )
+            with mock.patch(
+                "tools.verify_public_evidence.probe_video",
+                return_value={
+                    "duration_seconds": 52.0,
+                    "video_codec": "h264",
+                    "audio_codec": "aac",
+                    "width": 1080,
+                    "height": 1920,
+                },
+            ):
+                errors, media = verify(folder)
+            self.assertEqual(errors, [])
+            self.assertEqual(media["evidence_contract"], "motion_v0.3")
+
+            report["render"]["runtime_source"] = "development_repo"
+            runtime_errors = _validate_motion_evidence(folder, report, approved_script)
+            self.assertTrue(any("正式便携包" in error for error in runtime_errors))
+            report["render"]["runtime_source"] = "packaged"
+
+            report["production_engine"] = {**MOTION_ENGINE_IDENTITY, "version": "latest"}
+            self.assertTrue(_validate_motion_evidence(folder, report, approved_script))
 
 
 if __name__ == "__main__":

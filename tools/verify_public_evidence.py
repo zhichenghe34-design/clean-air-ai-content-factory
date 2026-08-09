@@ -23,6 +23,12 @@ from core.review_policy import (
     evidence_status_for_policy,
     normalize_review_policy,
 )
+from core.motion_director import MotionPlanError, validate_motion_plan
+from core.motion_runtime_contract import (
+    HYPERFRAMES_RENDERER,
+    HYPERFRAMES_VERSION,
+    MOTION_ENGINE_NAME,
+)
 
 
 CANONICAL = [
@@ -37,6 +43,15 @@ MPT_ENGINE_IDENTITY = {
     "version": "1.3.3",
     "commit": "254cd028906ee657eab844dc94087cdbea2a7aa8",
     "mode": "local_http",
+}
+MOTION_EVIDENCE_ARTIFACTS = {"contact-sheet.png", "visual-qc.json"}
+MOTION_ENGINE_IDENTITY = {
+    "name": MOTION_ENGINE_NAME,
+    "version": HYPERFRAMES_VERSION,
+    "renderer": HYPERFRAMES_RENDERER,
+    "mode": "local_cli",
+    "selected_mode": "motion",
+    "health": "completed",
 }
 TEXT_SUFFIXES = {".json", ".md", ".srt", ".txt", ".log", ".yml", ".yaml"}
 SECRET_PATTERNS = {
@@ -154,7 +169,7 @@ def validate_legacy_srt(path: Path, duration: float) -> list[str]:
 
 
 def validate_mpt_srt(path: Path, duration: float, approved_script: str) -> list[str]:
-    """Mirror the production MPT contract: full text, no overlap, and gaps <= 2 seconds."""
+    """Validate the v0.3 full-text subtitle contract shared by formal engines."""
     errors: list[str] = []
     blocks = [
         item for item in re.split(
@@ -214,7 +229,7 @@ def validate_srt(
 ) -> list[str]:
     if contract == "legacy_v2":
         return validate_legacy_srt(path, duration)
-    if contract == "mpt_v0.3":
+    if contract in {"mpt_v0.3", "motion_v0.3"}:
         return validate_mpt_srt(path, duration, approved_script)
     return [f"未知字幕验证合同：{contract}"]
 
@@ -231,30 +246,61 @@ def _engine_contract(
             errors.append(f"{label} 的 MPT 证据必须成对包含 engine_report.json 与 material_sources.json")
     if actual_engine != manifest_engine:
         errors.append("MPT 证据文件与 manifest 声明不一致")
+    actual_motion = actual_files & MOTION_EVIDENCE_ARTIFACTS
+    manifest_motion = manifest_files & MOTION_EVIDENCE_ARTIFACTS
+    for label, present in (("公开包", actual_motion), ("manifest", manifest_motion)):
+        if present and present != MOTION_EVIDENCE_ARTIFACTS:
+            errors.append(f"{label} 的纯动画视觉证据必须成对包含 contact-sheet.png 与 visual-qc.json")
+    if actual_motion != manifest_motion:
+        errors.append("纯动画视觉证据文件与 manifest 声明不一致")
     if actual_engine == MPT_ENGINE_ARTIFACTS and manifest_engine == MPT_ENGINE_ARTIFACTS:
         return "mpt_v0.3", errors
+    if actual_motion == MOTION_EVIDENCE_ARTIFACTS and manifest_motion == MOTION_EVIDENCE_ARTIFACTS:
+        return "motion_v0.3", errors
     return "legacy_v2", errors
+
+
+def evidence_artifacts_for_contract(contract: str) -> set[str]:
+    if contract == "mpt_v0.3":
+        return set(MPT_ENGINE_ARTIFACTS)
+    if contract == "motion_v0.3":
+        return set(MOTION_EVIDENCE_ARTIFACTS)
+    if contract == "legacy_v2":
+        return set()
+    raise ValueError(f"未知公开证据合同：{contract}")
+
+
+def _validate_v03_review_contract(
+    manifest: dict[str, Any], approval_modes: list[str], label: str
+) -> list[str]:
+    """Bind the v0.3 evidence claim to one explicit server-pinned review policy."""
+    raw_policy = manifest.get("review_policy")
+    if not isinstance(raw_policy, dict):
+        return [f"{label} manifest 缺少显式有效的 review_policy"]
+    try:
+        policy = normalize_review_policy(raw_policy)
+    except (TypeError, ValueError):
+        return [f"{label} manifest 的 review_policy 无效"]
+
+    errors: list[str] = []
+    policy_mode = policy["stage_review_mode"]
+    if len(approval_modes) != 2 or any(mode != policy_mode for mode in approval_modes):
+        errors.append(f"{label} manifest 的 review_policy 与两道阶段审查身份不一致")
+    if manifest.get("evidence_status") != evidence_status_for_policy(policy):
+        errors.append(f"{label} manifest 的 evidence_status 与 review_policy 不一致")
+    return errors
 
 
 def _validate_mpt_review_contract(
     manifest: dict[str, Any], approval_modes: list[str]
 ) -> list[str]:
-    """Bind the v0.3 evidence claim to one explicit server-pinned review policy."""
-    raw_policy = manifest.get("review_policy")
-    if not isinstance(raw_policy, dict):
-        return ["MPT manifest 缺少显式有效的 review_policy"]
-    try:
-        policy = normalize_review_policy(raw_policy)
-    except (TypeError, ValueError):
-        return ["MPT manifest 的 review_policy 无效"]
+    return _validate_v03_review_contract(manifest, approval_modes, "MPT")
 
-    errors: list[str] = []
-    policy_mode = policy["stage_review_mode"]
-    if len(approval_modes) != 2 or any(mode != policy_mode for mode in approval_modes):
-        errors.append("MPT manifest 的 review_policy 与两道阶段审查身份不一致")
-    if manifest.get("evidence_status") != evidence_status_for_policy(policy):
-        errors.append("MPT manifest 的 evidence_status 与 review_policy 不一致")
-    return errors
+
+def _validate_motion_review_contract(
+    manifest: dict[str, Any], approval_modes: list[str]
+) -> list[str]:
+    return _validate_v03_review_contract(manifest, approval_modes, "Motion")
 
 
 def _validate_mpt_evidence(
@@ -321,6 +367,140 @@ def _validate_mpt_evidence(
     return errors
 
 
+def _validate_motion_evidence(
+    folder: Path,
+    run_report: dict[str, Any],
+    approved_script: str,
+) -> list[str]:
+    """Bind a public motion claim to HyperFrames, its plan, subtitles, and visual QC."""
+    errors: list[str] = []
+    if run_report.get("status") != "complete" or run_report.get("production_mode") != "motion":
+        errors.append("run_report.json 不是完成的 motion_v0.3 运行")
+    if run_report.get("production_engine") != MOTION_ENGINE_IDENTITY:
+        errors.append("run_report.json 的 HyperFrames 固定版本身份不一致")
+
+    render = run_report.get("render")
+    if not isinstance(render, dict):
+        errors.append("run_report.json 缺少纯动画渲染报告")
+        render = {}
+    expected_render = {
+        "mode": "animated_hyperframes",
+        "production_mode": "motion",
+        "runtime_version": HYPERFRAMES_VERSION,
+        "renderer": HYPERFRAMES_RENDERER,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "width": 1080,
+        "height": 1920,
+    }
+    if any(render.get(key) != value for key, value in expected_render.items()):
+        errors.append("run_report.json 的纯动画渲染身份或媒体合同不一致")
+    if render.get("diagnostic_only") is True:
+        errors.append("motion_v0.3 不得使用诊断渲染适配器")
+    if render.get("runtime_source") != "packaged":
+        errors.append("motion_v0.3 必须来自正式便携包内置 HyperFrames 运行时")
+
+    try:
+        motion_plan = json.loads((folder / "motion_plan.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        motion_plan = None
+        errors.append("motion_plan.json 不是有效 JSON")
+    motion_validation: dict[str, Any] | None = None
+    if isinstance(motion_plan, dict):
+        try:
+            motion_validation = validate_motion_plan(motion_plan)
+        except (MotionPlanError, TypeError, ValueError) as exc:
+            errors.append(f"motion_plan.json 未通过可信动画积木验证：{exc}")
+        scenes = motion_plan.get("scenes")
+        if isinstance(scenes, list):
+            approved_binding = caption_binding_text(approved_script)
+            plan_binding = caption_binding_text(
+                "".join(str(scene.get("caption", "")) for scene in scenes if isinstance(scene, dict))
+            )
+            if not approved_binding or plan_binding != approved_binding:
+                errors.append("motion_plan.json 字幕正文与 approved_script.json 不一致")
+        else:
+            errors.append("motion_plan.json 缺少有效场景")
+        if motion_plan.get("format") != {
+            "width": 1080,
+            "height": 1920,
+            "fps": 30,
+            "aspect_ratio": "9:16",
+        }:
+            errors.append("motion_plan.json 画幅合同无效")
+        try:
+            plan_duration = float(motion_plan.get("duration_seconds", 0))
+            render_duration = float(render.get("duration_seconds", 0))
+        except (TypeError, ValueError):
+            errors.append("motion_plan.json 或 run_report.json 的时长无效")
+        else:
+            if not 45 <= plan_duration <= 60 or abs(plan_duration - render_duration) > 0.05:
+                errors.append("motion_plan.json 与纯动画渲染时长不一致")
+    if motion_validation is not None and render.get("motion_validation") != motion_validation:
+        errors.append("run_report.json 的可信动画积木验证摘要不一致")
+
+    approved_binding = caption_binding_text(approved_script)
+    expected_caption_hash = hashlib.sha256(approved_binding.encode("utf-8")).hexdigest().upper()
+    caption_validation = render.get("caption_validation")
+    if (
+        not isinstance(caption_validation, dict)
+        or caption_validation.get("status") != "passed"
+        or caption_validation.get("text_sha256") != expected_caption_hash
+    ):
+        errors.append("run_report.json 缺少与批准稿全文绑定的动画字幕验证")
+    elif isinstance(motion_plan, dict) and isinstance(motion_plan.get("scenes"), list):
+        if caption_validation.get("cue_count") != len(motion_plan["scenes"]):
+            errors.append("动画字幕条目数量与 motion_plan.json 场景不一致")
+
+    visual_path = folder / "visual-qc.json"
+    contact_path = folder / "contact-sheet.png"
+    try:
+        visual_qc = json.loads(visual_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        visual_qc = None
+        errors.append("visual-qc.json 不是有效 JSON")
+    contact_header = b""
+    if contact_path.is_file():
+        with contact_path.open("rb") as source:
+            contact_header = source.read(8)
+    if contact_header != b"\x89PNG\r\n\x1a\n":
+        errors.append("contact-sheet.png 不是有效 PNG 视觉证据")
+    if not isinstance(visual_qc, dict):
+        return errors
+    if (
+        visual_qc.get("schema_version") != 1
+        or visual_qc.get("status") != "passed"
+        or visual_qc.get("sample_count") != 12
+        or visual_qc.get("blocking_reasons") != []
+        or visual_qc.get("review_reasons") != []
+        or not isinstance(visual_qc.get("checks"), dict)
+        or not isinstance(visual_qc.get("frames"), list)
+        or len(visual_qc.get("frames", [])) != 12
+    ):
+        errors.append("visual-qc.json 不是通过的 12 帧正式视觉门禁报告")
+    video = visual_qc.get("video")
+    final_path = folder / "final.mp4"
+    if (
+        not isinstance(video, dict)
+        or video.get("name") != "final.mp4"
+        or video.get("size") != final_path.stat().st_size
+        or str(video.get("sha256", "")).upper() != sha256(final_path).upper()
+    ):
+        errors.append("visual-qc.json 与 final.mp4 不一致")
+    visual_summary = render.get("visual_qc")
+    expected_visual_summary = {
+        "status": "passed",
+        "sample_count": 12,
+        "blocking_reasons": [],
+        "review_reasons": [],
+        "report_sha256": sha256(visual_path).upper(),
+        "contact_sheet_sha256": sha256(contact_path).upper(),
+    }
+    if visual_summary != expected_visual_summary:
+        errors.append("run_report.json 的视觉门禁摘要与公开视觉证据不一致")
+    return errors
+
+
 def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
     errors: list[str] = []
     actual = {item.name for item in folder.iterdir() if item.is_file()}
@@ -338,7 +518,7 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
     entries = {str(item.get("name")): item for item in manifest.get("artifacts", []) if isinstance(item, dict)}
     contract, contract_errors = _engine_contract(actual, set(entries))
     errors.extend(contract_errors)
-    expected_files = REQUIRED | (MPT_ENGINE_ARTIFACTS if contract == "mpt_v0.3" else set())
+    expected_files = REQUIRED | evidence_artifacts_for_contract(contract)
     extra = sorted(actual - expected_files)
     if extra:
         errors.append(f"存在未声明文件：{', '.join(extra)}")
@@ -391,6 +571,8 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
         errors.append("VALIDATION.md 的审查身份说明与 approvals.json 不一致")
     if contract == "mpt_v0.3":
         errors.extend(_validate_mpt_review_contract(manifest, approval_modes))
+    elif contract == "motion_v0.3":
+        errors.extend(_validate_motion_review_contract(manifest, approval_modes))
 
     run_report = json.loads((folder / "run_report.json").read_text(encoding="utf-8"))
     engine_summary = run_report.get("production_engine")
@@ -413,6 +595,8 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
             engine_report = {}
             errors.append("engine_report.json 不是有效 JSON")
         errors.extend(_validate_mpt_evidence(folder, engine_report, approved_script_text))
+    elif contract == "motion_v0.3":
+        errors.extend(_validate_motion_evidence(folder, run_report, approved_script_text))
     elif engine_summary not in (None, {}):
         errors.append("旧 v2 合同不得声明未随包交付的生产引擎")
 
@@ -433,6 +617,14 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
         errors.append("成片不是 1080×1920")
     if media["video_codec"] != "h264" or media["audio_codec"] != "aac":
         errors.append("成片不是 H.264/AAC")
+    if contract == "motion_v0.3":
+        render = run_report.get("render") if isinstance(run_report.get("render"), dict) else {}
+        try:
+            reported_duration = float(render.get("duration_seconds", 0))
+        except (TypeError, ValueError):
+            reported_duration = 0.0
+        if abs(reported_duration - media["duration_seconds"]) > 0.15:
+            errors.append("run_report.json 的纯动画时长与 final.mp4 不一致")
     errors.extend(validate_srt(
         folder / "captions.srt",
         media["duration_seconds"],

@@ -82,6 +82,15 @@ main { min-width: 0; }
 .agent-intro strong { font-size: 17px; }
 .screening-note { margin: 17px 0 20px; display: flex; align-items: center; gap: 8px; color: #7a8580; font-size: 12px; }
 .screening-note .ui-icon { opacity: .72; }
+.production-mode-picker { margin: 0 0 18px; padding: 0; border: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.production-mode-picker legend { width: 100%; margin-bottom: 8px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.production-mode-option { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; display: flex; align-items: flex-start; gap: 9px; background: var(--paper); }
+.production-mode-option:has(input:checked) { border-color: #9fc72c; background: var(--lime-soft); }
+.production-mode-option:has(input:disabled) { opacity: .62; }
+.production-mode-option input { width: auto; height: auto; margin: 3px 0 0; }
+.production-mode-option strong, .production-mode-option small { display: block; }
+.production-mode-option strong { font-size: 12px; }
+.production-mode-option small { margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .topic-candidates { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; }
 .topic-option { width: 100%; min-height: 94px; padding: 15px 18px; border: 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 54px minmax(0, 1fr) 28px; gap: 14px; align-items: center; background: var(--paper); text-align: left; transition: background .16s ease, box-shadow .16s ease; }
 .topic-option:last-child { border-bottom: 0; }
@@ -313,6 +322,7 @@ label.check input { width: auto; height: auto; margin: 0; }
   .user-message .message-surface { display: block; min-height: 0; }
   .user-message time { margin-top: 8px; }
   .agent-surface { padding: 18px 13px; }
+  .production-mode-picker { grid-template-columns: 1fr; }
   .topic-option { min-height: 104px; padding: 14px 12px; grid-template-columns: 40px minmax(0, 1fr) 24px; gap: 8px; }
   .topic-index { font-size: 22px; }
   .choice-actions { gap: 12px; flex-wrap: wrap; }

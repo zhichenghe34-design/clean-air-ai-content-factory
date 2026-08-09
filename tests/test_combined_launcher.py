@@ -11,16 +11,21 @@ from unittest.mock import patch
 from scripts.launch_combined import (
     EXPECTED_MPT_COMMIT,
     EXPECTED_MPT_VERSION,
+    MOTION_OPTIONAL_MPT_HEALTH_TIMEOUT_SECONDS,
     LauncherConfig,
     LauncherError,
     build_app_command,
     build_app_environment,
+    _claim_launcher_state,
+    _write_launcher_state,
     build_parser,
     build_engine_command,
     build_engine_environment,
     config_from_args,
+    import_legacy_runtime,
     probe_preinstalled_runtimes,
     run_combined,
+    stop_recorded_processes,
     validate_mpt_network_config,
     validate_preinstalled_layout,
     wait_for_mpt_health,
@@ -182,6 +187,7 @@ class CombinedLauncherTests(unittest.TestCase):
             "PATH": "safe-bin",
             "SYSTEMROOT": "C:\\Windows",
             "DEEPSEEK_API_KEY": "should-not-leak",
+            "DEEPSEEK_BASE_URL": "https://untrusted.invalid",
             "OPENAI_API_KEY": "should-not-leak",
             "COOKIE": "should-not-leak",
             "AUTHORIZATION": "should-not-leak",
@@ -216,6 +222,11 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertNotIn("SHIYI_AGENT_TEST_REVIEW", app_env)
         self.assertNotIn("PYTHONPATH", app_env)
         self.assertNotIn("PYTHONHOME", app_env)
+        self.assertEqual("should-not-leak", app_env["DEEPSEEK_API_KEY"])
+        self.assertNotIn("DEEPSEEK_BASE_URL", app_env)
+        self.assertNotIn("OPENAI_API_KEY", app_env)
+        self.assertNotIn("COOKIE", app_env)
+        self.assertNotIn("AUTHORIZATION", app_env)
 
         agent_test_config = LauncherConfig(
             **{**self.config.__dict__, "agent_test_review": True}
@@ -268,6 +279,285 @@ class CombinedLauncherTests(unittest.TestCase):
             config_from_args(escaped)
         self.assertEqual("PACKAGE_PATH_OVERRIDE_REJECTED", context.exception.code)
 
+    def test_packaged_app_uses_stable_per_user_runtime_directory(self):
+        (self.project / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
+        local_app_data = self.root / "LocalAppData"
+        environment = build_app_environment(
+            {"LOCALAPPDATA": str(local_app_data), "SYSTEMROOT": "C:\\Windows"},
+            self.config,
+            app_port=18765,
+            mpt_port=19080,
+        )
+        self.assertEqual(
+            str((local_app_data / "ShiyiContentFactory" / "UserData").resolve()),
+            environment["SHIYI_RUNTIME_DIR"],
+        )
+
+    def test_stop_entry_validates_identity_then_kills_only_recorded_trees(self):
+        state_dir = self.project / "runtime" / "combined-launcher"
+        state_dir.mkdir(parents=True)
+        started = "2026-08-10T00:00:00+00:00"
+        app_executable = str((self.project / ".venv" / "Scripts" / "python.exe").resolve())
+        launcher_executable = str(Path(os.sys.executable).resolve())
+        state_path = state_dir / "launcher-state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "project_root": str(self.project.resolve()),
+                    "started_at": started,
+                    "app_port": 8765,
+                    "mpt_port": 19080,
+                    "launcher": {"pid": 42001, "executable": launcher_executable, "started_at": started},
+                    "app": {"pid": 42002, "executable": app_executable, "started_at": started},
+                    "mpt": None,
+                }
+            ) + "\n",
+            encoding="utf-8",
+        )
+        identities = {
+            42001: {"pid": 42001, "path": launcher_executable, "started_at": started},
+            42002: {"pid": 42002, "path": app_executable, "started_at": started},
+        }
+        commands = []
+
+        def runner(command, **_kwargs):
+            commands.append(list(command))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+
+        result = stop_recorded_processes(
+            self.project,
+            query_process=lambda pid: identities.get(pid),
+            runner=runner,
+        )
+        self.assertEqual([42002, 42001], result["stopped_pids"])
+        self.assertEqual(
+            [["taskkill", "/PID", "42002", "/T", "/F"], ["taskkill", "/PID", "42001", "/T", "/F"]],
+            commands,
+        )
+        self.assertFalse(state_path.exists())
+
+    def test_stop_entry_refuses_pid_reuse(self):
+        state_dir = self.project / "runtime" / "combined-launcher"
+        state_dir.mkdir(parents=True)
+        state_path = state_dir / "launcher-state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "project_root": str(self.project.resolve()),
+                    "started_at": "2026-08-10T00:00:00+00:00",
+                    "app_port": 8765,
+                    "mpt_port": 19080,
+                    "launcher": {"pid": 42001, "executable": str(Path(os.sys.executable).resolve()), "started_at": "2026-08-10T00:00:00+00:00"},
+                    "app": None,
+                    "mpt": None,
+                }
+            ) + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(LauncherError) as context:
+            stop_recorded_processes(
+                self.project,
+                query_process=lambda _pid: {
+                    "pid": 42001,
+                    "path": str((self.root / "other.exe").resolve()),
+                    "started_at": "2026-08-10T00:00:01+00:00",
+                },
+                runner=lambda *_args, **_kwargs: self.fail("must not kill mismatched pid"),
+            )
+        self.assertEqual("PROCESS_IDENTITY_MISMATCH", context.exception.code)
+        self.assertTrue(state_path.exists())
+
+    def test_stop_entry_refuses_same_executable_with_reused_later_pid(self):
+        state_dir = self.project / "runtime" / "combined-launcher"
+        state_dir.mkdir(parents=True)
+        state_path = state_dir / "launcher-state.json"
+        executable = str(Path(os.sys.executable).resolve())
+        state_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "phase": "ready",
+                    "project_root": str(self.project.resolve()),
+                    "started_at": "2026-08-10T00:00:00+00:00",
+                    "app_port": 8765,
+                    "mpt_port": 19080,
+                    "launcher": {
+                        "pid": 42001,
+                        "executable": executable,
+                        "started_at": "2026-08-10T00:00:00+00:00",
+                    },
+                    "app": None,
+                    "mpt": None,
+                }
+            ) + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(LauncherError) as context:
+            stop_recorded_processes(
+                self.project,
+                query_process=lambda _pid: {
+                    "pid": 42001,
+                    "path": executable,
+                    "started_at": "2026-08-10T06:00:00+00:00",
+                },
+                runner=lambda *_args, **_kwargs: self.fail("must not kill a reused pid"),
+            )
+        self.assertEqual("PROCESS_IDENTITY_MISMATCH", context.exception.code)
+        self.assertTrue(state_path.exists())
+
+    def test_single_instance_claim_rejects_live_recorded_launcher(self):
+        state_dir = self.project / "runtime" / "combined-launcher"
+        state_dir.mkdir(parents=True)
+        state_path = state_dir / "launcher-state.json"
+        executable = str(Path(os.sys.executable).resolve())
+        state_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "phase": "ready",
+                    "project_root": str(self.project.resolve()),
+                    "started_at": "2026-08-10T00:00:00+00:00",
+                    "app_port": 8765,
+                    "mpt_port": 19080,
+                    "launcher": {"pid": 42001, "executable": executable, "started_at": "2026-08-10T00:00:00+00:00"},
+                    "app": None,
+                    "mpt": None,
+                }
+            ) + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(LauncherError) as context:
+            _claim_launcher_state(
+                self.project,
+                started_at="2026-08-10T00:01:00+00:00",
+                query_process=lambda pid: {"pid": pid, "path": executable, "started_at": "2026-08-10T00:00:00+00:00"},
+            )
+        self.assertEqual("WORKBENCH_ALREADY_RUNNING", context.exception.code)
+
+    def test_single_instance_claim_replaces_stale_record(self):
+        state_dir = self.project / "runtime" / "combined-launcher"
+        state_dir.mkdir(parents=True)
+        state_path = state_dir / "launcher-state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "phase": "starting",
+                    "project_root": str(self.project.resolve()),
+                    "started_at": "2026-08-10T00:00:00+00:00",
+                    "app_port": None,
+                    "mpt_port": None,
+                    "launcher": {"pid": 42001, "executable": str(Path(os.sys.executable).resolve()), "started_at": "2026-08-10T00:00:00+00:00"},
+                    "app": None,
+                    "mpt": None,
+                }
+            ) + "\n",
+            encoding="utf-8",
+        )
+        claimed = _claim_launcher_state(
+            self.project,
+            started_at="2026-08-10T00:01:00+00:00",
+            query_process=lambda _pid: None,
+        )
+        payload = json.loads(claimed.read_text(encoding="utf-8"))
+        self.assertEqual(os.getpid(), payload["launcher"]["pid"])
+        self.assertEqual("starting", payload["phase"])
+
+    def test_packaged_releases_share_one_per_user_single_instance_lock(self):
+        local_app_data = self.root / "LocalAppData"
+        first = self.root / "package-a"
+        second = self.root / "package-b"
+        for package in (first, second):
+            package.mkdir()
+            (package / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
+        actual = {
+            "pid": os.getpid(),
+            "path": str(Path(os.sys.executable).resolve()),
+            "started_at": "2026-08-10T00:00:00+00:00",
+        }
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
+            _claim_launcher_state(
+                first,
+                started_at="2026-08-10T00:00:01+00:00",
+                query_process=lambda _pid: actual,
+            )
+            with self.assertRaises(LauncherError) as context:
+                _claim_launcher_state(
+                    second,
+                    started_at="2026-08-10T00:00:02+00:00",
+                    query_process=lambda _pid: actual,
+                )
+        self.assertEqual("WORKBENCH_ALREADY_RUNNING", context.exception.code)
+
+    def test_ready_state_preserves_claimed_launcher_process_start_time(self):
+        actual_started = "2026-08-10T00:00:00+00:00"
+        claimed = _claim_launcher_state(
+            self.project,
+            started_at="2026-08-10T00:10:00+00:00",
+            query_process=lambda pid: {
+                "pid": pid,
+                "path": str(Path(os.sys.executable).resolve()),
+                "started_at": actual_started,
+            },
+        )
+        app_process = FakeProcess()
+        _write_launcher_state(
+            self.config,
+            started_at="2026-08-10T00:10:00+00:00",
+            app_port=8765,
+            mpt_port=63863,
+            app_process=app_process,
+            engine_process=None,
+            app_started_at="2026-08-10T00:10:01+00:00",
+            engine_started_at=None,
+        )
+        payload = json.loads(claimed.read_text(encoding="utf-8"))
+        self.assertEqual(actual_started, payload["launcher"]["started_at"])
+
+    def test_legacy_runtime_migration_is_copy_only_hash_checked_and_conflict_safe(self):
+        source = self.root / "old-package" / "runtime"
+        (source / "jobs" / "job-1").mkdir(parents=True)
+        (source / "capability-packs").mkdir()
+        (source / "config.json").write_text('{"provider":"deepseek"}\n', encoding="utf-8")
+        secret_bytes = b"dpapi-ciphertext-fixture"
+        (source / "secrets.json").write_bytes(secret_bytes)
+        (source / "rules.json").write_text("{}\n", encoding="utf-8")
+        corrections = '{"event_id":"correction-1","kind":"script"}\n'
+        (source / "corrections.jsonl").write_text(corrections, encoding="utf-8")
+        (source / "jobs" / "job-1" / "job.json").write_text('{"status":"complete"}\n', encoding="utf-8")
+        (source / "jobs" / "job-1" / "final.mp4").write_bytes(b"video")
+        local_app_data = self.root / "LocalAppData"
+        result = import_legacy_runtime(source, environment={"LOCALAPPDATA": str(local_app_data)})
+        destination = local_app_data / "ShiyiContentFactory" / "UserData"
+        self.assertEqual("migrated", result["status"])
+        self.assertTrue(result["secrets_migrated"])
+        self.assertEqual(secret_bytes, (destination / "secrets.json").read_bytes())
+        self.assertEqual(corrections, (destination / "corrections.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(secret_bytes, (source / "secrets.json").read_bytes())
+        self.assertTrue((destination / "jobs" / "job-1" / "final.mp4").is_file())
+
+        repeated = import_legacy_runtime(source, environment={"LOCALAPPDATA": str(local_app_data)})
+        self.assertEqual("already_migrated", repeated["status"])
+        (destination / "config.json").write_text('{"provider":"changed"}\n', encoding="utf-8")
+        with self.assertRaises(LauncherError) as conflict:
+            import_legacy_runtime(source, environment={"LOCALAPPDATA": str(local_app_data)})
+        self.assertEqual("MIGRATION_DESTINATION_CONFLICT", conflict.exception.code)
+        self.assertEqual('{"provider":"changed"}\n', (destination / "config.json").read_text(encoding="utf-8"))
+
+    def test_legacy_runtime_migration_rejects_executable_or_script_payloads(self):
+        source = self.root / "unsafe-old-runtime"
+        (source / "jobs" / "job-1").mkdir(parents=True)
+        (source / "jobs" / "job-1" / "payload.py").write_text("raise SystemExit\n", encoding="utf-8")
+        with self.assertRaises(LauncherError) as context:
+            import_legacy_runtime(
+                source,
+                environment={"LOCALAPPDATA": str(self.root / "LocalAppData")},
+            )
+        self.assertEqual("MIGRATION_FILE_TYPE_REJECTED", context.exception.code)
+        self.assertFalse((self.root / "LocalAppData" / "ShiyiContentFactory" / "UserData").exists())
+
     def test_runtime_probe_uses_preinstalled_interpreters_and_never_installs(self):
         commands = []
 
@@ -283,9 +573,13 @@ class CombinedLauncherTests(unittest.TestCase):
                 [str(self.config.app_python), "-I", "-B", "-c", "import PIL, ddgs, langgraph"],
             ],
         )
-        flattened = " ".join(value for command in commands for value in command).lower()
-        for forbidden in ("pip", "uv sync", "npm", "download", "install"):
-            self.assertNotIn(forbidden, flattened)
+        command_arguments = {
+            value.casefold()
+            for command in commands
+            for value in command[1:]
+        }
+        for forbidden in ("pip", "uv", "npm", "npx", "download", "install"):
+            self.assertNotIn(forbidden, command_arguments)
 
     def test_health_requires_real_video_api_path(self):
         good = json.dumps({"paths": {"/api/v1/videos": {"post": {}}}}).encode()
@@ -313,6 +607,9 @@ class CombinedLauncherTests(unittest.TestCase):
         for path in (node, cli, browser):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"fixture")
+        sapi_script = self.project / "core" / "sapi_tts.ps1"
+        sapi_script.parent.mkdir(parents=True, exist_ok=True)
+        sapi_script.write_text("# fixture\n", encoding="utf-8")
         motion = LauncherConfig(
             **{
                 **self.config.__dict__,
@@ -347,6 +644,8 @@ class CombinedLauncherTests(unittest.TestCase):
                         if command == [str(node), "--version"]
                         else b"0.7.86"
                         if command == [str(node), str(cli), "--version"]
+                        else b"SAPI_VOICE=Fixture;CULTURE=zh-CN"
+                        if "-ProbeOnly" in command
                         else b"Chrome Headless Shell 152.0.7928.2"
                     ),
                     b"",
@@ -356,6 +655,24 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertIn([str(node), "--version"], probe_commands)
         self.assertIn([str(node), str(cli), "--version"], probe_commands)
         self.assertIn([str(browser), "--version"], probe_commands)
+        self.assertTrue(any("-ProbeOnly" in command and "zh-CN" in command for command in probe_commands))
+        with self.assertRaises(LauncherError) as missing_voice:
+            probe_preinstalled_runtimes(
+                motion,
+                runner=lambda command, **_kwargs: subprocess.CompletedProcess(
+                    command,
+                    1 if "-ProbeOnly" in command else 0,
+                    (
+                        b"v22.13.1"
+                        if command == [str(node), "--version"]
+                        else b"0.7.86"
+                        if command == [str(node), str(cli), "--version"]
+                        else b"Chrome Headless Shell 152.0.7928.2"
+                    ),
+                    b"missing zh-CN voice" if "-ProbeOnly" in command else b"",
+                ),
+            )
+        self.assertEqual("SAPI_ZH_CN_VOICE_MISSING", missing_voice.exception.code)
         environment = build_app_environment(
             {
                 "PATH": "host-npm-and-chrome",
@@ -385,6 +702,14 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertEqual(str(cli), environment["SHIYI_HYPERFRAMES_CLI"])
         self.assertEqual(str(browser), environment["HYPERFRAMES_BROWSER_PATH"])
         self.assertNotIn("host-npm-and-chrome", environment["PATH"])
+        self.assertIn(
+            str(Path("WindowsRoot") / "System32" / "WindowsPowerShell" / "v1.0"),
+            environment["PATH"].split(os.pathsep),
+        )
+        self.assertIn(
+            str(Path("WindowsRoot") / "System32"),
+            environment["PATH"].split(os.pathsep),
+        )
         for stripped in (
             "NODE_OPTIONS",
             "NODE_PATH",
@@ -479,6 +804,7 @@ class CombinedLauncherTests(unittest.TestCase):
         )
         processes = [FakeProcess([None, 1]), FakeProcess([None, 0])]
         created = []
+        health_timeouts = []
 
         def fake_popen(command, **kwargs):
             created.append((list(command), kwargs))
@@ -491,13 +817,19 @@ class CombinedLauncherTests(unittest.TestCase):
             result = run_combined(
                 motion,
                 popen_factory=fake_popen,
-                health_waiter=lambda *_args, **_kwargs: None,
+                health_waiter=lambda *_args, **kwargs: health_timeouts.append(
+                    kwargs["timeout_seconds"]
+                ),
                 workbench_health_waiter=lambda *_args, **_kwargs: None,
                 process_terminator=lambda _process: None,
                 sleeper=lambda _seconds: None,
                 motion_health_verified=True,
             )
         self.assertEqual(0, result)
+        self.assertEqual(
+            [MOTION_OPTIONAL_MPT_HEALTH_TIMEOUT_SECONDS],
+            health_timeouts,
+        )
         app_environment = created[1][1]["env"]
         self.assertEqual("1", app_environment["SHIYI_MPT_HEALTH_VERIFIED"])
         health_path = Path(app_environment["SHIYI_MPT_HEALTH_FILE"])

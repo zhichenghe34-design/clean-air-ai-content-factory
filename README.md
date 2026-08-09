@@ -46,7 +46,7 @@
 
 ## 纯动画主线与实拍支线
 
-- 新任务的默认 `production_mode` 是 `motion`：审批后的脚本会被拆成 4—8 幕，再从本地 `shiyi-animation-pack-v1` 白名单中按语义选择积木。当前基础包包含 13 个积木、8 个明确 renderer family；积木版本、行业模式、逐幕匹配和选择收据都由 SHA-256 绑定。
+- 新任务的默认 `production_mode` 是 `motion`：审批后的脚本会被拆成 4—8 幕，再从本地 `shiyi-animation-pack-v1` 白名单中按语义选择积木。当前基础包包含 36 个积木、12 个明确 renderer family，每个 family 有 3 个可见变体；积木版本、行业模式、逐幕匹配和选择收据都由 SHA-256 绑定。
 - 动画模板只使用本地有限 WAAPI、Noto Sans SC 与确定性时间线；不使用 CDN、运行时下载、随机数、无限循环或现场生成可执行代码。HyperFrames 正式检查使用 `--strict`，正式渲染使用 `--no-best-effort --strict`。
 - 当前 45 秒自然中文七幕 canary 已通过 HyperFrames 0.7.86 的 lint、runtime、layout、motion 和 contrast 严格检查，包含 300 个运动采样；这只证明动画工程合同，不冒充两道阶段审查后的正式成片 E2E。
 - `footage` 保留为 MoneyPrinterTurbo 实拍支线；旧 MPT 任务不会被默认动画路由改写。`hybrid` 当前明确 fail-closed，`simple` 仅用于不可发布的诊断运行。
@@ -124,7 +124,7 @@ flowchart LR
 
 ## 产物与证据
 
-每次最终成功运行包含原十项产物，并增加审批与清单；公开证据包再增加一份机器复算的验证说明，共 13 项。使用组合引擎的运行还会把两项引擎证据纳入同一 manifest：
+每次最终成功运行包含十项规范产物，并增加审批与清单。纯动画成功运行还必须纳入接触表和视觉门禁，共 14 项；公开包再加入机器复算说明，共 15 项。MPT 实拍公开包同样是 15 项，但其两项专属证据是素材来源与引擎报告，不能与纯动画视觉证据互相替代：
 
 ```text
 research.json             insight.json
@@ -134,8 +134,10 @@ captions.srt              motion_plan.json
 final.mp4                 run_report.json
 approvals.json            manifest.json
 VALIDATION.md（仅公开包）
-material_sources.json（组合引擎运行）
-engine_report.json（组合引擎运行）
+contact-sheet.png（纯动画运行）
+visual-qc.json（纯动画运行）
+material_sources.json（MPT 实拍运行）
+engine_report.json（MPT 实拍运行）
 ```
 
 `manifest.json` 记录输入哈希、两道审批哈希、开始/结束时间、预算，以及每个文件的 MIME、字节数和 SHA-256。历史成功产物使用带 `run_id` 的只读地址；失败 staging 和未入清单文件不对外提供。
@@ -184,7 +186,7 @@ npm.cmd run test:flow
 .\.venv\Scripts\python.exe tools\verify_committed_media.py
 ```
 
-Python 测试由 `unittest discover` 动态发现，当前 295 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及纯动画生产模式、动画注册表与选择收据、HyperFrames 固定身份和离线依赖合同、MoneyPrinterTurbo 实拍适配器、结构化人审/代理测试身份绑定、失败运行隔离、正式成片视觉门禁、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、代理测试必须进入详细页、两道门禁不静默代批、窄屏无溢出与零前端错误。CI 使用不可发布的注入式假配音/渲染适配器完成快速确定性 E2E。
+Python 测试由 `unittest discover` 动态发现，当前 323 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及纯动画生产模式、动画注册表与选择收据、HyperFrames 固定身份和离线依赖合同、MoneyPrinterTurbo 实拍适配器、结构化人审/代理测试身份绑定、失败运行隔离、正式成片视觉门禁、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、代理测试必须进入详细页、两道门禁不静默代批、窄屏无溢出与零前端错误。CI 使用不可发布的注入式假配音/渲染适配器完成快速确定性 E2E。
 
 ## v2 历史比赛材料（只读基线）
 

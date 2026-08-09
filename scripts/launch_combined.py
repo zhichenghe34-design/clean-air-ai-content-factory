@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import importlib.util
 import json
 import os
 import re
+import shutil
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -26,6 +29,18 @@ NODE_MINIMUM_MAJOR = 22
 MPT_API_PREFIX = "/api/v1"
 MPT_OPENAPI_REQUIRED_PATH = "/api/v1/videos"
 MPT_HEALTH_STATE_NAME = "mpt-health.json"
+MOTION_OPTIONAL_MPT_HEALTH_TIMEOUT_SECONDS = 8.0
+LAUNCHER_STATE_NAME = "launcher-state.json"
+LEGACY_RUNTIME_FILES = frozenset({"config.json", "secrets.json", "rules.json", "corrections.jsonl"})
+LEGACY_RUNTIME_DIRECTORIES = frozenset({"jobs", "capability-packs", "skills"})
+MIGRATABLE_STATE_SUFFIXES = frozenset(
+    {
+        ".aac", ".ass", ".db", ".flac", ".gif", ".html", ".jpeg", ".jpg",
+        ".json", ".jsonl", ".lock", ".log", ".m4a", ".md", ".mp3", ".mp4",
+        ".ogg", ".png", ".srt", ".sqlite", ".sqlite3", ".txt", ".vtt", ".wav",
+        ".webm", ".webp",
+    }
+)
 ENGINE_ENV_ALLOWLIST = (
     "APPDATA",
     "COMSPEC",
@@ -68,12 +83,16 @@ APP_RELEASE_FORBIDDEN_ENV = (
     "PUPPETEER_EXECUTABLE_PATH",
     "PLAYWRIGHT_BROWSERS_PATH",
     "KEEP_TEMP",
+    "AUTHORIZATION",
+    "COOKIE",
 )
 APP_RELEASE_FORBIDDEN_PREFIXES = (
+    "ANTHROPIC_",
     "AWS_",
     "AZURE_",
     "BROWSER_",
     "CHROME_",
+    "DEEPSEEK_",
     "GEMINI_",
     "GOOGLE_",
     "HF_",
@@ -81,12 +100,14 @@ APP_RELEASE_FORBIDDEN_PREFIXES = (
     "HYPERFRAME_",
     "HYPERFRAMES_",
     "MODEL_",
+    "OPENAI_",
     "OPENROUTER_",
     "PLAYWRIGHT_",
     "PRODUCER_",
     "PUPPETEER_",
     "VERTEX_",
 )
+APP_PROVIDER_ENV_ALLOWLIST = ("DEEPSEEK_API_KEY",)
 NODE_HOST_ENV_FORBIDDEN_PREFIXES = ("NODE_", "NPM_", "COREPACK_", "PNPM_", "YARN_")
 NODE_HOST_ENV_FORBIDDEN_NAMES = frozenset(
     {"ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR"}
@@ -137,6 +158,491 @@ class LauncherConfig:
     node_version: str | None = None
     hyperframes_version: str | None = None
     browser_version: str | None = None
+
+
+def _looks_like_packaged_root(project_root: Path) -> bool:
+    return bool(
+        (project_root / "PACKAGE-MANIFEST.json").is_file()
+        or (
+            (project_root / "runtime" / "python" / "python.exe").is_file()
+            and (project_root / "tools" / "verify_combined_portable.py").is_file()
+            and (project_root / "scripts" / "launch_combined.py").is_file()
+        )
+    )
+
+
+def _launcher_runtime_dir(project_root: Path) -> Path:
+    if _looks_like_packaged_root(project_root):
+        return _local_product_root() / "Launcher"
+    return project_root / "runtime" / "combined-launcher"
+
+
+def _launcher_state_path(project_root: Path) -> Path:
+    return _launcher_runtime_dir(project_root) / LAUNCHER_STATE_NAME
+
+
+def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(dict(payload), ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _create_json_exclusive(path: Path, payload: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(dict(payload), handle, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _local_product_root(base: Mapping[str, str] | None = None) -> Path:
+    environment = os.environ if base is None else base
+    local_app_data = str(environment.get("LOCALAPPDATA") or "").strip()
+    root = Path(local_app_data).expanduser() if local_app_data else Path()
+    if not local_app_data or not root.is_absolute():
+        raise LauncherError("LOCAL_APP_DATA_MISSING", "无法定位当前 Windows 用户的数据目录。")
+    return (root / "ShiyiContentFactory").resolve()
+
+
+def _is_reparse_path(path: Path) -> bool:
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return True
+    junction = getattr(path, "is_junction", None)
+    return bool(
+        path.is_symlink()
+        or (callable(junction) and junction())
+        or getattr(metadata, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _collect_migratable_state(runtime_root: Path) -> list[tuple[str, Path]]:
+    root = runtime_root.resolve(strict=True)
+    if not root.is_dir() or _is_reparse_path(runtime_root):
+        raise LauncherError("MIGRATION_SOURCE_UNSAFE", "旧版 runtime 不是可安全读取的普通目录。")
+    collected: list[tuple[str, Path]] = []
+    stack: list[Path] = []
+    for name in sorted(LEGACY_RUNTIME_FILES | LEGACY_RUNTIME_DIRECTORIES, key=str.casefold):
+        candidate = root / name
+        if not candidate.exists():
+            continue
+        if _is_reparse_path(candidate):
+            raise LauncherError("MIGRATION_SOURCE_UNSAFE", "旧版数据含链接或重解析点，已拒绝迁移。")
+        if name in LEGACY_RUNTIME_FILES:
+            if not candidate.is_file():
+                raise LauncherError("MIGRATION_SOURCE_INVALID", f"旧版 {name} 不是普通文件。")
+            stack.append(candidate)
+        else:
+            if not candidate.is_dir():
+                raise LauncherError("MIGRATION_SOURCE_INVALID", f"旧版 {name} 不是普通目录。")
+            stack.append(candidate)
+    while stack:
+        current = stack.pop()
+        try:
+            resolved = current.resolve(strict=True)
+            relative = resolved.relative_to(root).as_posix()
+        except (OSError, ValueError) as exc:
+            raise LauncherError("MIGRATION_SOURCE_UNSAFE", "旧版数据越出了指定 runtime 边界。") from exc
+        if _is_reparse_path(current):
+            raise LauncherError("MIGRATION_SOURCE_UNSAFE", "旧版数据含链接或重解析点，已拒绝迁移。")
+        if current.is_dir():
+            try:
+                children = list(current.iterdir())
+            except OSError as exc:
+                raise LauncherError("MIGRATION_SOURCE_INVALID", "旧版数据目录无法完整读取。") from exc
+            stack.extend(children)
+            continue
+        if not current.is_file() or current.suffix.casefold() not in MIGRATABLE_STATE_SUFFIXES:
+            raise LauncherError(
+                "MIGRATION_FILE_TYPE_REJECTED",
+                "旧版数据含未声明类型或可执行文件，已拒绝迁移。",
+                relative_path=relative,
+            )
+        collected.append((relative, current))
+    return sorted(collected, key=lambda item: item[0].casefold())
+
+
+def _migratable_state_manifest(runtime_root: Path) -> list[tuple[str, int, str]]:
+    manifest: list[tuple[str, int, str]] = []
+    for relative, path in _collect_migratable_state(runtime_root):
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError as exc:
+            raise LauncherError("MIGRATION_SOURCE_INVALID", "旧版数据文件无法完整读取。") from exc
+        manifest.append((relative, path.stat().st_size, digest.hexdigest().upper()))
+    return manifest
+
+
+def import_legacy_runtime(
+    source_runtime: Path,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    if not source_runtime.expanduser().is_absolute():
+        raise LauncherError("MIGRATION_SOURCE_INVALID", "旧版 runtime 必须使用完整绝对路径。")
+    try:
+        source = source_runtime.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise LauncherError("MIGRATION_SOURCE_INVALID", "指定的旧版 runtime 不存在。") from exc
+    destination = (_local_product_root(environment) / "UserData").resolve()
+    if source == destination:
+        return {"status": "already_current", "message": "该目录已经是当前用户数据目录。", "file_count": 0}
+    if source in destination.parents or destination in source.parents:
+        raise LauncherError("MIGRATION_PATH_OVERLAP", "旧版数据与当前用户数据目录不得互相嵌套。")
+    source_manifest = _migratable_state_manifest(source)
+    if not source_manifest:
+        raise LauncherError("MIGRATION_SOURCE_EMPTY", "旧版 runtime 中没有可迁移的任务、配置或 Key。")
+    if destination.exists():
+        if _is_reparse_path(destination) or not destination.is_dir():
+            raise LauncherError("MIGRATION_DESTINATION_UNSAFE", "当前用户数据目录不是安全的普通目录。")
+        destination_manifest = _migratable_state_manifest(destination)
+        if destination_manifest == source_manifest:
+            return {
+                "status": "already_migrated",
+                "message": "旧版任务、配置和 Key 已经迁移，无需重复操作。",
+                "file_count": len(source_manifest),
+            }
+        if any(destination.iterdir()):
+            raise LauncherError(
+                "MIGRATION_DESTINATION_CONFLICT",
+                "当前版本已经产生数据且与旧版不同；为避免覆盖，已拒绝自动合并。",
+            )
+        destination.rmdir()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.parent / f".UserData-migration-{os.getpid()}-{time.time_ns()}"
+    try:
+        staging.mkdir(parents=False, exist_ok=False)
+        for relative, source_path in _collect_migratable_state(source):
+            target = staging / Path(relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, target)
+        if _migratable_state_manifest(staging) != source_manifest:
+            raise LauncherError("MIGRATION_COPY_MISMATCH", "旧版数据复制后的哈希不一致，未切换用户数据。")
+        os.replace(staging, destination)
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return {
+        "status": "migrated",
+        "message": "旧版任务、配置和本机加密 Key 已复制到稳定用户数据目录；原目录保持不变。",
+        "file_count": len(source_manifest),
+        "secrets_migrated": any(relative == "secrets.json" for relative, _, _ in source_manifest),
+    }
+
+
+def _process_entry(
+    process: subprocess.Popen[bytes] | None,
+    executable: Path | None,
+    started_at: str | None,
+) -> dict[str, object] | None:
+    if process is None or executable is None:
+        return None
+    if not started_at:
+        raise LauncherError("PROCESS_IDENTITY_MISSING", "无法记录本包子进程的启动时刻。")
+    return {
+        "pid": int(process.pid),
+        "executable": str(executable.resolve()),
+        "started_at": started_at,
+    }
+
+
+def _write_launcher_state(
+    config: LauncherConfig,
+    *,
+    started_at: str,
+    app_port: int,
+    mpt_port: int,
+    app_process: subprocess.Popen[bytes],
+    engine_process: subprocess.Popen[bytes] | None,
+    app_started_at: str,
+    engine_started_at: str | None,
+) -> Path:
+    app_executable = config.app_executable or config.app_python
+    if app_executable is None:
+        raise LauncherError("APP_EXECUTABLE_MISSING", "无法记录工作台进程身份。")
+    path = _launcher_state_path(config.project_root)
+    try:
+        claimed_state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LauncherError("LAUNCHER_STATE_INVALID", "无法保留启动器的真实进程身份。") from exc
+    claimed_launcher = claimed_state.get("launcher") if isinstance(claimed_state, dict) else None
+    if (
+        not isinstance(claimed_launcher, dict)
+        or set(claimed_launcher) != {"pid", "executable", "started_at"}
+        or claimed_launcher.get("pid") != os.getpid()
+        or not isinstance(claimed_launcher.get("executable"), str)
+        or not _same_windows_path(
+            str(claimed_launcher.get("executable")), str(Path(sys.executable).resolve())
+        )
+        or not isinstance(claimed_launcher.get("started_at"), str)
+    ):
+        raise LauncherError("LAUNCHER_STATE_INVALID", "启动器的真实进程身份已变化，拒绝发布就绪状态。")
+    state = {
+        "schema_version": 2,
+        "phase": "ready",
+        "project_root": str(config.project_root.resolve()),
+        "started_at": started_at,
+        "app_port": int(app_port),
+        "mpt_port": int(mpt_port),
+        "launcher": dict(claimed_launcher),
+        "app": _process_entry(app_process, app_executable, app_started_at),
+        "mpt": _process_entry(engine_process, config.mpt_python, engine_started_at),
+    }
+    _atomic_json(path, state)
+    return path
+
+
+def _remove_own_launcher_state(path: Path) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return
+    launcher = payload.get("launcher") if isinstance(payload, dict) else None
+    if isinstance(launcher, dict) and launcher.get("pid") == os.getpid():
+        path.unlink(missing_ok=True)
+
+
+def _windows_powershell(system_root: str | None = None) -> Path:
+    root = Path(system_root or os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR") or "")
+    candidate = root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if not root.is_absolute() or not candidate.is_file():
+        raise LauncherError("WINDOWS_POWERSHELL_MISSING", "未找到 Windows PowerShell，无法管理本包进程。")
+    return candidate.resolve()
+
+
+def _query_windows_process(pid: int, *, runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run) -> dict[str, object] | None:
+    if os.name != "nt":
+        return None
+    powershell = _windows_powershell()
+    command = (
+        f"$p=Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue;"
+        "if ($null -eq $p) { exit 4 };"
+        "[ordered]@{pid=$p.Id;path=$p.Path;started_at=$p.StartTime.ToUniversalTime().ToString('o')}"
+        "|ConvertTo-Json -Compress"
+    )
+    completed = runner(
+        [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        check=False,
+    )
+    if completed.returncode == 4:
+        return None
+    if completed.returncode != 0:
+        raise LauncherError("PROCESS_IDENTITY_QUERY_FAILED", "无法核对待关闭进程的身份。")
+    try:
+        payload = json.loads(completed.stdout.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LauncherError("PROCESS_IDENTITY_QUERY_FAILED", "待关闭进程身份返回无效。") from exc
+    if not isinstance(payload, dict):
+        raise LauncherError("PROCESS_IDENTITY_QUERY_FAILED", "待关闭进程身份返回无效。")
+    return payload
+
+
+def _same_windows_path(left: str, right: str) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+
+def _claim_launcher_state(
+    project_root: Path,
+    *,
+    started_at: str,
+    query_process: Callable[[int], dict[str, object] | None] = _query_windows_process,
+) -> Path:
+    root = project_root.resolve()
+    path = _launcher_state_path(root)
+    launcher_started_at = started_at
+    launcher_actual = query_process(os.getpid())
+    if isinstance(launcher_actual, dict):
+        actual_path = launcher_actual.get("path")
+        actual_started = launcher_actual.get("started_at")
+        if (
+            launcher_actual.get("pid") == os.getpid()
+            and isinstance(actual_path, str)
+            and _same_windows_path(actual_path, str(Path(sys.executable).resolve()))
+            and isinstance(actual_started, str)
+        ):
+            launcher_started_at = actual_started
+    payload = {
+        "schema_version": 2,
+        "phase": "starting",
+        "project_root": str(root),
+        "started_at": started_at,
+        "app_port": None,
+        "mpt_port": None,
+        "launcher": {
+            "pid": os.getpid(),
+            "executable": str(Path(sys.executable).resolve()),
+            "started_at": launcher_started_at,
+        },
+        "app": None,
+        "mpt": None,
+    }
+    for attempt in range(2):
+        try:
+            _create_json_exclusive(path, payload)
+            return path
+        except FileExistsError:
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise LauncherError("LAUNCHER_STATE_INVALID", "已有启动状态无法安全读取，请先使用关闭入口。") from exc
+            if (
+                not isinstance(existing, dict)
+                or existing.get("schema_version") != 2
+            ):
+                raise LauncherError("LAUNCHER_STATE_INVALID", "已有启动状态结构无效。")
+            active = False
+            for role in ("launcher", "app", "mpt"):
+                item = existing.get(role)
+                if item is None:
+                    continue
+                if not isinstance(item, dict) or set(item) != {"pid", "executable", "started_at"}:
+                    raise LauncherError("LAUNCHER_STATE_INVALID", "已有启动状态的进程身份无效。")
+                pid = item.get("pid")
+                executable = item.get("executable")
+                recorded_started = item.get("started_at")
+                if (
+                    isinstance(pid, bool)
+                    or not isinstance(pid, int)
+                    or pid <= 0
+                    or not isinstance(executable, str)
+                    or not isinstance(recorded_started, str)
+                ):
+                    raise LauncherError("LAUNCHER_STATE_INVALID", "已有启动状态的进程身份无效。")
+                actual = query_process(pid)
+                if actual is None:
+                    continue
+                actual_path = actual.get("path") if isinstance(actual, dict) else None
+                actual_started_value = actual.get("started_at") if isinstance(actual, dict) else None
+                try:
+                    recorded_time = dt.datetime.fromisoformat(recorded_started.replace("Z", "+00:00"))
+                    actual_time = dt.datetime.fromisoformat(str(actual_started_value).replace("Z", "+00:00"))
+                except ValueError:
+                    raise LauncherError("LAUNCHER_STATE_INVALID", "已有启动状态的进程时刻无效。")
+                if recorded_time.tzinfo is None:
+                    recorded_time = recorded_time.replace(tzinfo=dt.timezone.utc)
+                if actual_time.tzinfo is None:
+                    actual_time = actual_time.replace(tzinfo=dt.timezone.utc)
+                if (
+                    isinstance(actual_path, str)
+                    and _same_windows_path(actual_path, executable)
+                    and abs((actual_time - recorded_time).total_seconds()) <= 5
+                ):
+                    if (
+                        role == "launcher"
+                        and pid == os.getpid()
+                        and _same_windows_path(executable, str(Path(sys.executable).resolve()))
+                        and _same_windows_path(str(existing.get("project_root", "")), str(root))
+                    ):
+                        return path
+                    active = True
+                    break
+            if active:
+                raise LauncherError("WORKBENCH_ALREADY_RUNNING", "当前便携包已经在运行，请使用已有浏览器页面或先执行关闭入口。")
+            path.unlink(missing_ok=True)
+            if attempt:
+                break
+    raise LauncherError("LAUNCHER_STATE_BUSY", "无法取得本包的单实例启动锁。")
+
+
+def stop_recorded_processes(
+    project_root: Path,
+    *,
+    query_process: Callable[[int], dict[str, object] | None] = _query_windows_process,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> dict[str, object]:
+    root = project_root.resolve()
+    state_path = _launcher_state_path(root)
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"status": "stopped", "message": "没有发现正在运行的本包服务。", "stopped_pids": []}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LauncherError("LAUNCHER_STATE_INVALID", "停止状态文件无法安全读取。") from exc
+    if os.name != "nt" and query_process is _query_windows_process:
+        raise LauncherError("STOP_UNSUPPORTED_PLATFORM", "本便携包停止入口仅支持 Windows。")
+    if not isinstance(state, dict) or state.get("schema_version") != 2:
+        raise LauncherError("LAUNCHER_STATE_INVALID", "停止状态文件结构无效。")
+    recorded_root = Path(str(state.get("project_root", ""))).expanduser()
+    if not recorded_root.is_absolute():
+        raise LauncherError("LAUNCHER_STATE_ROOT_MISMATCH", "停止状态缺少有效的原始包路径。")
+    if not (root / "PACKAGE-MANIFEST.json").is_file() and not _same_windows_path(str(recorded_root), str(root)):
+        raise LauncherError("LAUNCHER_STATE_ROOT_MISMATCH", "停止状态不属于当前便携包。")
+    try:
+        baseline = dt.datetime.fromisoformat(str(state["started_at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError) as exc:
+        raise LauncherError("LAUNCHER_STATE_INVALID", "停止状态缺少有效启动时间。") from exc
+    if baseline.tzinfo is None:
+        baseline = baseline.replace(tzinfo=dt.timezone.utc)
+    verified: list[int] = []
+    for role in ("app", "mpt", "launcher"):
+        item = state.get(role)
+        if item is None:
+            continue
+        if not isinstance(item, dict) or set(item) != {"pid", "executable", "started_at"}:
+            raise LauncherError("LAUNCHER_STATE_INVALID", f"停止状态中的 {role} 身份无效。")
+        pid = item.get("pid")
+        expected = item.get("executable")
+        recorded_started_value = item.get("started_at")
+        if (
+            isinstance(pid, bool)
+            or not isinstance(pid, int)
+            or pid <= 0
+            or not isinstance(expected, str)
+            or not isinstance(recorded_started_value, str)
+        ):
+            raise LauncherError("LAUNCHER_STATE_INVALID", f"停止状态中的 {role} 身份无效。")
+        actual = query_process(pid)
+        if actual is None:
+            continue
+        try:
+            actual_pid = int(actual["pid"])
+            actual_path = str(actual["path"])
+            actual_started = dt.datetime.fromisoformat(str(actual["started_at"]).replace("Z", "+00:00"))
+            recorded_started = dt.datetime.fromisoformat(recorded_started_value.replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LauncherError("PROCESS_IDENTITY_MISMATCH", f"无法验证 {role} 进程身份。") from exc
+        if actual_started.tzinfo is None:
+            actual_started = actual_started.replace(tzinfo=dt.timezone.utc)
+        if recorded_started.tzinfo is None:
+            recorded_started = recorded_started.replace(tzinfo=dt.timezone.utc)
+        if (
+            actual_pid != pid
+            or not _same_windows_path(actual_path, expected)
+            or abs((actual_started - recorded_started).total_seconds()) > 5
+        ):
+            raise LauncherError("PROCESS_IDENTITY_MISMATCH", f"{role} PID 已被其他进程占用，拒绝终止。")
+        verified.append(pid)
+    stopped: list[int] = []
+    for pid in verified:
+        completed = runner(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+        if completed.returncode not in {0, 128, 255}:
+            raise LauncherError("PROCESS_STOP_FAILED", "本包进程树未能完整停止。", pid=pid)
+        stopped.append(pid)
+    state_path.unlink(missing_ok=True)
+    return {"status": "stopped", "message": "本包工作台与生产引擎已停止。", "stopped_pids": stopped}
 
 
 def _require_file(path: Path, code: str, label: str) -> None:
@@ -256,6 +762,8 @@ def validate_preinstalled_layout(config: LauncherConfig) -> None:
         _require_file(config.ffprobe, "FFPROBE_MISSING", "FFprobe")
         _require_file(config.font_regular, "NOTO_FONT_MISSING", "Noto Sans SC Regular 字体")
         _require_file(config.font_bold, "NOTO_FONT_MISSING", "Noto Sans SC Bold 字体")
+        _require_file(config.project_root / "core" / "sapi_tts.ps1", "SAPI_SCRIPT_MISSING", "中文离线配音脚本")
+        _windows_powershell()
         if config.app_executable is not None:
             _require_file(config.app_executable, "APP_EXECUTABLE_MISSING", "工作台可执行文件")
         else:
@@ -360,6 +868,7 @@ def probe_preinstalled_runtimes(
         motion_environment = build_app_environment(
             os.environ, config, app_port=8765, mpt_port=0, motion_health_verified=False
         )
+        sapi_script = config.project_root / "core" / "sapi_tts.ps1"
         probes.extend(
             [
                 (
@@ -382,6 +891,25 @@ def probe_preinstalled_runtimes(
                     config.project_root,
                     motion_environment,
                     config.browser_version,
+                ),
+                (
+                    "SAPI_ZH_CN_VOICE_MISSING",
+                    [
+                        str(_windows_powershell()),
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(sapi_script),
+                        "-ProbeOnly",
+                        "-Language",
+                        "zh-CN",
+                    ],
+                    config.project_root,
+                    motion_environment,
+                    "CULTURE=zh-CN",
                 ),
             ]
         )
@@ -410,6 +938,8 @@ def probe_preinstalled_runtimes(
         except (OSError, subprocess.SubprocessError) as exc:
             raise LauncherError(code, "预置运行环境自检无法完成。") from exc
         if result.returncode != 0:
+            if code == "SAPI_ZH_CN_VOICE_MISSING":
+                raise LauncherError(code, "本机缺少 zh-CN 中文离线语音，纯动画配音暂不可用。")
             raise LauncherError(code, "预置运行环境不完整，运行时不会自动下载依赖。")
         if expected_version is not None:
             stdout = result.stdout.decode("utf-8", "replace") if isinstance(result.stdout, bytes) else str(result.stdout or "")
@@ -418,6 +948,8 @@ def probe_preinstalled_runtimes(
                 rf"(?<![0-9.]){re.escape(expected_version)}(?![0-9.])",
                 f"{stdout}\n{stderr}",
             ):
+                if code == "SAPI_ZH_CN_VOICE_MISSING":
+                    raise LauncherError(code, "中文离线语音探针未返回 zh-CN，纯动画配音暂不可用。")
                 raise LauncherError(code, "预置运行环境版本探针与发布锁不一致。")
     return config.motion_runtime_required
 
@@ -527,6 +1059,13 @@ def build_app_environment(
     }
     for name in APP_RELEASE_FORBIDDEN_ENV:
         environment.pop(name, None)
+    # The workbench owns the Provider boundary.  Restore only the one supported
+    # credential after broad prefix filtering; endpoints, models, and every
+    # other Provider variable remain blocked, and MPT still receives none.
+    for name in APP_PROVIDER_ENV_ALLOWLIST:
+        value = base.get(name)
+        if value:
+            environment[name] = value
     if mpt_ready is None:
         mpt_ready = (config.mpt_root / "app" / "asgi.py").is_file() and config.mpt_python.is_file()
     environment.update(
@@ -545,6 +1084,8 @@ def build_app_environment(
             "SHIYI_NOTO_BOLD": str(config.font_bold),
         }
     )
+    if (config.project_root / "PACKAGE-MANIFEST.json").is_file():
+        environment["SHIYI_RUNTIME_DIR"] = str(_local_product_root(base) / "UserData")
     if config.motion_runtime_required:
         assert config.node_executable is not None
         assert config.hyperframes_cli is not None
@@ -552,6 +1093,11 @@ def build_app_environment(
         system_root = base.get("SYSTEMROOT") or base.get("WINDIR")
         fixed_path = [str(config.node_executable.parent), str(config.ffmpeg.parent)]
         if system_root:
+            # The packaged voice fallback invokes Windows PowerShell after the
+            # offline Voice Workbench probe fails.  System32 alone does not
+            # contain powershell.exe, so keep the exact in-box Windows path in
+            # the otherwise isolated PATH instead of inheriting host entries.
+            fixed_path.append(str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0"))
             fixed_path.append(str(Path(system_root) / "System32"))
         environment["PATH"] = os.pathsep.join(fixed_path)
         environment.update(
@@ -713,6 +1259,7 @@ def run_combined(
     sleeper: Callable[[float], None] = time.sleep,
     motion_health_verified: bool = False,
 ) -> int:
+    started_at = dt.datetime.now(dt.timezone.utc).isoformat()
     if config.motion_runtime_required:
         if not motion_health_verified:
             raise LauncherError(
@@ -727,22 +1274,27 @@ def run_combined(
             process_terminator=process_terminator,
             sleeper=sleeper,
             motion_health_verified=motion_health_verified,
+            started_at=started_at,
         )
     app_port = select_loopback_port(config.app_port)
     mpt_port = select_loopback_port(config.mpt_port, exclude={app_port})
     validate_mpt_network_config(config.mpt_root, mpt_port)
 
-    runtime_dir = config.project_root / "runtime" / "combined-launcher"
+    runtime_dir = _launcher_runtime_dir(config.project_root)
     runtime_dir.mkdir(parents=True, exist_ok=True)
     engine_log_path = runtime_dir / "mpt-api.log"
     engine_process: subprocess.Popen[bytes] | None = None
     app_process: subprocess.Popen[bytes] | None = None
+    engine_started_at: str | None = None
+    app_started_at: str | None = None
+    launcher_state_path: Path | None = _claim_launcher_state(config.project_root, started_at=started_at)
 
     with engine_log_path.open("ab", buffering=0) as engine_log:
         try:
             engine_environment = build_engine_environment(os.environ, config)
             engine_environment["CORS_ALLOWED_ORIGINS"] = f"http://{LOOPBACK_HOST}:{app_port}"
             try:
+                engine_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
                 engine_process = popen_factory(
                     build_engine_command(config, mpt_port),
                     cwd=str(config.mpt_root),
@@ -766,6 +1318,7 @@ def run_combined(
                 os.environ, config, app_port=app_port, mpt_port=mpt_port
             )
             try:
+                app_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
                 app_process = popen_factory(
                     build_app_command(config, app_port),
                     cwd=str(config.project_root),
@@ -784,6 +1337,16 @@ def run_combined(
             )
             if app_process.poll() is not None:
                 raise LauncherError("WORKBENCH_EARLY_EXIT", "工作台在就绪后意外退出。")
+            launcher_state_path = _write_launcher_state(
+                config,
+                started_at=started_at,
+                app_port=app_port,
+                mpt_port=mpt_port,
+                app_process=app_process,
+                engine_process=engine_process,
+                app_started_at=app_started_at,
+                engine_started_at=engine_started_at,
+            )
             if config.open_browser:
                 webbrowser.open(workbench_url)
             _emit(
@@ -811,6 +1374,8 @@ def run_combined(
         finally:
             process_terminator(app_process)
             process_terminator(engine_process)
+            if launcher_state_path is not None:
+                _remove_own_launcher_state(launcher_state_path)
 
 
 def _run_motion_primary(
@@ -822,15 +1387,19 @@ def _run_motion_primary(
     process_terminator: Callable[[subprocess.Popen[bytes] | None], None],
     sleeper: Callable[[float], None],
     motion_health_verified: bool,
+    started_at: str,
 ) -> int:
     """Start the offline motion workbench; MPT footage is best-effort only."""
     app_port = select_loopback_port(config.app_port)
     mpt_port = select_loopback_port(config.mpt_port, exclude={app_port})
-    runtime_dir = config.project_root / "runtime" / "combined-launcher"
+    runtime_dir = _launcher_runtime_dir(config.project_root)
     runtime_dir.mkdir(parents=True, exist_ok=True)
     mpt_health_file = runtime_dir / MPT_HEALTH_STATE_NAME
     engine_process: subprocess.Popen[bytes] | None = None
     app_process: subprocess.Popen[bytes] | None = None
+    engine_started_at: str | None = None
+    app_started_at: str | None = None
+    launcher_state_path: Path | None = _claim_launcher_state(config.project_root, started_at=started_at)
     mpt_ready = False
     mpt_available = (config.mpt_root / "app" / "asgi.py").is_file() and config.mpt_python.is_file()
     with (runtime_dir / "mpt-api.log").open("ab", buffering=0) as engine_log:
@@ -840,6 +1409,7 @@ def _run_motion_primary(
                     validate_mpt_network_config(config.mpt_root, mpt_port)
                     engine_environment = build_engine_environment(os.environ, config)
                     engine_environment["CORS_ALLOWED_ORIGINS"] = f"http://{LOOPBACK_HOST}:{app_port}"
+                    engine_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
                     engine_process = popen_factory(
                         build_engine_command(config, mpt_port),
                         cwd=str(config.mpt_root),
@@ -851,13 +1421,17 @@ def _run_motion_primary(
                     )
                     health_waiter(
                         f"http://{LOOPBACK_HOST}:{mpt_port}/openapi.json",
-                        timeout_seconds=config.health_timeout_seconds,
+                        timeout_seconds=min(
+                            config.health_timeout_seconds,
+                            MOTION_OPTIONAL_MPT_HEALTH_TIMEOUT_SECONDS,
+                        ),
                         process=engine_process,
                     )
                     mpt_ready = engine_process.poll() is None
                 except (LauncherError, OSError):
                     process_terminator(engine_process)
                     engine_process = None
+                    engine_started_at = None
 
             _write_mpt_health_state(mpt_health_file, mpt_ready)
 
@@ -870,6 +1444,7 @@ def _run_motion_primary(
                 motion_health_verified=motion_health_verified,
                 mpt_health_file=mpt_health_file,
             )
+            app_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
             app_process = popen_factory(
                 build_app_command(config, app_port),
                 cwd=str(config.project_root),
@@ -883,6 +1458,16 @@ def _run_motion_primary(
                 f"{workbench_url}/api/status",
                 timeout_seconds=config.health_timeout_seconds,
                 process=app_process,
+            )
+            launcher_state_path = _write_launcher_state(
+                config,
+                started_at=started_at,
+                app_port=app_port,
+                mpt_port=mpt_port,
+                app_process=app_process,
+                engine_process=engine_process,
+                app_started_at=app_started_at,
+                engine_started_at=engine_started_at,
             )
             if config.open_browser:
                 webbrowser.open(workbench_url)
@@ -915,6 +1500,8 @@ def _run_motion_primary(
         finally:
             process_terminator(app_process)
             process_terminator(engine_process)
+            if launcher_state_path is not None:
+                _remove_own_launcher_state(launcher_state_path)
 
 
 def _default_path(explicit: str | None, environment_name: str, candidates: Sequence[Path]) -> Path:
@@ -941,6 +1528,8 @@ def _packaged_path(project_root: Path, explicit: str | None, relative: str, labe
 
 def config_from_args(args: argparse.Namespace) -> LauncherConfig:
     project_root = Path(args.project_root).expanduser().resolve()
+    if _looks_like_packaged_root(project_root) and not (project_root / "PACKAGE-MANIFEST.json").is_file():
+        raise LauncherError("PACKAGE_MANIFEST_MISSING", "便携包缺少完整性清单，已拒绝启动。")
     if (project_root / "PACKAGE-MANIFEST.json").is_file():
         if args.app_executable:
             raise LauncherError(
@@ -1124,6 +1713,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-timeout", type=float, default=60.0)
     parser.add_argument("--no-open", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
+    maintenance = parser.add_mutually_exclusive_group()
+    maintenance.add_argument("--stop", action="store_true", help="只停止由当前便携包记录的进程树")
+    maintenance.add_argument("--import-runtime", help="从旧版包内 runtime 复制任务、配置和本机加密 Key")
     parser.add_argument(
         "--agent-test-review",
         action="store_true",
@@ -1137,8 +1729,26 @@ def _emit(payload: Mapping[str, object]) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    early_launcher_state: Path | None = None
     try:
-        config = config_from_args(build_parser().parse_args(argv))
+        args = build_parser().parse_args(argv)
+        if args.stop:
+            project_root = Path(args.project_root).expanduser().resolve()
+            result = stop_recorded_processes(project_root)
+            _emit(result)
+            return 0
+        if args.import_runtime:
+            project_root = Path(args.project_root).expanduser().resolve()
+            result = import_legacy_runtime(Path(args.import_runtime))
+            _emit(result)
+            return 0
+        project_root = Path(args.project_root).expanduser().resolve()
+        if (project_root / "PACKAGE-MANIFEST.json").is_file() and not args.preflight_only:
+            early_launcher_state = _claim_launcher_state(
+                project_root,
+                started_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+            )
+        config = config_from_args(args)
         validate_preinstalled_layout(config)
         motion_health_verified = probe_preinstalled_runtimes(config)
         if config.preflight_only:
@@ -1173,6 +1783,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
         return 3
+    finally:
+        if early_launcher_state is not None:
+            _remove_own_launcher_state(early_launcher_state)
 
 
 if __name__ == "__main__":

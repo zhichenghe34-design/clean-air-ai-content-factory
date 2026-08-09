@@ -128,6 +128,45 @@ class MotionPlanError(ValueError):
     pass
 
 
+def _balanced_caption_units(text: str, target_count: int, max_chars: int = 62) -> list[str]:
+    """Split every script character across 4-8 bounded motion captions."""
+    value = str(text or "")
+    target = max(4, min(8, int(target_count)))
+    if len(value) < 4:
+        raise MotionPlanError("脚本过短，无法生成至少4幕完整字幕")
+    required = (len(value) + max_chars - 1) // max_chars
+    scene_count = max(target, required)
+    if scene_count > 8:
+        raise MotionPlanError("脚本超出8幕动画的完整字幕容量，请先缩短脚本")
+    scene_count = min(scene_count, len(value))
+    punctuation = frozenset("，。！？；：,!?;:")
+    units: list[str] = []
+    cursor = 0
+    for index in range(scene_count):
+        remaining_characters = len(value) - cursor
+        remaining_scenes = scene_count - index
+        if remaining_scenes == 1:
+            cut = remaining_characters
+        else:
+            lower = max(1, remaining_characters - max_chars * (remaining_scenes - 1))
+            upper = min(max_chars, remaining_characters - (remaining_scenes - 1))
+            ideal = max(lower, min(upper, round(remaining_characters / remaining_scenes)))
+            candidates = [
+                position
+                for position in range(lower, upper + 1)
+                if value[cursor + position - 1] in punctuation
+            ]
+            cut = min(candidates, key=lambda position: (abs(position - ideal), position)) if candidates else ideal
+        unit = value[cursor : cursor + cut]
+        if not unit or len(unit) > max_chars:
+            raise MotionPlanError("动画字幕分段超出可信积木文字限制")
+        units.append(unit)
+        cursor += cut
+    if cursor != len(value) or "".join(units) != value:
+        raise MotionPlanError("动画字幕分段未完整绑定批准脚本")
+    return units
+
+
 def derive_motion_segments(
     topic: str,
     script: str,
@@ -137,38 +176,7 @@ def derive_motion_segments(
     text = re.sub(r"\s+", "", str(script or "").strip())
     if not text:
         raise MotionPlanError("脚本为空，无法生成动态场景")
-    raw_units = [item.strip("，,。！？!?；;") for item in re.split(r"(?<=[。！？!?；;])", text) if item.strip()]
-    units: list[str] = []
-    for unit in raw_units or [text]:
-        if len(unit) <= 58:
-            units.append(unit)
-            continue
-        parts = [part for part in re.split(r"(?<=[，,：:])", unit) if part]
-        current = ""
-        for part in parts:
-            if current and len(current + part) > 58:
-                units.append(current.strip("，,：:"))
-                current = part
-            else:
-                current += part
-        if current:
-            units.append(current.strip("，,：:"))
-
-    while len(units) < 4:
-        longest_index = max(range(len(units)), key=lambda idx: len(units[idx]))
-        value = units.pop(longest_index)
-        midpoint = max(1, len(value) // 2)
-        split_at = max(value.rfind("，", 0, midpoint + 1), value.rfind(",", 0, midpoint + 1))
-        if split_at <= 0:
-            split_at = midpoint
-        units[longest_index:longest_index] = [value[:split_at].strip("，,"), value[split_at:].strip("，,")]
-
-    target = max(4, min(8, int(target_count)))
-    if len(units) > target:
-        groups: list[list[str]] = [[] for _ in range(target)]
-        for index, unit in enumerate(units):
-            groups[min(target - 1, index * target // len(units))].append(unit)
-        units = ["，".join(group)[:62] for group in groups if group]
+    units = _balanced_caption_units(text, target_count, max_chars=62)
 
     def title_for(caption: str, index: int) -> tuple[str, str]:
         if _is_legacy_pack(capability_pack):
@@ -201,7 +209,7 @@ def derive_motion_segments(
         if index == len(units):
             kicker = "最终判断原则" if _is_legacy_pack(capability_pack) else "下一步行动"
             title = title if len(title) <= 16 else str(topic)[:16]
-        segments.append({"kicker": kicker, "title": title, "caption": caption[:62]})
+        segments.append({"kicker": kicker, "title": title, "caption": caption})
     return segments
 
 
@@ -485,48 +493,6 @@ def build_motion_project(
         "<i>时</i><span>净界AI内容工厂</span>",
         f"<i>{html_lib.escape(brand_mark)}</i><span>{html_lib.escape(brand_name)}</span>",
     )
-    if not legacy:
-        legacy_report_branch = (
-            'if (type === "report-scan") return `<div class="report"><h2>检测报告</h2>'
-        )
-        generic_process_branch = (
-            'if (type === "process-flow") return `<div class="report"><h2>执行路径</h2>'
-            '<div class="row"><span>第一步</span><b>问题</b></div>'
-            '<div class="row"><span>第二步</span><b>依据</b></div>'
-            '<div class="row"><span>第三步</span><b>边界</b></div>'
-            '<div class="row"><span>第四步</span><b>行动</b></div>'
-            '<div class="scan" data-layout-allow-overflow data-layout-allow-occlusion></div></div>`;\n      '
-            + legacy_report_branch
-        )
-        html = html.replace(legacy_report_branch, generic_process_branch)
-        aliases = {
-            "stat-ring": "signal-grid",
-            "magnifier": "focus-lens",
-            "clock-wave": "timeline-pulse",
-            "report-scan": "source-stack",
-            "compare": "option-compare",
-        }
-        for template_type, generic_type in aliases.items():
-            html = html.replace(
-                f'type === "{template_type}"',
-                f'(type === "{template_type}" || type === "{generic_type}")',
-            )
-        html = html.replace(
-            '(type === "report-scan" || type === "source-stack")',
-            '(type === "report-scan" || type === "source-stack" || type === "process-flow")',
-        )
-        semantic_replacements = {
-            "空间体积": "使用场景",
-            "检测报告": "资料来源",
-            "检测方法": "核验方法",
-            "测试条件": "适用条件",
-            "报告来源": "信息来源",
-            "实验条件": "已有依据",
-            "真实家庭": "实际场景",
-            '["条件一","条件二","条件三","条件四","条件五","条件六"]': '["依据","对象","范围","时间","场景","限制"]',
-        }
-        for old, new in semantic_replacements.items():
-            html = html.replace(old, new)
     encoded_plan = json.dumps(plan, ensure_ascii=False).replace("</", "<\\/")
     html = html.replace("__MOTION_PLAN_JSON__", encoded_plan)
     html = html.replace("__DURATION__", f'{float(plan["duration_seconds"]):.3f}')

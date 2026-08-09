@@ -34,6 +34,29 @@ from core.web_tools import TrustedWebToolRegistry
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_MODES = frozenset({"motion", "footage", "hybrid", "simple"})
 MOTION_ENGINE_MODE = "local_cli"
+RENDER_PROVIDER_ENV_PREFIXES = (
+    "AIHUBMIX_",
+    "ANTHROPIC_",
+    "DEEPSEEK_",
+    "GEMINI_",
+    "OPENAI_",
+    "OPENROUTER_",
+    "PRODUCER_",
+)
+RENDER_PROVIDER_ENV_NAMES = frozenset(
+    {"AUTHORIZATION", "COOKIE", "HF_TOKEN", "MODEL_PROVIDER"}
+)
+
+
+def _hyperframes_subprocess_environment() -> dict[str, str]:
+    """Keep the pinned render runtime while excluding Provider credentials."""
+
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() not in RENDER_PROVIDER_ENV_NAMES
+        and not key.upper().startswith(RENDER_PROVIDER_ENV_PREFIXES)
+    }
 
 
 def resolve_production_mode(
@@ -187,6 +210,24 @@ def _tool_path(env_name: str, command_name: str) -> Path:
     if discovered:
         return Path(discovered)
     return Path(command_name)
+
+
+def _windows_powershell_executable() -> Path:
+    """Resolve the only PowerShell binary allowed to execute the SAPI fallback."""
+    system_root_value = os.getenv("SystemRoot")
+    if not system_root_value:
+        raise FileNotFoundError("Windows PowerShell固定路径不可用，拒绝SAPI回退")
+    system_root = Path(system_root_value)
+    if not system_root.is_absolute():
+        raise FileNotFoundError("Windows PowerShell固定路径不可用，拒绝SAPI回退")
+    candidate = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise FileNotFoundError("Windows PowerShell固定路径不可用，拒绝SAPI回退") from exc
+    if not resolved.is_file():
+        raise FileNotFoundError("Windows PowerShell固定路径不可用，拒绝SAPI回退")
+    return resolved
 
 
 def _tool_available(path: Path) -> bool:
@@ -1561,6 +1602,7 @@ class ProductionRunner:
             raise RuntimeError("合规审核仍处于阻断状态")
         segments = self._segments(config, str(approved["script"]))
         production_engine_report: dict[str, Any] | None = None
+        motion_caption_report: dict[str, Any] | None = None
         if production_mode == "footage":
             if self.production_engine_adapter is None:
                 raise RuntimeError("footage生产模式要求已验证的MoneyPrinterTurbo适配器")
@@ -1577,6 +1619,10 @@ class ProductionRunner:
             voice_report.update(self._normalize_voice_duration(folder, float(config.get("target_duration_seconds", 52))))
             duration = self._audio_duration(folder / "voice.wav")
             captions = self._write_captions(folder, segments, duration)
+            if production_mode == "motion":
+                motion_caption_report = self._validate_motion_captions(
+                    folder / "captions.srt", duration, str(approved["script"])
+                )
         capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
         learning_rules = _normalized_learning_rules(config.get("learning_rules"))
         motion_plan = build_motion_plan(
@@ -1602,6 +1648,7 @@ class ProductionRunner:
                 render_report = self._render_video(folder, segments, captions, duration, config)
                 render_report["mode"] = "static_requested"
             if production_mode == "motion":
+                render_report["caption_validation"] = motion_caption_report
                 if injected_adapter_identity is None:
                     production_engine_report = {
                         "name": MOTION_ENGINE_NAME,
@@ -1912,8 +1959,9 @@ class ProductionRunner:
         except Exception as exc:
             log_path.write_text(f"Primary voice failed: {exc}\n", encoding="utf-8")
             fallback = Path(__file__).resolve().parent / "sapi_tts.ps1"
+            powershell = _windows_powershell_executable()
             command = [
-                "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(fallback),
+                str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(fallback),
                 "-TextFile", str(text_path), "-OutputFile", str(folder / "voice.wav"),
             ]
             result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, check=True)
@@ -2227,41 +2275,42 @@ class ProductionRunner:
         )
 
     @classmethod
-    def _validate_engine_captions(
+    def _validate_caption_contract(
         cls,
         path: Path,
         media_duration: float,
         approved_script: str,
+        label: str,
     ) -> dict[str, Any]:
         if not path.is_file() or path.stat().st_size <= 0:
-            raise RuntimeError("MPT没有生成字幕文件")
+            raise RuntimeError(f"{label}没有生成字幕文件")
         text = path.read_text(encoding="utf-8-sig")
         blocks = [item for item in re.split(r"\r?\n\s*\r?\n", text.strip()) if item.strip()]
         if not 1 <= len(blocks) <= 500:
-            raise RuntimeError("MPT字幕条目数量无效")
+            raise RuntimeError(f"{label}字幕条目数量无效")
         previous_end = 0.0
         maximum_gap = 0.0
         caption_fragments: list[str] = []
         for expected_index, block in enumerate(blocks, start=1):
             lines = block.splitlines()
             if len(lines) < 3 or lines[0].strip() != str(expected_index) or " --> " not in lines[1]:
-                raise RuntimeError("MPT字幕编号或结构不连续")
+                raise RuntimeError(f"{label}字幕编号或结构不连续")
             start_text, end_text = lines[1].split(" --> ", 1)
             start = cls._parse_srt_seconds(start_text)
             end = cls._parse_srt_seconds(end_text)
             if start + 0.001 < previous_end or end <= start or not "".join(lines[2:]).strip():
-                raise RuntimeError("MPT字幕存在重叠、倒序或空文本")
+                raise RuntimeError(f"{label}字幕存在重叠、倒序或空文本")
             maximum_gap = max(maximum_gap, start - previous_end)
             previous_end = end
             caption_fragments.extend(lines[2:])
         trailing_gap = max(0.0, media_duration - previous_end)
         maximum_gap = max(maximum_gap, trailing_gap)
         if previous_end > media_duration + 0.75 or maximum_gap > 2.0:
-            raise RuntimeError("MPT字幕时间轴与成片不连续")
+            raise RuntimeError(f"{label}字幕时间轴与成片不连续")
         approved_binding = cls._caption_binding_text(approved_script)
         caption_binding = cls._caption_binding_text("".join(caption_fragments))
         if not approved_binding or caption_binding != approved_binding:
-            raise RuntimeError("MPT字幕正文与已批准脚本不一致")
+            raise RuntimeError(f"{label}字幕正文与已批准脚本不一致")
         return {
             "status": "passed",
             "cue_count": len(blocks),
@@ -2271,12 +2320,30 @@ class ProductionRunner:
             "text_sha256": hashlib.sha256(caption_binding.encode("utf-8")).hexdigest().upper(),
         }
 
+    @classmethod
+    def _validate_engine_captions(
+        cls,
+        path: Path,
+        media_duration: float,
+        approved_script: str,
+    ) -> dict[str, Any]:
+        return cls._validate_caption_contract(path, media_duration, approved_script, "MPT")
+
+    @classmethod
+    def _validate_motion_captions(
+        cls,
+        path: Path,
+        media_duration: float,
+        approved_script: str,
+    ) -> dict[str, Any]:
+        return cls._validate_caption_contract(path, media_duration, approved_script, "动画")
+
     @staticmethod
-    def _probe_engine_video(path: Path) -> dict[str, Any]:
+    def _probe_video_contract(path: Path, label: str) -> dict[str, Any]:
         if not path.is_file() or path.stat().st_size <= 0:
-            raise RuntimeError("MPT没有生成成片")
+            raise RuntimeError(f"{label}没有生成成片")
         if not _tool_available(FFPROBE):
-            raise FileNotFoundError("未找到FFprobe，无法验证MPT成片")
+            raise FileNotFoundError(f"未找到FFprobe，无法验证{label}成片")
         command = [str(FFPROBE), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)]
         try:
             probe = json.loads(subprocess.check_output(command, text=True, encoding="utf-8"))
@@ -2284,13 +2351,13 @@ class ProductionRunner:
             audio_stream = next(stream for stream in probe["streams"] if stream.get("codec_type") == "audio")
             duration = float(probe["format"]["duration"])
         except (OSError, ValueError, KeyError, StopIteration, json.JSONDecodeError, subprocess.SubprocessError) as exc:
-            raise RuntimeError("MPT成片媒体结构无效") from exc
+            raise RuntimeError(f"{label}成片媒体结构无效") from exc
         if video_stream.get("width") != 1080 or video_stream.get("height") != 1920:
-            raise RuntimeError("MPT成片分辨率不符合1080x1920")
+            raise RuntimeError(f"{label}成片分辨率不符合1080x1920")
         if video_stream.get("codec_name") != "h264" or audio_stream.get("codec_name") != "aac":
-            raise RuntimeError("MPT成片编码必须为H.264/AAC")
+            raise RuntimeError(f"{label}成片编码必须为H.264/AAC")
         if not 45 <= duration <= 60:
-            raise RuntimeError(f"MPT成片时长{duration:.2f}秒，不在45-60秒范围内")
+            raise RuntimeError(f"{label}成片时长{duration:.2f}秒，不在45-60秒范围内")
         return {
             "ok": True,
             "file": "final.mp4",
@@ -2301,6 +2368,14 @@ class ProductionRunner:
             "height": 1920,
             "fps": video_stream.get("r_frame_rate"),
         }
+
+    @classmethod
+    def _probe_engine_video(cls, path: Path) -> dict[str, Any]:
+        return cls._probe_video_contract(path, "MPT")
+
+    @classmethod
+    def _probe_motion_video(cls, path: Path) -> dict[str, Any]:
+        return cls._probe_video_contract(path, "动画")
 
     @staticmethod
     def _audio_duration(path: Path) -> float:
@@ -2436,7 +2511,7 @@ class ProductionRunner:
         )
         quality = str(config.get("animation_quality", "standard"))
         check_command, render_command, runtime = _hyperframes_commands(quality)
-        env = os.environ.copy()
+        env = _hyperframes_subprocess_environment()
         if runtime["browser"] is not None:
             env["HYPERFRAMES_BROWSER_PATH"] = str(runtime["browser"])
         if FFMPEG.exists():
@@ -2460,27 +2535,11 @@ class ProductionRunner:
         if not output.exists():
             raise RuntimeError("HyperFrames命令完成但没有生成final.mp4")
         shutil.copy2(output, folder / "final.mp4")
-
-        probe_command = [str(FFPROBE), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(folder / "final.mp4")]
-        probe = json.loads(subprocess.check_output(probe_command, text=True, encoding="utf-8"))
-        video_stream = next(stream for stream in probe["streams"] if stream.get("codec_type") == "video")
-        audio_stream = next(stream for stream in probe["streams"] if stream.get("codec_type") == "audio")
-        final_duration = float(probe["format"]["duration"])
-        if video_stream.get("width") != 1080 or video_stream.get("height") != 1920:
-            raise RuntimeError("动画成片分辨率不符合1080x1920")
-        if not (45 <= final_duration <= 60):
-            raise RuntimeError(f"动画成片时长{final_duration:.2f}秒，不在45-60秒范围内")
+        media_report = self._probe_motion_video(folder / "final.mp4")
         return {
-            "ok": True,
+            **media_report,
             "mode": "animated_hyperframes",
-            "file": "final.mp4",
             "project_dir": "animation_project",
-            "duration_seconds": round(final_duration, 3),
-            "video_codec": video_stream.get("codec_name"),
-            "audio_codec": audio_stream.get("codec_name"),
-            "width": video_stream.get("width"),
-            "height": video_stream.get("height"),
-            "fps": video_stream.get("r_frame_rate"),
             "runtime_source": runtime["runtime_source"],
             "runtime_version": HYPERFRAMES_VERSION,
             "renderer": HYPERFRAMES_RENDERER,

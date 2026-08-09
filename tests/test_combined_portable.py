@@ -25,7 +25,9 @@ from tools.build_combined_portable import (
     FIXED_ZIP_TIME,
     PACKAGE_MANIFEST,
     PACKAGE_ROOT_NAME,
+    MIGRATION_LAUNCHER_NAME,
     ROOT_LAUNCHER_NAME,
+    STOP_LAUNCHER_NAME,
     BuildInputs,
     MotionRuntimeInputs,
     MOTION_PACKAGE_PROFILE,
@@ -443,16 +445,33 @@ class CombinedPortableTests(unittest.TestCase):
         shared = "%~dp0runtime\\python\\python.exe"
         self.assertIn(f'-MptPython "{shared}"', launcher)
         self.assertIn(f'-AppPython "{shared}"', launcher)
-        self.assertIn(
-            '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 '
-            '"%~dp0tools\\verify_combined_portable.py" "%~dp0." --startup',
-            launcher,
-        )
+        self.assertNotIn("verify_combined_portable.py", launcher)
         powershell_launcher = (inputs.output / "scripts" / "launch_combined.ps1").read_text(encoding="utf-8-sig")
         self.assertIn('@("-I", "-S", "-B", "-X", "utf8", $launcher', powershell_launcher)
         self.assertIn("[switch]$AgentTestReview", powershell_launcher)
         self.assertIn('if ($AgentTestReview) { $arguments += "--agent-test-review" }', powershell_launcher)
         self.assertNotRegex(launcher.casefold(), r"pip\s+install|uv\s+sync|npx\s+--yes")
+        stop_launcher = (inputs.output / STOP_LAUNCHER_NAME).read_text(encoding="ascii")
+        self.assertNotIn("verify_combined_portable.py", stop_launcher)
+        self.assertIn("--stop", stop_launcher)
+        migration_launcher = (inputs.output / MIGRATION_LAUNCHER_NAME).read_text(encoding="ascii")
+        self.assertNotIn("verify_combined_portable.py", migration_launcher)
+        self.assertIn("--import-runtime", migration_launcher)
+        usage = (inputs.output / "使用说明.txt").read_text(encoding="utf-8")
+        self.assertIn("LocalAppData\\ShiyiContentFactory\\UserData", usage)
+        self.assertIn(STOP_LAUNCHER_NAME, usage)
+        self.assertIn(MIGRATION_LAUNCHER_NAME, usage)
+        self.assertEqual(
+            {
+                "user_data_root": "%LOCALAPPDATA%/ShiyiContentFactory/UserData",
+                "launcher_state_root": "%LOCALAPPDATA%/ShiyiContentFactory/Launcher",
+                "package_runtime_mutable": False,
+                "moneyprinterturbo_root": "engine/MoneyPrinterTurbo/storage",
+                "moneyprinterturbo_immutable_children": ["local_videos"],
+                "executable_files_allowed": False,
+            },
+            manifest["mutable_state"],
+        )
         packaged_verifier = subprocess.run(
             [
                 sys.executable,
@@ -675,6 +694,10 @@ class CombinedPortableTests(unittest.TestCase):
         self._write(inputs.output, "engine/MoneyPrinterTurbo/storage/tasks/task-1/final.mp4", b"rendered")
 
         self.assertNotEqual([], verify_folder(inputs.output))
+        external_state_errors = verify_folder(inputs.output, allow_runtime_state=True)
+        self.assertTrue(any("runtime/config.json" in error for error in external_state_errors), external_state_errors)
+        (inputs.output / "runtime/config.json").unlink()
+        shutil.rmtree(inputs.output / "runtime/jobs")
         self.assertEqual([], verify_folder(inputs.output, allow_runtime_state=True))
 
         self._write(inputs.output, "engine/MoneyPrinterTurbo/app/__pycache__/asgi.cpython-314.pyc", b"generated")
@@ -683,7 +706,7 @@ class CombinedPortableTests(unittest.TestCase):
 
         self._write(inputs.output, "runtime/jobs/job-1/evil.py", "raise RuntimeError\n")
         errors = verify_folder(inputs.output, allow_runtime_state=True)
-        self.assertTrue(any("未声明类型或可执行文件" in error for error in errors), errors)
+        self.assertTrue(any("非白名单" in error or "清单" in error for error in errors), errors)
 
         (inputs.output / "runtime/jobs/job-1/evil.py").unlink()
         self._write(inputs.output, "core/unlisted.py", "VALUE = 2\n")

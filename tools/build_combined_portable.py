@@ -73,6 +73,8 @@ SKIPPED_DIRECTORY_NAMES = frozenset(
 SKIPPED_SUFFIXES = frozenset({".log", ".pyc", ".pyo", ".tmp"})
 PYTHON_LICENSE_NAMES = ("LICENSE.txt", "LICENSE", "LICENSE.md", "license.txt")
 ROOT_LAUNCHER_NAME = "启动时宜Agent内容工厂.bat"
+STOP_LAUNCHER_NAME = "关闭时宜Agent内容工厂.bat"
+MIGRATION_LAUNCHER_NAME = "迁移旧版数据.bat"
 USAGE_NAME = "使用说明.txt"
 
 
@@ -911,13 +913,7 @@ def _write_root_launcher(package: Path) -> None:
         "@echo off\r\n"
         "setlocal\r\n"
         "cd /d \"%~dp0\"\r\n"
-        "set \"SHIYI_LAUNCHER_PYTHON=%~dp0runtime\\python\\python.exe\"\r\n"
-        "\"%SHIYI_LAUNCHER_PYTHON%\" -I -S -B -X utf8 \"%~dp0tools\\verify_combined_portable.py\" \"%~dp0.\" --startup\r\n"
-        "if errorlevel 1 (\r\n"
-        "  echo [ERROR] Package integrity verification failed.\r\n"
-        "  pause\r\n"
-        "  exit /b 3\r\n"
-        ")\r\n"
+        "echo Verifying the offline package once, then starting the local workbench. Please wait...\r\n"
         "\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"%~dp0scripts\\launch_combined.ps1\" "
         "-MptRoot \"%~dp0engine\\MoneyPrinterTurbo\" "
         "-MptPython \"%~dp0runtime\\python\\python.exe\" "
@@ -931,14 +927,56 @@ def _write_root_launcher(package: Path) -> None:
         encoding="ascii",
         newline="",
     )
+    (package / STOP_LAUNCHER_NAME).write_text(
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "cd /d \"%~dp0\"\r\n"
+        "set \"SHIYI_LAUNCHER_PYTHON=%~dp0runtime\\python\\python.exe\"\r\n"
+        "echo Checking recorded process identity, then stopping only this product process tree...\r\n"
+        "\"%SHIYI_LAUNCHER_PYTHON%\" -I -S -B -X utf8 \"%~dp0scripts\\launch_combined.py\" --project-root \"%~dp0.\" --stop\r\n"
+        "set \"SHIYI_EXIT_CODE=%ERRORLEVEL%\"\r\n"
+        "if not \"%SHIYI_EXIT_CODE%\"==\"0\" pause\r\n"
+        "exit /b %SHIYI_EXIT_CODE%\r\n",
+        encoding="ascii",
+        newline="",
+    )
+    (package / MIGRATION_LAUNCHER_NAME).write_text(
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "cd /d \"%~dp0\"\r\n"
+        "set \"OLD_RUNTIME=%~1\"\r\n"
+        "if not defined OLD_RUNTIME set /p \"OLD_RUNTIME=Old package runtime full path: \"\r\n"
+        "if not defined OLD_RUNTIME (\r\n"
+        "  echo [ERROR] No old runtime path was provided.\r\n"
+        "  pause\r\n"
+        "  exit /b 2\r\n"
+        ")\r\n"
+        "set \"SHIYI_LAUNCHER_PYTHON=%~dp0runtime\\python\\python.exe\"\r\n"
+        "echo Validating old user data, then copying it without deleting the source...\r\n"
+        "\"%SHIYI_LAUNCHER_PYTHON%\" -I -S -B -X utf8 \"%~dp0scripts\\launch_combined.py\" --project-root \"%~dp0.\" --import-runtime \"%OLD_RUNTIME%\"\r\n"
+        "set \"SHIYI_EXIT_CODE=%ERRORLEVEL%\"\r\n"
+        "pause\r\n"
+        "exit /b %SHIYI_EXIT_CODE%\r\n",
+        encoding="ascii",
+        newline="",
+    )
     (package / USAGE_NAME).write_text(
-        "时宜 Agent 内容工厂 v0.3 Windows 组合便携版\n\n"
-        "1. 将整个目录解压到可写入的位置，不要只在 ZIP 内运行。\n"
-        "   建议直接解压到 Downloads 或其他较短路径，避免旧版 Windows 的 MAX_PATH 限制。\n"
-        f"2. 双击“{ROOT_LAUNCHER_NAME}”。\n"
-        "3. 工作台和 MoneyPrinterTurbo 仅监听 127.0.0.1，并共用本包预装的 Python。\n"
-        "4. 本包不会在运行时安装或下载依赖；视频素材只从 engine/MoneyPrinterTurbo/storage/local_videos 读取。\n"
-        "5. API Key 不在包内。需要真实 Provider 时，请在工作台本机界面中配置。\n",
+        "时宜 Agent 内容工厂 v0.3 Windows 纯动画主线便携版\n\n"
+        "【运行前】\n"
+        "1. 需要 Windows 10/11 x64，并启用系统 zh-CN 中文语音（中国区系统通常自带 Microsoft Huihui）。ZIP 约 0.65GB，完整解压约 1.8GB；建议至少预留 2.5GB。\n"
+        "2. 将整个目录解压到可写入的短路径，不要直接在 ZIP 内运行，也不要拆散目录。\n"
+        "3. API Key 不在包内；无 Key 仍可使用本地安全候选和纯动画生产，联网研究会受限。\n\n"
+        "【启动与制作】\n"
+        f"4. 双击“{ROOT_LAUNCHER_NAME}”。每次启动都会做一遍完整性校验（不会重复校验），复算两万余项文件哈希可能需要几分钟；请等待浏览器自动打开。校验期间也可用关闭入口终止本次启动。\n"
+        "5. 默认生产方式是离线纯动画 HyperFrames；MoneyPrinterTurbo 只是可选实拍支线。运行时不会安装或下载依赖。\n"
+        "6. 选择角度后，系统会在“研究证据”和“最终脚本”两处暂停。必须阅读内容并明确批准，才会继续成片。\n"
+        "7. 成片完成后可在首页播放并下载 final.mp4；证据清单用于核对脚本、审核记录和 SHA-256。\n\n"
+        "【数据、关闭与故障】\n"
+        "8. 新版任务、历史成片和本机加密 Key 固定保存在当前 Windows 用户的 LocalAppData\\ShiyiContentFactory\\UserData，今后更换解压目录仍会沿用。\n"
+        f"9. 从旧便携版升级时，请在第一次启动新版前，把旧包的 runtime 文件夹拖到“{MIGRATION_LAUNCHER_NAME}”上；它只复制任务、配置和 DPAPI 加密 Key，不删除旧目录。若新版已产生不同数据会拒绝覆盖。\n"
+        f"10. 使用完毕请双击“{STOP_LAUNCHER_NAME}”。关闭浏览器本身不会停止本地服务。\n"
+        "11. 启动失败时先查看 %LOCALAPPDATA%\\ShiyiContentFactory\\Launcher\\mpt-api.log 和控制台中的结构化错误；不要重复双击多个实例。\n"
+        "12. 工作台和可选实拍引擎只监听 127.0.0.1，不提供公网云服务。\n",
         encoding="utf-8",
     )
 
@@ -1091,8 +1129,9 @@ def _write_manifests(package: Path, repo_commit: str, inputs: BuildInputs) -> di
             "payload_sha256": _canonical_payload_sha256(files, ("runtime/python/", "runtime/ffmpeg/")),
         },
         "mutable_state": {
-            "workbench_root": "runtime",
-            "workbench_immutable_children": ["python", "ffmpeg"],
+            "user_data_root": "%LOCALAPPDATA%/ShiyiContentFactory/UserData",
+            "launcher_state_root": "%LOCALAPPDATA%/ShiyiContentFactory/Launcher",
+            "package_runtime_mutable": False,
             "moneyprinterturbo_root": "engine/MoneyPrinterTurbo/storage",
             "moneyprinterturbo_immutable_children": ["local_videos"],
             "executable_files_allowed": False,
@@ -1119,9 +1158,6 @@ def _write_manifests(package: Path, repo_commit: str, inputs: BuildInputs) -> di
                 files, ("runtime/node/", "runtime/hyperframes/", "runtime/browser/")
             ),
         }
-        manifest["mutable_state"]["workbench_immutable_children"].extend(
-            ["node", "hyperframes", "browser"]
-        )
     manifest_path = package / PACKAGE_MANIFEST
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     checksum_paths = [*(_payload_files(package)), manifest_path]

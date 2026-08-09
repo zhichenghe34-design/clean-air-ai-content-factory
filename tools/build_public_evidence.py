@@ -19,10 +19,10 @@ from core.review_policy import approval_validation_line
 
 from tools.verify_public_evidence import (
     CANONICAL,
-    MPT_ENGINE_ARTIFACTS,
     REQUIRED,
     SECRET_PATTERNS,
     _engine_contract,
+    evidence_artifacts_for_contract,
     probe_video,
     scan_text,
     sha256,
@@ -97,8 +97,7 @@ def main() -> int:
     if contract_errors:
         raise SystemExit("源运行的生产引擎证据不完整：" + "; ".join(contract_errors))
     needed = set(CANONICAL) | {"approvals.json"}
-    if evidence_contract == "mpt_v0.3":
-        needed.update(MPT_ENGINE_ARTIFACTS)
+    needed.update(evidence_artifacts_for_contract(evidence_contract))
     missing = sorted(name for name in needed if not (source / name).is_file())
     if missing:
         raise SystemExit(f"源运行缺少产物：{', '.join(missing)}")
@@ -148,8 +147,13 @@ def main() -> int:
             raise RuntimeError("字幕校验失败：" + "; ".join(subtitle_errors))
         subtitle_contract_text = (
             "字幕：正文与已批准脚本全文绑定，无重叠，首段、段间和尾部最大空隙均不超过 2 秒。"
-            if evidence_contract == "mpt_v0.3"
+            if evidence_contract in {"mpt_v0.3", "motion_v0.3"}
             else "字幕：沿用冻结 v2 合同，时间轴相邻误差不超过 0.05 秒，终点与成片误差不超过 0.15 秒。"
+        )
+        motion_contract_text = (
+            "- 纯动画：固定 HyperFrames 版本、可信动画积木凭证与 12 帧视觉门禁均随包验证。\n"
+            if evidence_contract == "motion_v0.3"
+            else ""
         )
         validation = (
             "# 公开证据验证说明\n\n"
@@ -160,6 +164,7 @@ def main() -> int:
             f"- 单任务 Provider 预算：`{source_manifest.get('budget', {}).get('attempted')}/7 attempted`\n"
             f"- 成片：`{media['duration_seconds']}` 秒，`{media['width']}×{media['height']}`，`{media['video_codec']}/{media['audio_codec']}`\n"
             f"- {subtitle_contract_text}\n"
+            f"{motion_contract_text}"
             f"- {approval_line}\n"
             f"- {public_sanitization_validation_line(redacted_email_count, redacted_phone_count)}\n"
             "- 脱敏：包内不含 Key、Cookie、Authorization、本机绝对路径、原始配置、邮箱或手机号。\n"
@@ -172,7 +177,7 @@ def main() -> int:
         manifest["source_manifest_sha256"] = sha256(source_manifest_path)
         manifest["packaged_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         manifest["artifacts"] = []
-        public_files = REQUIRED | (MPT_ENGINE_ARTIFACTS if evidence_contract == "mpt_v0.3" else set())
+        public_files = REQUIRED | evidence_artifacts_for_contract(evidence_contract)
         for name in sorted(public_files - {"manifest.json"}):
             path = temporary / name
             manifest["artifacts"].append({

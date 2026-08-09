@@ -20,7 +20,11 @@ const batches = [
   const page = await browser.newPage({ viewport: { width: 1440, height: 1024 }, deviceScaleFactor: 1 });
   const errors = [];
   let topicCalls = 0;
+  let providerConfigured = true;
   let providerVerified = false;
+  let mptReady = false;
+  let clearKeyPayload = null;
+  let configSnapshot = null;
   let auxiliaryToolsSettled = false;
   page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', err => errors.push(err.message));
@@ -32,13 +36,41 @@ const batches = [
       contentType: 'application/json; charset=utf-8',
       body: JSON.stringify({
         ...data,
-        provider_ready: true,
-        provider_configured: true,
-        provider_connection_verified: providerVerified,
+        provider_ready: providerConfigured,
+        provider_configured: providerConfigured,
+        provider_connection_verified: providerConfigured && providerVerified,
         provider_connection_verified_at: providerVerified ? '2026-08-01T12:00:00+08:00' : null,
-        provider_state: providerVerified ? 'verified' : 'configured',
+        provider_state: !providerConfigured ? 'unconfigured' : providerVerified ? 'verified' : 'configured',
+        version: '0.3.0',
+        production_engines: {
+          default_mode: 'motion',
+          motion: { name: 'HyperFrames', version: '0.7.86', enabled: true, health: 'ready', role: 'primary', selectable: true },
+          footage: { name: 'MoneyPrinterTurbo', version: '1.3.3', enabled: mptReady, health: mptReady ? 'ready' : 'disabled', role: 'secondary', selectable: mptReady },
+        },
       }),
     });
+  });
+  await page.route('**/api/config', async route => {
+    const method = route.request().method();
+    if (method === 'GET') {
+      if (!configSnapshot) {
+        const response = await route.fetch();
+        configSnapshot = await response.json();
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(configSnapshot) });
+    }
+    const payload = await route.request().postDataJSON();
+    if (payload?.provider?.clear_api_key === true) {
+      clearKeyPayload = payload;
+      providerConfigured = false;
+      providerVerified = false;
+      configSnapshot = {
+        ...configSnapshot,
+        provider: { ...configSnapshot.provider, has_api_key: false, persisted_api_key: false },
+      };
+      return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(configSnapshot) });
+    }
+    return route.fulfill({ status: 422, contentType: 'application/json; charset=utf-8', body: JSON.stringify({ error: { message: 'unexpected config mutation' } }) });
   });
   await page.route('**/api/provider/test', async route => {
     providerVerified = true;
@@ -105,6 +137,20 @@ const batches = [
   const initialScreening = await page.locator('#topicScreening').innerText();
   const initialTopics = await page.locator('#topicCandidates .topic-option').count();
   const initialSelected = await page.locator('#topicCandidates .topic-option.selected').count();
+  const defaultProductionMode = await page.locator('input[name="productionMode"]:checked').inputValue();
+  const footageModeDisabled = await page.locator('#productionModeFootage').isDisabled();
+  const motionEngineText = await page.locator('#motionEngineStatus').innerText();
+  const footageEngineText = await page.locator('#footageEngineStatus').innerText();
+  const visibleVersion = await page.locator('#editionBadge').innerText();
+  mptReady = true;
+  await page.evaluate(() => refresh({ syncHomeView: false }));
+  await page.waitForFunction(() => !document.querySelector('#productionModeFootage')?.disabled);
+  await page.locator('#productionModeFootage').check();
+  const footageSelectableWhenReady = await page.locator('input[name="productionMode"]:checked').inputValue() === 'footage';
+  mptReady = false;
+  await page.evaluate(() => refresh({ syncHomeView: false }));
+  await page.waitForFunction(() => document.querySelector('#productionModeFootage')?.disabled);
+  const modeFallsBackToMotion = await page.locator('input[name="productionMode"]:checked').inputValue() === 'motion';
   const homeDecisionSelects = await page.locator('#view-workbench select').count();
   const homeButtonLabels = await page.locator('#view-workbench button').allInnerTexts();
   const homeHasApproveRejectPair = homeButtonLabels.some(label => /批准|拒绝|退回/.test(label));
@@ -140,6 +186,9 @@ const batches = [
   await page.waitForFunction(() => document.querySelector('#providerBadge')?.textContent === 'DeepSeek · 本次连接已验证');
   const providerVerifiedBadge = await page.locator('#providerBadge').innerText();
   const providerVerifiedClass = await page.locator('#providerQuickButton').evaluate(node => node.classList.contains('verified'));
+  await page.locator('#clearApiKey').click();
+  await page.waitForFunction(() => document.querySelector('#providerBadge')?.textContent === 'DeepSeek · 未配置');
+  const providerClearedBadge = await page.locator('#providerBadge').innerText();
   await page.screenshot({ path: 'runtime/storage-settings-smoke.png', fullPage: true });
 
   await page.setViewportSize({ width: 720, height: 900 });
@@ -156,11 +205,20 @@ const batches = [
     providerConfiguredClass,
     providerVerifiedBadge,
     providerVerifiedClass,
+    providerClearedBadge,
+    clearKeyPayload,
     initialScreening,
     screeningAfterSelection,
     refreshedScreening,
     initialTopics,
     initialSelected,
+    defaultProductionMode,
+    footageModeDisabled,
+    motionEngineText,
+    footageEngineText,
+    visibleVersion,
+    footageSelectableWhenReady,
+    modeFallsBackToMotion,
     homeDecisionSelects,
     homeHasApproveRejectPair,
     detailedRejectOptions,
@@ -182,5 +240,5 @@ const batches = [
   };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
-  if (errors.length || !criticalRenderedBeforeAuxiliary || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 本次连接已验证' || !providerVerifiedClass || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('项目启动结构含未知字段') || !initialScreening.includes('反证审核未执行') || initialScreening.includes('needs_evidence') || initialScreening.includes('候选1') || initialScreening.includes('ORIGINAL REVIEWED TITLE') || initialScreening.includes('<redacted-unknown-field>') || !refreshedScreening.includes('2/3') || !refreshedScreening.includes('项目启动结构校验通过') || !refreshedScreening.includes('被审核候选“测醛前为什么要先确认封闭时间？”') || refreshedScreening.includes('候选1') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow) process.exit(1);
+  if (errors.length || !criticalRenderedBeforeAuxiliary || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 本次连接已验证' || !providerVerifiedClass || providerClearedBadge !== 'DeepSeek · 未配置' || clearKeyPayload?.provider?.clear_api_key !== true || defaultProductionMode !== 'motion' || !footageModeDisabled || !footageSelectableWhenReady || !modeFallsBackToMotion || !motionEngineText.includes('HyperFrames 0.7.86') || !footageEngineText.includes('MoneyPrinterTurbo 1.3.3') || visibleVersion !== 'v0.3.0' || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('项目启动结构含未知字段') || !initialScreening.includes('反证审核未执行') || initialScreening.includes('needs_evidence') || initialScreening.includes('候选1') || initialScreening.includes('ORIGINAL REVIEWED TITLE') || initialScreening.includes('<redacted-unknown-field>') || !refreshedScreening.includes('2/3') || !refreshedScreening.includes('项目启动结构校验通过') || !refreshedScreening.includes('被审核候选“测醛前为什么要先确认封闭时间？”') || refreshedScreening.includes('候选1') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow) process.exit(1);
 })();

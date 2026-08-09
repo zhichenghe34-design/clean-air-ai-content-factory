@@ -45,11 +45,62 @@ class AnimationRegistryTests(unittest.TestCase):
     def test_bundled_pack_is_hash_bound_and_families_are_explicit(self):
         registry = AnimationRegistry.load()
         summary = registry.summary()
-        self.assertGreaterEqual(summary["block_count"], 12)
-        self.assertGreaterEqual(summary["renderer_family_count"], 5)
+        self.assertGreaterEqual(summary["block_count"], 36)
+        self.assertGreaterEqual(summary["renderer_family_count"], 12)
         families = {block["renderer_family"] for block in registry.pack["blocks"]}
         self.assertEqual(families, {family["id"] for family in registry.pack["renderer_families"]})
         self.assertEqual(summary["renderer"], "hyperframes-waapi-v1")
+        family_counts = {
+            family_id: sum(block["renderer_family"] == family_id for block in registry.pack["blocks"])
+            for family_id in families
+        }
+        self.assertTrue(all(count >= 3 for count in family_counts.values()))
+
+    def test_template_implements_every_family_and_every_registered_variant(self):
+        registry = AnimationRegistry.load()
+        template = TEMPLATE_FILE.read_text(encoding="utf-8")
+        variant_source = template.split("const FAMILY_VARIANTS = ", 1)[1].split(";", 1)[0]
+        template_variants = json.loads(variant_source)
+        registered_variants: dict[str, list[str]] = {}
+        for block in registry.pack["blocks"]:
+            registered_variants.setdefault(block["renderer_family"], []).append(block["id"])
+        self.assertEqual(
+            {family: set(block_ids) for family, block_ids in template_variants.items()},
+            {family: set(block_ids) for family, block_ids in registered_variants.items()},
+        )
+        builders = template.split("const FAMILY_BUILDERS = {", 1)[1].split("function visualMarkup", 1)[0]
+        animators = template.split("const FAMILY_ANIMATORS = {", 1)[1].split("function animateScene", 1)[0]
+        for family in registered_variants:
+            with self.subTest(family=family):
+                self.assertIn(f'"{family}":', builders)
+                self.assertIn(f'"{family}":', animators)
+                self.assertEqual(len(template_variants[family]), len(set(template_variants[family])))
+                self.assertGreaterEqual(len(template_variants[family]), 3)
+        for family, blocks in registered_variants.items():
+            labels = {registry.get(block_id)["label"] for block_id in blocks}
+            motions = {registry.get(block_id)["motion"]["primary"] for block_id in blocks}
+            self.assertEqual(len(labels), len(blocks), family)
+            self.assertEqual(len(motions), len(blocks), family)
+        self.assertIn('data-variant="${type}"', template)
+
+    def test_new_offline_blocks_are_selectable_through_the_whitelist(self):
+        registry = AnimationRegistry.load()
+        cases = (
+            ("risk-gauge", ["metric", "risk", "boundary"], "generic"),
+            ("evidence-pyramid", ["evidence", "source", "boundary"], "legacy_clean_air"),
+            ("source-network", ["source", "evidence", "document"], "generic"),
+            ("claim-guard", ["boundary", "evidence", "source"], "legacy_clean_air"),
+        )
+        for block_id, tags, pack_mode in cases:
+            with self.subTest(block_id=block_id):
+                selected, matched = registry.select(
+                    semantic_tags=tags,
+                    pack_mode=pack_mode,
+                    duration_seconds=7.0,
+                    preferred_ids=[block_id],
+                )
+                self.assertEqual(selected["id"], block_id)
+                self.assertEqual(matched, sorted(tags))
 
     def test_pack_rejects_unknown_fields_and_hash_tampering(self):
         raw = json.loads(DEFAULT_PACK_PATH.read_text(encoding="utf-8"))
@@ -96,6 +147,59 @@ class AnimationRegistryTests(unittest.TestCase):
         tampered["selection_receipt"]["selections"][0]["renderer_family"] = "forged-family"
         with self.assertRaises(MotionPlanError):
             validate_motion_plan(tampered)
+
+    def test_real_build_keeps_generic_variant_branches_reachable_and_legacy_compatible(self):
+        generic_plan = build_motion_plan("企业服务怎样建立信任？", "企业客户", _segments(7), 45.0)
+        selected = {scene["visual_type"] for scene in generic_plan["scenes"]}
+        self.assertTrue({"timeline-pulse", "source-stack", "option-compare"}.issubset(selected))
+        legacy_plan = build_motion_plan(
+            "除醛数据怎样核验？",
+            "新房家庭",
+            _segments(7),
+            45.0,
+            capability_pack={"id": "legacy-clean-air-v2"},
+        )
+
+        with tempfile.TemporaryDirectory() as folder:
+            output_root = Path(folder)
+            generic_output = output_root / "generic"
+            legacy_output = output_root / "legacy"
+            build_motion_project(generic_output, generic_plan)
+            build_motion_project(
+                legacy_output,
+                legacy_plan,
+                capability_pack={"id": "legacy-clean-air-v2"},
+            )
+            generic_html = (generic_output / "index.html").read_text(encoding="utf-8")
+            legacy_html = (legacy_output / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'if (type === "timeline-pulse") return `<div class="timeline-board"',
+            generic_html,
+        )
+        self.assertIn(
+            'if (type === "source-stack") return `<div class="doc-stack"',
+            generic_html,
+        )
+        self.assertIn(
+            'const labels = type === "compare" ? ["已有依据","实际场景"] : ["方案 A","方案 B"]',
+            generic_html,
+        )
+        for legacy_id, generic_id in (
+            ("clock-wave", "timeline-pulse"),
+            ("report-scan", "source-stack"),
+            ("compare", "option-compare"),
+        ):
+            self.assertNotIn(
+                f'(type === "{legacy_id}" || type === "{generic_id}")',
+                generic_html,
+            )
+        self.assertIn('"visual_type": "timeline-pulse"', generic_html)
+        self.assertIn('"visual_type": "source-stack"', generic_html)
+        self.assertIn('"visual_type": "option-compare"', generic_html)
+        self.assertIn('<i>时</i><span>净界AI内容工厂</span>', legacy_html)
+        self.assertIn('"visual_type": "liquid-chamber"', legacy_html)
+        self.assertIn('"visual_type": "orbit-summary"', legacy_html)
 
     def test_generic_plan_rejects_legacy_only_block_even_with_rehashed_receipt(self):
         registry = AnimationRegistry.load()
@@ -207,9 +311,12 @@ class AnimationRegistryTests(unittest.TestCase):
         for forbidden in (
             "http://", "https://", "cdn.jsdelivr", "gsap", "Microsoft YaHei",
             "Math.random", "requestAnimationFrame", "setTimeout", "iterations: Infinity",
+            "iterations: -1", "repeat: -1", "Date.now", "performance.now", "fetch(",
+            "XMLHttpRequest", "WebSocket", "EventSource",
         ):
             self.assertNotIn(forbidden, template)
         self.assertIn("element.animate", template)
+        self.assertEqual(template.count(".animate("), 1)
         self.assertIn('iterations: 1', template)
         self.assertIn("data-no-timeline", template)
         self.assertIn("data-layout-allow-overflow", template)

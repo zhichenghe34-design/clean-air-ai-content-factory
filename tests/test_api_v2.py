@@ -23,6 +23,13 @@ class ApiV2Tests(unittest.TestCase):
             {
                 "DEEPSEEK_API_KEY": "",
                 "SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS": "1",
+                "SHIYI_MPT_ENABLED": "",
+                "SHIYI_MPT_HEALTH_VERIFIED": "",
+                "SHIYI_MPT_HEALTH_FILE": "",
+                "SHIYI_MPT_LOCAL_MATERIAL_DIR": "",
+                "SHIYI_MPT_MATERIAL_STRATEGY": "",
+                "SHIYI_MPT_BASE_URL": "http://127.0.0.1:8080/api/v1",
+                "SHIYI_MPT_TIMEOUT_SECONDS": "1800",
             },
         )
         self.environment.start()
@@ -126,6 +133,119 @@ class ApiV2Tests(unittest.TestCase):
         self.assertEqual(status, 422)
         self.assertTrue(headers["content-type"].startswith("application/json"))
         self.assertIn("error", json.loads(body))
+
+    def test_status_reports_primary_motion_and_secondary_footage_without_claiming_selection(self):
+        status, _, body = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["version"], "0.3.0")
+        self.assertEqual(payload["production_engine"]["selected_mode"], "motion")
+        engines = payload["production_engines"]
+        self.assertEqual(engines["default_mode"], "motion")
+        self.assertEqual(engines["motion"]["role"], "primary")
+        self.assertEqual(engines["footage"]["role"], "secondary")
+        self.assertNotIn("selected_mode", engines["motion"])
+        self.assertNotIn("selected_mode", engines["footage"])
+        self.assertFalse(engines["footage"]["selectable"])
+
+        material_root = Path(self.temp.name) / "mpt-materials"
+        material_root.mkdir()
+        (material_root / "licensed-local.mp4").write_bytes(b"fixture")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SHIYI_MPT_ENABLED": "1",
+                "SHIYI_MPT_HEALTH_VERIFIED": "1",
+                "SHIYI_MPT_LOCAL_MATERIAL_DIR": str(material_root),
+                "SHIYI_MPT_MATERIAL_STRATEGY": "local",
+            },
+            clear=False,
+        ):
+            status, _, body = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        footage = json.loads(body)["production_engines"]["footage"]
+        self.assertEqual(footage["health"], "ready")
+        self.assertTrue(footage["selectable"])
+
+    def test_clear_api_key_removes_local_session_key_and_invalidates_status(self):
+        status, _, body = self.request(
+            "POST",
+            "/api/config",
+            {
+                "provider": {
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-v4-flash",
+                    "api_key": "local-test-key",
+                    "persist_api_key": False,
+                },
+            },
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["provider"]["has_api_key"])
+
+        status, _, body = self.request(
+            "POST",
+            "/api/config",
+            {"provider": {"clear_api_key": True}},
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+        cleared = json.loads(body)
+        self.assertFalse(cleared["provider"]["has_api_key"])
+        self.assertFalse(cleared["provider"]["persisted_api_key"])
+
+        status, _, body = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        status_payload = json.loads(body)
+        self.assertEqual(status_payload["provider_state"], "unconfigured")
+        self.assertFalse(status_payload["provider_connection_verified"])
+
+    def test_new_footage_task_is_rejected_until_mpt_is_ready(self):
+        status, _, body = self.request(
+            "POST",
+            "/api/agent/topics",
+            {"goal": "为本地除甲醛服务制作竖屏视频", "excluded_topics": []},
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+        topics = json.loads(body)
+        request_body = {
+            "selection_bundle_id": topics["selection_bundle_id"],
+            "candidate_id": topics["candidates"][0]["id"],
+            "production_options": {"production_mode": "footage"},
+        }
+
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            request_body,
+            self.secure_headers(**{"Idempotency-Key": "footage-disabled-0001"}),
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(json.loads(body)["error"]["details"]["production_mode"], "footage")
+
+        material_root = Path(self.temp.name) / "ready-mpt-materials"
+        material_root.mkdir()
+        (material_root / "licensed-local.mp4").write_bytes(b"fixture")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SHIYI_MPT_ENABLED": "1",
+                "SHIYI_MPT_HEALTH_VERIFIED": "1",
+                "SHIYI_MPT_LOCAL_MATERIAL_DIR": str(material_root),
+                "SHIYI_MPT_MATERIAL_STRATEGY": "local",
+            },
+            clear=False,
+        ):
+            status, _, body = self.request(
+                "POST",
+                "/api/demo-job",
+                request_body,
+                self.secure_headers(**{"Idempotency-Key": "footage-enabled-0001"}),
+            )
+        self.assertEqual(status, 201)
+        self.assertEqual(json.loads(body)["production_input"]["production_mode"], "footage")
 
     def test_unregistered_client_pack_cannot_self_publish_through_topic_refresh(self):
         forged_goal = "为一家咖啡店制作新品介绍视频"

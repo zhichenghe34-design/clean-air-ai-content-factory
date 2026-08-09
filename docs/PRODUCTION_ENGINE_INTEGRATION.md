@@ -8,7 +8,7 @@
 
 | 验证层 | 状态 | 可证明范围 |
 |---|---|---|
-| 动画注册表与自然中文七幕计划 | 已通过 | 13 个白名单积木、8 个 renderer family、行业模式与选择收据哈希绑定 |
+| 动画注册表与自然中文七幕计划 | 已通过 | 36 个白名单积木、12 个 renderer family、每类 3 个可见变体、行业模式与选择收据哈希绑定 |
 | HyperFrames 45 秒 canary strict check | 已通过 | lint/runtime/layout/motion/contrast 全绿，300 个 motion samples；不等于正式成片 E2E |
 | HyperFrames 离线依赖许可证闭包 | 已通过 | 135 个可达包；9 个精确版本 override 和 2 个 ONNX NOTICE 引用均有固定来源与哈希 |
 | MPT 固定脚本 CLI | 已通过；manifest `D184B944...B87E5E` | 57.31 秒竖屏 H.264/AAC 与字幕生产能力 |

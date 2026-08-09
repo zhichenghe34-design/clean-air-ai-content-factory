@@ -37,6 +37,7 @@ const AGENT_TEST_IDENTITY = {
   let researchArtifactRequests = 0;
   let createRequests = 0;
   const createKeys = [];
+  let createProductionMode = null;
   let authorizeRequests = 0;
   let researchApprovalPayload = null;
   let complianceApprovalPayload = null;
@@ -83,6 +84,7 @@ const AGENT_TEST_IDENTITY = {
     createRequests += 1;
     createKeys.push(route.request().headers()['idempotency-key']);
     const requestPayload = await route.request().postDataJSON();
+    createProductionMode = requestPayload.production_options?.production_mode || null;
     const selected = {
       'topic-1': { title: '通风后没有气味，甲醛就安全了吗？', audience: '新房家庭' },
       'topic-2': { title: '除醛率为什么要看检测条件？', audience: '新房家庭' },
@@ -198,7 +200,17 @@ const AGENT_TEST_IDENTITY = {
       runCount += 1;
       calls.push(`run-${runRequests}`);
       const status = runRequests === 3 ? 'awaiting_compliance_approval' : 'complete';
-      job = { ...job, status, last_error: null, budget: { ...job.budget, attempted: runRequests } };
+      job = {
+        ...job,
+        status,
+        last_error: null,
+        budget: { ...job.budget, attempted: runRequests },
+        ...(status === 'complete' ? {
+          current_run_id: 'render-run-4',
+          artifacts: ['final.mp4', 'manifest.json'],
+          runs: [...(job.runs || []), { run_id: 'render-run-4', stage: 'render', status: 'complete' }],
+        } : {}),
+      };
       return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) });
     } finally {
       runInFlight = false;
@@ -318,6 +330,7 @@ const AGENT_TEST_IDENTITY = {
   await page.locator('#homeButton').click();
   await page.getByRole('heading', { name: '测试成片已经完成，等待用户最终验收' }).waitFor();
   const explicitComplianceAdvance = runRequests === 4;
+  const latestDownloadAvailable = await page.locator('#latestArtifact a[download][href$="/final.mp4"]').count() === 1;
   const completedOpenEnabled = await page.locator('#jobList button[data-action="open"][data-job-id="fake-job"]').isEnabled();
 
   await page.locator('#appMenuButton').click();
@@ -345,8 +358,8 @@ const AGENT_TEST_IDENTITY = {
     && job.approvals.research?.human_approval_claimed === false
     && job.approvals.compliance?.human_approval_claimed === false;
   const unexpectedErrors = errors.filter(message => !/net::ERR_CONNECTION_FAILED|status of 404 \(Not Found\)|status of 500 \(Internal Server Error\)/.test(message));
-  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, authorizeRequests, runKeys, noAutomaticRunReplay, logicalAttemptKeysAreUnique, maxConcurrentRunRequests, pollsDuringLongRun, injectedPollFailures, recoveredPolls, researchArtifactRequests, detailJobReads, detailArtifactRequests, detailRunRequests, staleFindingClearedDuringPending, staleFindingAbsentAfterRecovery, completedOpenEnabled, emptyResearchBoundaryConfirmed, researchHomeRequiresDetails, researchHomeDidNotApprove, researchReviewerLocked, researchNotePrefilled, researchApprovalDidNotAutoRun, researchApprovalIsAgentTest, explicitResearchAdvance, complianceHomeRequiresDetails, complianceHomeDidNotApprove, complianceReviewerLocked, complianceNotePrefilled, complianceApprovalDidNotAutoRun, complianceApprovalIsAgentTest, explicitComplianceAdvance, humanImpersonationAbsent, expectedFailureSignals: errors, unexpectedErrors };
+  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, createProductionMode, latestDownloadAvailable, authorizeRequests, runKeys, noAutomaticRunReplay, logicalAttemptKeysAreUnique, maxConcurrentRunRequests, pollsDuringLongRun, injectedPollFailures, recoveredPolls, researchArtifactRequests, detailJobReads, detailArtifactRequests, detailRunRequests, staleFindingClearedDuringPending, staleFindingAbsentAfterRecovery, completedOpenEnabled, emptyResearchBoundaryConfirmed, researchHomeRequiresDetails, researchHomeDidNotApprove, researchReviewerLocked, researchNotePrefilled, researchApprovalDidNotAutoRun, researchApprovalIsAgentTest, explicitResearchAdvance, complianceHomeRequiresDetails, complianceHomeDidNotApprove, complianceReviewerLocked, complianceNotePrefilled, complianceApprovalDidNotAutoRun, complianceApprovalIsAgentTest, explicitComplianceAdvance, humanImpersonationAbsent, expectedFailureSignals: errors, unexpectedErrors };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
-  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || authorizeRequests !== 1 || !noAutomaticRunReplay || !logicalAttemptKeysAreUnique || maxConcurrentRunRequests !== 1 || pollsDuringLongRun < 2 || injectedPollFailures !== 1 || recoveredPolls < 1 || researchArtifactRequests < 2 || detailJobReads < 3 || detailArtifactRequests < 2 || detailRunRequests !== 0 || !staleFindingClearedDuringPending || !staleFindingAbsentAfterRecovery || !completedOpenEnabled || !emptyResearchBoundaryConfirmed || !researchHomeRequiresDetails || !researchHomeDidNotApprove || !researchReviewerLocked || !researchNotePrefilled || !researchApprovalDidNotAutoRun || !researchApprovalIsAgentTest || !explicitResearchAdvance || !complianceHomeRequiresDetails || !complianceHomeDidNotApprove || !complianceReviewerLocked || !complianceNotePrefilled || !complianceApprovalDidNotAutoRun || !complianceApprovalIsAgentTest || !explicitComplianceAdvance || !humanImpersonationAbsent) process.exit(1);
+  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || createProductionMode !== 'motion' || !latestDownloadAvailable || authorizeRequests !== 1 || !noAutomaticRunReplay || !logicalAttemptKeysAreUnique || maxConcurrentRunRequests !== 1 || pollsDuringLongRun < 2 || injectedPollFailures !== 1 || recoveredPolls < 1 || researchArtifactRequests < 2 || detailJobReads < 3 || detailArtifactRequests < 2 || detailRunRequests !== 0 || !staleFindingClearedDuringPending || !staleFindingAbsentAfterRecovery || !completedOpenEnabled || !emptyResearchBoundaryConfirmed || !researchHomeRequiresDetails || !researchHomeDidNotApprove || !researchReviewerLocked || !researchNotePrefilled || !researchApprovalDidNotAutoRun || !researchApprovalIsAgentTest || !explicitResearchAdvance || !complianceHomeRequiresDetails || !complianceHomeDidNotApprove || !complianceReviewerLocked || !complianceNotePrefilled || !complianceApprovalDidNotAutoRun || !complianceApprovalIsAgentTest || !explicitComplianceAdvance || !humanImpersonationAbsent) process.exit(1);
 })();

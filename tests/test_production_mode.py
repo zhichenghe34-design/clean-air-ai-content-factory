@@ -20,6 +20,7 @@ from core.orchestrator import (
 from core.production import (
     ProductionRunner,
     _hyperframes_commands,
+    _hyperframes_subprocess_environment,
     resolve_production_mode,
 )
 
@@ -198,6 +199,7 @@ class ProductionModeDispatchTests(unittest.TestCase):
         self.assertEqual(report["production_engine"]["name"], "HyperFrames")
         self.assertTrue(report["render"]["production_mode"] == "motion")
         self.assertFalse(report["render"].get("diagnostic_only", False))
+        self.assertEqual(report["render"]["caption_validation"]["status"], "passed")
 
     def test_injected_motion_adapter_is_named_and_manifest_ineligible(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -264,9 +266,50 @@ class ProductionModeDispatchTests(unittest.TestCase):
 
 
 class HyperFramesRuntimeContractTests(unittest.TestCase):
+    def test_motion_caption_contract_binds_the_entire_approved_script(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            captions = Path(folder_name) / "captions.srt"
+            midpoint = len(SAFE_SCRIPT) // 2
+            captions.write_text(
+                "1\n00:00:00,000 --> 00:00:26,000\n"
+                f"{SAFE_SCRIPT[:midpoint]}\n\n"
+                "2\n00:00:26,000 --> 00:00:52,000\n"
+                f"{SAFE_SCRIPT[midpoint:]}\n",
+                encoding="utf-8",
+            )
+            report = ProductionRunner._validate_motion_captions(captions, 52.0, SAFE_SCRIPT)
+            self.assertEqual(report["status"], "passed")
+            self.assertEqual(report["cue_count"], 2)
+            with self.assertRaisesRegex(RuntimeError, "批准脚本不一致"):
+                ProductionRunner._validate_motion_captions(captions, 52.0, SAFE_SCRIPT + "遗漏")
+
+    def test_motion_media_contract_rejects_non_h264_aac_before_publication(self):
+        probe = {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "hevc",
+                    "width": 1080,
+                    "height": 1920,
+                    "r_frame_rate": "30/1",
+                },
+                {"codec_type": "audio", "codec_name": "aac"},
+            ],
+            "format": {"duration": "52.0"},
+        }
+        with tempfile.TemporaryDirectory() as folder_name:
+            video = Path(folder_name) / "final.mp4"
+            video.write_bytes(b"video")
+            with (
+                mock.patch("core.production._tool_available", return_value=True),
+                mock.patch("core.production.subprocess.check_output", return_value=json.dumps(probe)),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "H.264/AAC"):
+                    ProductionRunner._probe_motion_video(video)
+
     def test_packaged_commands_use_pinned_node_cli_and_browser_without_npm(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+            root = Path(folder) / "contains-npm-runtime"
             node = root / "node.exe"
             cli = root / "node_modules" / "hyperframes" / "bin" / "hyperframes.mjs"
             browser = root / "chrome.exe"
@@ -290,12 +333,47 @@ class HyperFramesRuntimeContractTests(unittest.TestCase):
         self.assertIn("high", render)
         self.assertIn("--no-best-effort", render)
         self.assertIn("--strict", render)
-        self.assertNotIn("npm", " ".join([*check, *render]).lower())
-        self.assertNotIn("npx", " ".join([*check, *render]).lower())
+        forbidden_launchers = {"npm", "npm.cmd", "npx", "npx.cmd"}
+        for command in (check, render):
+            self.assertTrue(
+                forbidden_launchers.isdisjoint(
+                    Path(str(argument)).name.casefold() for argument in command
+                )
+            )
         self.assertEqual(runtime["browser"], browser)
         self.assertEqual(runtime["runtime_source"], "packaged")
         self.assertEqual(runtime["version"], HYPERFRAMES_VERSION)
         self.assertEqual(runtime["renderer"], HYPERFRAMES_RENDERER)
+
+    def test_hyperframes_environment_keeps_runtime_but_drops_provider_secrets(self):
+        source = {
+            "PATH": "fixed-runtime-path",
+            "HYPERFRAMES_BROWSER_PATH": "bundled-browser.exe",
+            "HYPERFRAMES_NO_AUTO_INSTALL": "1",
+            "DEEPSEEK_API_KEY": "provider-secret",
+            "DEEPSEEK_BASE_URL": "https://untrusted.invalid",
+            "OPENAI_API_KEY": "provider-secret",
+            "ANTHROPIC_AUTH_TOKEN": "provider-secret",
+            "GEMINI_API_KEY": "provider-secret",
+            "OPENROUTER_API_KEY": "provider-secret",
+            "AIHUBMIX_API_KEY": "provider-secret",
+            "HF_TOKEN": "provider-secret",
+            "AUTHORIZATION": "provider-secret",
+            "COOKIE": "provider-secret",
+            "MODEL_PROVIDER": "provider-secret",
+            "PRODUCER_ENDPOINT": "https://untrusted.invalid",
+        }
+        with mock.patch.dict(os.environ, source, clear=True):
+            environment = _hyperframes_subprocess_environment()
+        self.assertEqual("fixed-runtime-path", environment["PATH"])
+        self.assertEqual("bundled-browser.exe", environment["HYPERFRAMES_BROWSER_PATH"])
+        self.assertEqual("1", environment["HYPERFRAMES_NO_AUTO_INSTALL"])
+        for name in set(source) - {
+            "PATH",
+            "HYPERFRAMES_BROWSER_PATH",
+            "HYPERFRAMES_NO_AUTO_INSTALL",
+        }:
+            self.assertNotIn(name, environment)
 
     def test_explicit_hyperframes_runtime_version_mismatch_fails_closed(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -330,6 +408,53 @@ class HyperFramesRuntimeContractTests(unittest.TestCase):
         with mock.patch.dict(os.environ, environment, clear=False):
             with self.assertRaisesRegex(FileNotFoundError, "运行时不完整"):
                 _hyperframes_commands("standard")
+
+
+class VoiceFallbackContractTests(unittest.TestCase):
+    def test_sapi_fallback_uses_systemroot_powershell_absolute_path(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            root = Path(folder_name)
+            job = root / "job"
+            job.mkdir()
+            powershell = (
+                root / "Windows" / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+            )
+            powershell.parent.mkdir(parents=True)
+            powershell.write_bytes(b"powershell")
+            commands: list[list[str]] = []
+
+            def fallback_run(command: list[str], **_kwargs):
+                commands.append(command)
+                (job / "voice.wav").write_bytes(b"RIFF" + b"\0" * 64)
+                return mock.Mock(stdout="", stderr="")
+
+            with (
+                mock.patch.dict(os.environ, {"SystemRoot": str(root / "Windows")}, clear=False),
+                mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"),
+                mock.patch("core.production.subprocess.run", side_effect=fallback_run),
+            ):
+                report = ProductionRunner._synthesize_voice(job, "固定路径语音测试", {})
+            self.assertEqual(report["engine"], "windows_sapi")
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(commands[0][0], str(powershell.resolve()))
+            self.assertTrue(Path(commands[0][0]).is_absolute())
+            self.assertNotEqual(commands[0][0].casefold(), "powershell.exe")
+
+    def test_sapi_fallback_fails_closed_when_fixed_powershell_is_missing(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            root = Path(folder_name)
+            job = root / "job"
+            job.mkdir()
+            with (
+                mock.patch.dict(os.environ, {"SystemRoot": str(root / "Windows")}, clear=False),
+                mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"),
+                mock.patch(
+                    "core.production.subprocess.run",
+                    side_effect=AssertionError("missing fixed PowerShell must never execute"),
+                ),
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "固定路径不可用"):
+                    ProductionRunner._synthesize_voice(job, "固定路径语音测试", {})
 
 
 class ProductionEngineSummaryTests(unittest.TestCase):

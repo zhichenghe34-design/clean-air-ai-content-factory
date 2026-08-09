@@ -12,7 +12,7 @@
       <button id="homeButton" class="brand" type="button" aria-label="返回 Agent 工作台">
         <span class="brand-mark" aria-hidden="true">时</span>
         <span class="brand-copy"><strong>时宜 Agent 内容工厂</strong><small>动态行业能力 · 持续纠错 · 可举证 · 可追溯</small></span>
-        <span class="edition-badge">通用内核预览</span>
+        <span id="editionBadge" class="edition-badge">v0.3.0</span>
       </button>
       <div class="top-actions">
         <button id="providerQuickButton" class="control-plate provider-control" type="button" data-view="settings">
@@ -61,6 +61,17 @@
                       <p>任选一个；不满意就换一批，也可以直接告诉我你的想法。</p>
                     </div>
                     <p id="topicScreening" class="screening-note"><img class="ui-icon" src="/icons/shield-check.svg" alt="">已排除危险目标、无依据承诺和重复选题；公开依据将在研究阶段逐条核验。</p>
+                    <fieldset id="productionModePicker" class="production-mode-picker">
+                      <legend>本次成片方式</legend>
+                      <label class="production-mode-option">
+                        <input id="productionModeMotion" type="radio" name="productionMode" value="motion" checked>
+                        <span><strong>纯动画（默认主线）</strong><small id="motionEngineStatus">HyperFrames 状态加载中</small></span>
+                      </label>
+                      <label class="production-mode-option">
+                        <input id="productionModeFootage" type="radio" name="productionMode" value="footage" disabled>
+                        <span><strong>实拍素材</strong><small id="footageEngineStatus">MoneyPrinterTurbo 未就绪，暂不可选</small></span>
+                      </label>
+                    </fieldset>
                     <div id="topicCandidates" class="topic-candidates" role="radiogroup" aria-label="Agent 推荐的三个选题"></div>
                     <div class="choice-actions">
                       <button id="startSelectedTopic" class="primary choice-primary" type="button"><img class="ui-icon" src="/icons/check.svg" alt="">就做这个</button>
@@ -138,12 +149,12 @@
             <label class="check"><input id="researchEnabled" type="checkbox"><span>生产任务启用联网工具调度</span></label>
             <label>一站式音视频解析目录<input id="mediaParserRoot" class="mono" placeholder="可选：选择本机解析器目录"></label>
             <p class="hint">每个生产任务共用 7 次模型请求硬上限；选题与 Agent 计划另共用本机会话 3 次硬上限，连接测试不计入两者。</p>
-            <div class="action-row"><button id="saveSettings" class="primary" type="button">保存设置</button><button id="testProvider" class="secondary" type="button">测试连接</button></div>
+            <div class="action-row"><button id="saveSettings" class="primary" type="button">保存设置</button><button id="testProvider" class="secondary" type="button">测试连接</button><button id="clearApiKey" class="secondary" type="button">清除本机 Key</button></div>
             <div id="providerResult" class="hint"></div><div id="secretWarning" class="notice" hidden></div>
           </article>
           <article class="panel">
             <p class="eyebrow">执行边界</p><h3>本地安全模式</h3>
-            <div class="safety-list"><div><strong>目录扫描</strong><span>只读</span></div><div><strong>模型调度</strong><span>仅登记工具</span></div><div><strong>素材上传</strong><span>默认关闭</span></div><div><strong>未知外部命令</strong><span>默认关闭</span></div><div><strong>阶段审查</strong><span id="reviewModeState">正式人审</span></div></div>
+            <div class="safety-list"><div><strong>软件版本</strong><span id="releaseVersionState">v0.3.0</span></div><div><strong>纯动画主线</strong><span id="motionVersionState">HyperFrames 状态加载中</span></div><div><strong>实拍副线</strong><span id="footageVersionState">MoneyPrinterTurbo 状态加载中</span></div><div><strong>目录扫描</strong><span>只读</span></div><div><strong>模型调度</strong><span>仅登记工具</span></div><div><strong>素材上传</strong><span>默认关闭</span></div><div><strong>未知外部命令</strong><span>默认关闭</span></div><div><strong>阶段审查</strong><span id="reviewModeState">正式人审</span></div></div>
           </article>
           <article class="panel storage-settings">
             <p class="eyebrow">本地资源库</p><h3>存储位置</h3>

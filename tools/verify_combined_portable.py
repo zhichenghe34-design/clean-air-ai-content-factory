@@ -36,6 +36,8 @@ HYPERFRAMES_UPSTREAM_COMMIT = "1a52351f05237433006e6ca92db18feafed16fed"
 WINDOWS_TYPICAL_EXTRACT_ROOT = "\\".join(("C:", "Users", "Default", "Downloads"))
 WINDOWS_PORTABLE_PATH_BUDGET = 248
 ROOT_LAUNCHER_NAME = "启动时宜Agent内容工厂.bat"
+STOP_LAUNCHER_NAME = "关闭时宜Agent内容工厂.bat"
+MIGRATION_LAUNCHER_NAME = "迁移旧版数据.bat"
 USAGE_NAME = "使用说明.txt"
 SKIPPED_DIRECTORY_NAMES = frozenset(
     {".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__", "node_modules"}
@@ -50,7 +52,9 @@ REPO_TREE_ALLOWLIST: dict[str, frozenset[str]] = {
 }
 
 
-ROOT_FILES = frozenset({"app.py", "LICENSE", ROOT_LAUNCHER_NAME, USAGE_NAME, PACKAGE_MANIFEST, CHECKSUMS_FILE})
+ROOT_FILES = frozenset(
+    {"app.py", "LICENSE", ROOT_LAUNCHER_NAME, STOP_LAUNCHER_NAME, MIGRATION_LAUNCHER_NAME, USAGE_NAME, PACKAGE_MANIFEST, CHECKSUMS_FILE}
+)
 ROOT_DIRECTORIES = frozenset(
     {"agent-skills", "catalog", "core", "docs", "engine", "licenses", "runtime", "scripts", "static", "third_party", "tools"}
 )
@@ -228,10 +232,6 @@ def _windows_path_key(value: str) -> str:
 
 
 def _is_mutable_runtime_path(relative: str) -> bool:
-    if relative.startswith("runtime/"):
-        return not relative.startswith(
-            ("runtime/python/", "runtime/ffmpeg/", "runtime/node/", "runtime/hyperframes/", "runtime/browser/")
-        )
     if relative.startswith("engine/MoneyPrinterTurbo/storage/"):
         return not relative.startswith("engine/MoneyPrinterTurbo/storage/local_videos/")
     return False
@@ -627,9 +627,9 @@ def _verify_manifest(
     ):
         errors.append("PACKAGE-MANIFEST.json 运行时合同不正确")
     expected_mutable = {
-        "workbench_root": "runtime",
-        "workbench_immutable_children": ["python", "ffmpeg"]
-        + (["node", "hyperframes", "browser"] if motion_package else []),
+        "user_data_root": "%LOCALAPPDATA%/ShiyiContentFactory/UserData",
+        "launcher_state_root": "%LOCALAPPDATA%/ShiyiContentFactory/Launcher",
+        "package_runtime_mutable": False,
         "moneyprinterturbo_root": "engine/MoneyPrinterTurbo/storage",
         "moneyprinterturbo_immutable_children": ["local_videos"],
         "executable_files_allowed": False,
@@ -872,8 +872,6 @@ def _verify_mpt_and_launchers(
     launcher = _decode_text(read(ROOT_LAUNCHER_NAME))
     shared_python = "%~dp0runtime\\python\\python.exe"
     required_launcher_fragments = (
-        f'set "SHIYI_LAUNCHER_PYTHON={shared_python}"',
-        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 "%~dp0tools\\verify_combined_portable.py" "%~dp0." --startup',
         '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
         f'-MptPython "{shared_python}"',
         f'-AppPython "{shared_python}"',
@@ -884,6 +882,24 @@ def _verify_mpt_and_launchers(
     )
     if any(fragment not in launcher for fragment in required_launcher_fragments):
         errors.append("根启动 BAT 未把工作台和 MPT 固定到同一便携 Python 或固定素材目录")
+    stop_launcher = _decode_text(read(STOP_LAUNCHER_NAME))
+    required_stop_fragments = (
+        f'set "SHIYI_LAUNCHER_PYTHON={shared_python}"',
+        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\launch_combined.py" --project-root "%~dp0." --stop',
+    )
+    if any(fragment not in stop_launcher for fragment in required_stop_fragments):
+        errors.append("根关闭 BAT 未使用便携 Python 调用受约束的关闭入口。")
+    if "verify_combined_portable.py" in launcher or "verify_combined_portable.py" in stop_launcher:
+        errors.append("根 BAT 不得在 Python 启动器之外重复执行整包完整性校验")
+    migration_launcher = _decode_text(read(MIGRATION_LAUNCHER_NAME))
+    required_migration_fragments = (
+        f'set "SHIYI_LAUNCHER_PYTHON={shared_python}"',
+        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\launch_combined.py" --project-root "%~dp0." --import-runtime "%OLD_RUNTIME%"',
+    )
+    if any(fragment not in migration_launcher for fragment in required_migration_fragments):
+        errors.append("旧版数据迁移 BAT 未使用便携 Python 调用受约束的复制入口。")
+    if "verify_combined_portable.py" in migration_launcher:
+        errors.append("迁移 BAT 不得在 Python 启动器之外重复执行整包完整性校验")
     powershell_launcher = _decode_text(read("scripts/launch_combined.ps1"))
     required_powershell_fragments = (
         '$packageManifest = Join-Path $projectRoot "PACKAGE-MANIFEST.json"',
@@ -892,7 +908,7 @@ def _verify_mpt_and_launchers(
     )
     if any(fragment not in powershell_launcher for fragment in required_powershell_fragments):
         errors.append("PowerShell 启动器未固定便携 Python 或隔离解释器启动参数。")
-    for relative in (ROOT_LAUNCHER_NAME, "scripts/launch_combined.ps1", "scripts/launch_combined.py"):
+    for relative in (ROOT_LAUNCHER_NAME, STOP_LAUNCHER_NAME, MIGRATION_LAUNCHER_NAME, "scripts/launch_combined.ps1", "scripts/launch_combined.py"):
         if DOWNLOAD_COMMAND_RE.search(_decode_text(read(relative))):
             errors.append(f"{relative} 含运行时下载或安装命令")
     return errors
