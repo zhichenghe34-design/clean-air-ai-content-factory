@@ -10,7 +10,7 @@
 | 版本 | 当前状态 | 可下载 |
 |---|---|---|
 | v0.2.0 | 当前稳定发布 | 是 |
-| v0.3.0 纯动画主线组合版 | 开发候选；动画主链已接入，正式纯动画 E2E、用户验收与新版封包尚待完成 | 否 |
+| v0.3.0 纯动画主线组合版 | 开发候选；每个候选必须单独通过封包、冷启动和纯动画 E2E，精确结果见项目发布闭环记录 | 否 |
 
 ## Windows 一键体验（当前稳定版 v0.2.0）
 
@@ -50,12 +50,12 @@
 - 动画模板只使用本地有限 WAAPI、Noto Sans SC 与确定性时间线；不使用 CDN、运行时下载、随机数、无限循环或现场生成可执行代码。HyperFrames 正式检查使用 `--strict`，正式渲染使用 `--no-best-effort --strict`。
 - 当前 45 秒自然中文七幕 canary 已通过 HyperFrames 0.7.86 的 lint、runtime、layout、motion 和 contrast 严格检查，包含 300 个运动采样；这只证明动画工程合同，不冒充两道阶段审查后的正式成片 E2E。
 - `footage` 保留为 MoneyPrinterTurbo 实拍支线；旧 MPT 任务不会被默认动画路由改写。`hybrid` 当前明确 fail-closed，`simple` 仅用于不可发布的诊断运行。
-- 便携封包合同会固定 Node、HyperFrames、Chrome Headless Shell、字体和 FFmpeg，禁止系统 PATH、`npx`、运行时下载及宿主 Node 注入。当前 135 个可达依赖的许可证闭包已经完成，9 个缺少包内正文的精确版本 override 也已绑定官方来源；真实大包仍须完成构建和全新目录冷启动，完成前不得宣称 v0.3 已可下载。
+- 便携封包合同会固定 Node、HyperFrames、Chrome Headless Shell、字体和 FFmpeg，禁止系统 PATH、`npx`、运行时下载及宿主 Node 注入。当前 135 个可达依赖的许可证闭包已经完成，9 个缺少包内正文的精确版本 override 也已绑定官方来源；每个候选都必须从对应 clean commit 重建并在全新目录冷启动，不能只凭源码测试宣称可下载。
 
 - MoneyPrinterTurbo 固定为 `1.3.3` / `254cd028906ee657eab844dc94087cdbea2a7aa8`，通过只监听回环地址的内部 HTTP API 接收已经批准的脚本和本地素材；它不能读取 DeepSeek Key，也不能重写事实内容。
 - 固定脚本的独立 CLI 烟雾和真实 HTTP → `ProductionRunner` 联调均已通过。CLI 证据 manifest SHA-256 为 `D184B944BEF773A17790F264ADEC01D3F838AC3B411CF83F829FABEBD4B87E5E`；HTTP 组合成片为 46.600 秒、1080×1920、H.264/yuv420p + AAC，证据 manifest SHA-256 为 `F42EA0D748B7E15287978462112E7481E8F9CB80FBBF015B70ACE183204DB64F`。这些都只属于内部工程证据，不冒充用户两道人审后的正式比赛证据。
 - 引擎输出先进入当前运行 staging。控制层重新校验时长、分辨率、编解码、字幕连续性与哈希；全部通过后，才把 `material_sources.json`、`engine_report.json` 和标准产物写进成功 manifest。失败不会替换上一成功运行。
-- 封包构建器限定使用项目核验过的 Noto Sans SC、本地 MP4 和无 BGM 策略；不采用上游字体、歌曲、WebUI、LLM 或社交发布功能。最终 v0.3 候选包尚未发布，具体边界见 [生产引擎组合说明](docs/PRODUCTION_ENGINE_INTEGRATION.md)。
+- 封包构建器限定使用项目核验过的 Noto Sans SC、本地 MP4 和无 BGM 策略；不采用上游字体、歌曲、WebUI、LLM 或社交发布功能。v0.3 保持候选且不由 README 预声明发布；精确提交、包哈希、E2E 与用户验收状态记录在项目发布闭环中，边界见 [生产引擎组合说明](docs/PRODUCTION_ENGINE_INTEGRATION.md)。
 
 ## 保留的 v2 安全与发布基线
 
