@@ -22,7 +22,40 @@ class SapiTtsContractTests(unittest.TestCase):
             raise unittest.SkipTest("Windows PowerShell is unavailable")
         return executable
 
+    def _probe_zh_cn_voice(self) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            [
+                str(self._powershell()),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(SCRIPT),
+                "-ProbeOnly",
+                "-Language",
+                "zh-CN",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.assertIn("Required offline SAPI voice is not installed: zh-CN", result.stderr)
+        return result
+
+    def _require_zh_cn_voice(self) -> subprocess.CompletedProcess[str]:
+        result = self._probe_zh_cn_voice()
+        if result.returncode != 0:
+            raise unittest.SkipTest("This Windows host has no zh-CN SAPI voice; packaged preflight fails closed")
+        return result
+
     def test_generates_nonempty_chinese_wave_with_explicit_zh_cn_voice(self) -> None:
+        self._require_zh_cn_voice()
         with tempfile.TemporaryDirectory(prefix="shiyi-sapi-contract-") as temp:
             root = Path(temp)
             text_file = root / "script.txt"
@@ -62,29 +95,12 @@ class SapiTtsContractTests(unittest.TestCase):
                 self.assertEqual(audio.getsampwidth(), 2)
 
     def test_probe_only_confirms_zh_cn_without_creating_audio(self) -> None:
-        result = subprocess.run(
-            [
-                str(self._powershell()),
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(SCRIPT),
-                "-ProbeOnly",
-                "-Language",
-                "zh-CN",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            check=False,
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("CULTURE=zh-CN", result.stdout)
+        result = self._probe_zh_cn_voice()
+        if result.returncode == 0:
+            self.assertIn("CULTURE=zh-CN", result.stdout)
+            self.assertIn("SAPI_VOICE=", result.stdout)
+        else:
+            self.assertNotIn("SAPI_VOICE=", result.stdout)
 
     def test_missing_language_fails_closed_without_wave(self) -> None:
         with tempfile.TemporaryDirectory(prefix="shiyi-sapi-contract-") as temp:
