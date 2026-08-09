@@ -18,3 +18,5 @@
 *.ttf binary
 *.otf binary
 evidence/** binary
+third_party/hyperframes/LICENSE text eol=lf
+third_party/hyperframes/dependency-licenses/** text eol=lf
