@@ -16,7 +16,13 @@ from core.orchestrator import (
     local_fallback_plan,
 )
 from core.provider import BudgetLedger, ProviderError, validate_provider_base_url, validate_provider_response_url
-from core.production import ProductionRunner, build_local_variants, estimate_narration_duration, review_script
+from core.production import (
+    ProductionRunner,
+    VideoVisualQualityBlocked,
+    build_local_variants,
+    estimate_narration_duration,
+    review_script,
+)
 from core.review_policy import CODEX_TEST_REVIEWER
 from core.secrets import protect_secret, unprotect_secret
 
@@ -28,6 +34,22 @@ LONG_SAFE_SCRIPT = (
     "实验条件与真实房间不同，结论就不能直接照搬。缺少完整来源和适用边界时，也不能把宣传话术理解成入住保证。"
     "更稳妥的做法是保存完整检测报告，持续通风，并在重要入住决定前结合真实房屋情况请专业人员判断。"
 )
+
+
+def fake_visual_qc(video_path, *, output_dir, **_kwargs):
+    output = Path(output_dir)
+    (output / "contact-sheet.png").write_bytes(b"fake-contact-sheet")
+    payload = {
+        "schema_version": 1,
+        "status": "passed",
+        "sample_count": 12,
+        "blocking_reasons": [],
+        "review_reasons": [],
+    }
+    (output / "visual-qc.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+    return payload
 
 
 class FakeStageRunner:
@@ -133,10 +155,41 @@ class ReportRebuildRunner:
         self.budget = BudgetLedger(limit=7)
 
     @staticmethod
+    def run_visual_qc_stage(output):
+        (output / "contact-sheet.png").write_bytes(b"rebuilt-contact-sheet")
+        payload = {
+            "status": "passed",
+            "sample_count": 12,
+            "blocking_reasons": [],
+            "review_reasons": [],
+        }
+        (output / "visual-qc.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+        return payload
+
+    @staticmethod
     def rebuild_run_report(output, approvals):
         (output / "run_report.json").write_text(
             json.dumps({"corrected": True, "approvals_preserved": approvals}, ensure_ascii=False),
             encoding="utf-8",
+        )
+
+
+class NeedsVisualReviewRebuildRunner(ReportRebuildRunner):
+    @staticmethod
+    def run_visual_qc_stage(output):
+        (output / "contact-sheet.png").write_bytes(b"repeat-contact-sheet")
+        (output / "visual-qc.json").write_text(
+            json.dumps({
+                "status": "needs_visual_review",
+                "sample_count": 12,
+                "review_reasons": ["extreme_visual_repetition"],
+            }),
+            encoding="utf-8",
+        )
+        raise VideoVisualQualityBlocked(
+            "正式成片等待视觉复核：extreme_visual_repetition"
         )
 
 
@@ -431,6 +484,9 @@ class V2WorkflowTests(unittest.TestCase):
             self.assertTrue(report["corrected"])
             manifest = json.loads(jobs.resolve_artifact(job["id"], "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["run_id"], job["current_run_id"])
+            rebuilt_names = {item["name"] for item in manifest["artifacts"]}
+            self.assertIn("contact-sheet.png", rebuilt_names)
+            self.assertIn("visual-qc.json", rebuilt_names)
             self.assertEqual(job["runs"][-1]["source_run_id"], source_run)
 
             current_run = job["current_run_id"]
@@ -452,6 +508,38 @@ class V2WorkflowTests(unittest.TestCase):
                     job["id"], ReportRebuildRunner(), "report-rebuild-unsafe", "拒绝清单路径穿越"
                 )
             self.assertEqual(jobs.get(job["id"])["current_run_id"], current_run)
+
+    def test_report_rebuild_needs_visual_review_preserves_previous_current_run(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            job = advance_to_content_gate(jobs, job, FakeStageRunner())
+            job = approve_compliance(jobs, job)
+            job = jobs.advance(job["id"], FakeStageRunner(), "visual-source-render")
+            previous_run = job["current_run_id"]
+            previous_video = jobs.resolve_artifact(job["id"], "final.mp4").read_bytes()
+
+            with self.assertRaises(VideoVisualQualityBlocked):
+                jobs.rebuild_successful_delivery(
+                    job["id"],
+                    NeedsVisualReviewRebuildRunner(),
+                    "visual-rebuild-blocked",
+                    "历史成片重新执行视觉门禁",
+                )
+
+            current = jobs.get(job["id"])
+            self.assertEqual(current["current_run_id"], previous_run)
+            self.assertEqual(
+                jobs.resolve_artifact(job["id"], "final.mp4").read_bytes(),
+                previous_video,
+            )
+            failed_run = current["runs"][-1]
+            self.assertEqual(failed_run["stage"], "report_rebuild")
+            self.assertEqual(failed_run["status"], "failed")
+            failed_root = (
+                Path(folder) / "jobs" / job["id"] / "runs" / failed_run["run_id"] / "failed"
+            )
+            self.assertTrue((failed_root / "visual-qc.json").is_file())
+            self.assertFalse((failed_root / "manifest.json").exists())
 
     def test_engine_artifacts_are_manifest_bound_and_preserved_by_report_rebuild(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -844,7 +932,11 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
                 (output / "final.mp4").write_bytes(b"fake-ci-video")
                 return {"mode": "fake_ci", "duration_seconds": 52.0, "width": 1080, "height": 1920, "video_codec": "h264", "audio_codec": "aac"}
 
-            runner = ProductionRunner(voice_adapter=fake_voice, render_adapter=fake_render)
+            runner = ProductionRunner(
+                voice_adapter=fake_voice,
+                render_adapter=fake_render,
+                visual_qc_adapter=fake_visual_qc,
+            )
             report = runner.run_render_stage(root, {"topic": VALID_TOPIC, "audience": "新房家庭"}, {"research": {"status": "approved"}, "compliance": {"status": "approved"}})
             self.assertEqual(report["status"], "complete")
             self.assertEqual(report["render"]["mode"], "fake_ci")
@@ -934,6 +1026,7 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
                     "voice_strategy": "edge_tts",
                     "local_material_paths": [Path("fixture.mp4")],
                 },
+                visual_qc_adapter=fake_visual_qc,
             )
             with self.assertRaises(RuntimeError):
                 runner.run_render_stage(
@@ -956,9 +1049,19 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
             self.assertTrue(engine.calls[0]["approved"])
             self.assertEqual(report["production_engine"]["version"], "1.3.3")
             self.assertIn("engine_report.json", report["artifacts"])
+            self.assertIn("contact-sheet.png", report["artifacts"])
+            self.assertIn("visual-qc.json", report["artifacts"])
             self.assertFalse((root / ".engine-import").exists())
             engine_report = json.loads((root / "engine_report.json").read_text(encoding="utf-8"))
             self.assertNotIn(".engine-import/audio.mp3", json.dumps(engine_report["artifacts"]))
+            self.assertEqual(
+                {item["relative_path"] for item in engine_report["artifacts"]},
+                {"final.mp4", "captions.srt", "material_sources.json"},
+            )
+            self.assertEqual(
+                engine_report["control_layer_validation"]["visual_qc"]["status"],
+                "passed",
+            )
             self.assertEqual(
                 engine_report["engine_imports"][0]["disposition"],
                 "transcoded_to_voice_wav_then_removed",

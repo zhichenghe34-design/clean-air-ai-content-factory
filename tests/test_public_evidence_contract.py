@@ -16,6 +16,11 @@ from core.review_policy import (
     approval_validation_line,
     classify_approval_record,
 )
+from tools.build_public_evidence import (
+    public_sanitization_validation_line,
+    record_public_sanitization,
+    sanitize_research_text,
+)
 from tools.verify_public_evidence import (
     MPT_ENGINE_ARTIFACTS,
     MPT_ENGINE_IDENTITY,
@@ -212,6 +217,51 @@ class PublicEvidenceContractTests(unittest.TestCase):
         mode, errors = classify_approval_record(legacy, allow_legacy_human=False)
         self.assertIsNone(mode)
         self.assertTrue(any("缺少结构化审查身份" in error for error in errors))
+
+    def test_public_evidence_sanitizes_email_and_strict_mainland_phone(self):
+        phone = "".join(("138", "0013", "8000"))
+        sanitized, email_count, phone_count = sanitize_research_text(
+            f"联系 test@example.com 或 {phone}；"
+            "边界数字 9138001380001、138001380001 和非手机号 12800138000 保留。"
+        )
+        self.assertEqual((email_count, phone_count), (1, 1))
+        self.assertIn("[REDACTED_EMAIL]", sanitized)
+        self.assertIn("[REDACTED_PHONE]", sanitized)
+        self.assertNotIn("test@example.com", sanitized)
+        self.assertNotIn(f"{phone}；", sanitized)
+        self.assertIn("9138001380001", sanitized)
+        self.assertIn("138001380001", sanitized)
+        self.assertIn("12800138000", sanitized)
+
+    def test_public_sanitization_preserves_source_hash_and_records_public_copy(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            research_path = Path(folder_name) / "research.json"
+            research_path.write_text('{"trace":"[REDACTED_PHONE]"}', encoding="utf-8")
+            source_approval_hash = "a" * 64
+            approvals: dict[str, object] = {
+                "research": {"artifact_sha256": source_approval_hash},
+            }
+
+            record_public_sanitization(approvals, research_path, 2, 3)
+
+            research_approval = approvals["research"]
+            self.assertIsInstance(research_approval, dict)
+            self.assertEqual(research_approval["artifact_sha256"], source_approval_hash)
+            self.assertEqual(research_approval["source_artifact_sha256"], source_approval_hash)
+            self.assertEqual(research_approval["public_artifact_sha256"], sha256(research_path))
+            self.assertEqual(
+                research_approval["public_sanitization"],
+                {
+                    "email_addresses_redacted": 2,
+                    "mainland_phone_numbers_redacted": 3,
+                    "scope": "source-page contact text only",
+                },
+            )
+            validation_line = public_sanitization_validation_line(2, 3)
+            self.assertIn("2 处来源页联系邮箱", validation_line)
+            self.assertIn("3 处大陆手机号", validation_line)
+            self.assertIn("[REDACTED_EMAIL]", validation_line)
+            self.assertIn("[REDACTED_PHONE]", validation_line)
 
     def test_legacy_v2_keeps_frozen_timing_contract(self):
         with tempfile.TemporaryDirectory() as folder_name:

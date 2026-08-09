@@ -7,15 +7,17 @@ import math
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, ImageStat
 
 from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
 from core.production_engine import ENGINE_COMMIT, ENGINE_MODE, ENGINE_NAME, ENGINE_VERSION
@@ -60,6 +62,11 @@ FFMPEG = _tool_path("FFMPEG_PATH", "ffmpeg")
 FFPROBE = _tool_path("FFPROBE_PATH", "ffprobe")
 FONT_REGULAR = _configured_path("FONT_REGULAR", r"C:\Windows\Fonts\msyh.ttc")
 FONT_BOLD = _configured_path("FONT_BOLD", r"C:\Windows\Fonts\msyhbd.ttc")
+
+VISUAL_QC_SAMPLE_COUNT = 12
+KNOWN_TEST_MATERIAL_SHA256 = {
+    "9A37A318334DD6478E5BBE3B4447E97B437B92C22855F96640D2CF9DD1F9716D": "mpt_testsrc2_fixture",
+}
 
 DEFAULT_INPUT: dict[str, Any] = {
     "topic": "怎样把一个真实客户问题讲清楚？",
@@ -218,6 +225,10 @@ LEGACY_DOMAIN_TERMS = ("甲醛", "除醛", "测醛", "新房", "入住", "检测
 
 class ScriptRevisionRequired(RuntimeError):
     workflow_status = "awaiting_script_revision"
+
+
+class VideoVisualQualityBlocked(RuntimeError):
+    """Fail a render without publishing it when formal visual checks are unsafe."""
 
 
 def estimate_narration_duration(script: str) -> dict[str, Any]:
@@ -659,6 +670,378 @@ def atomic_json(path: Path, data: Any) -> None:
     temp.replace(path)
 
 
+def _visual_qc_duration(video_path: Path, ffprobe_path: Path) -> float:
+    if not _tool_available(ffprobe_path):
+        raise RuntimeError("未找到FFprobe，无法执行正式成片视觉门禁")
+    result = subprocess.run(
+        [
+            str(ffprobe_path),
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    try:
+        duration = float((result.stdout or "").strip())
+    except ValueError as exc:
+        raise RuntimeError("正式成片无法读取有效时长") from exc
+    if result.returncode or not math.isfinite(duration) or duration <= 0:
+        raise RuntimeError("正式成片无法读取有效时长")
+    return duration
+
+
+def _extract_visual_qc_frames(
+    video_path: Path,
+    work_dir: Path,
+    ffmpeg_path: Path,
+    ffprobe_path: Path,
+    sample_count: int = VISUAL_QC_SAMPLE_COUNT,
+) -> tuple[list[Image.Image], list[float]]:
+    if not _tool_available(ffmpeg_path):
+        raise RuntimeError("未找到FFmpeg，无法执行正式成片视觉门禁")
+    duration = _visual_qc_duration(video_path, ffprobe_path)
+    timestamps = [
+        min(max(duration - 0.05, 0.0), duration * (index + 0.5) / sample_count)
+        for index in range(sample_count)
+    ]
+    frames: list[Image.Image] = []
+    for index, timestamp in enumerate(timestamps, start=1):
+        frame_path = work_dir / f"frame-{index:02d}.png"
+        result = subprocess.run(
+            [
+                str(ffmpeg_path), "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{timestamp:.6f}", "-i", str(video_path),
+                "-frames:v", "1", "-vf", "scale=320:-2:flags=lanczos",
+                str(frame_path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        if result.returncode or not frame_path.is_file() or frame_path.stat().st_size <= 0:
+            raise RuntimeError("正式成片抽帧失败")
+        with Image.open(frame_path) as image:
+            frames.append(image.convert("RGB").copy())
+    return frames, timestamps
+
+
+def _classify_test_bar_pixel(red: int, green: int, blue: int) -> int:
+    targets = (
+        red >= 170 and green <= 105 and blue <= 105,
+        green >= 135 and red <= 115 and blue <= 115,
+        red >= 165 and green >= 145 and blue <= 115,
+        blue >= 155 and red <= 115 and green <= 135,
+        red >= 160 and blue >= 145 and green <= 115,
+        green >= 135 and blue >= 145 and red <= 115,
+    )
+    for index, matched in enumerate(targets):
+        if matched:
+            return index
+    return -1
+
+
+def _detect_test_color_bars(image: Image.Image) -> dict[str, Any]:
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    top = max(0, int(height * 0.04))
+    bottom = max(top + 1, int(height * 0.58))
+    sample = rgb.crop((0, top, width, bottom)).resize((240, 132), Image.Resampling.BILINEAR)
+    pixels = sample.load()
+    dominant_columns: list[int] = []
+    for x in range(sample.width):
+        counts = [0] * 6
+        for y in range(sample.height):
+            label = _classify_test_bar_pixel(*pixels[x, y])
+            if label >= 0:
+                counts[label] += 1
+        best = max(range(6), key=counts.__getitem__)
+        dominant_columns.append(best if counts[best] / sample.height >= 0.62 else -1)
+
+    longest_runs = [0] * 6
+    current = -1
+    run_length = 0
+    for label in [*dominant_columns, -2]:
+        if label == current:
+            run_length += 1
+            continue
+        if current >= 0:
+            longest_runs[current] = max(longest_runs[current], run_length)
+        current = label
+        run_length = 1
+    minimum_bar_width = max(10, round(sample.width * 0.055))
+    detected_targets = [index for index, length in enumerate(longest_runs) if length >= minimum_bar_width]
+    covered_columns = sum(
+        1 for label in dominant_columns
+        if label >= 0 and longest_runs[label] >= minimum_bar_width
+    )
+    coverage = covered_columns / sample.width
+    score = round((len(detected_targets) / 6) * coverage, 4)
+    return {
+        "detected": len(detected_targets) >= 5 and coverage >= 0.52,
+        "score": score,
+        "detected_target_count": len(detected_targets),
+        "vertical_coverage": round(coverage, 4),
+    }
+
+
+def _frame_perceptual_hash(image: Image.Image) -> int:
+    width, height = image.size
+    crop = image.crop((0, 0, width, max(1, int(height * 0.78))))
+    small = crop.convert("L").resize((9, 8), Image.Resampling.LANCZOS)
+    values = list(small.get_flattened_data()) if hasattr(small, "get_flattened_data") else list(small.getdata())
+    result = 0
+    bit = 0
+    for row in range(8):
+        offset = row * 9
+        for column in range(8):
+            if values[offset + column] > values[offset + column + 1]:
+                result |= 1 << bit
+            bit += 1
+    return result
+
+
+def _normalized_frame_difference(left: Image.Image, right: Image.Image) -> float:
+    def normalized(image: Image.Image) -> Image.Image:
+        width, height = image.size
+        return image.crop((0, 0, width, max(1, int(height * 0.78)))).convert("RGB").resize(
+            (32, 32), Image.Resampling.BILINEAR
+        )
+
+    difference = ImageChops.difference(normalized(left), normalized(right))
+    channel_means = ImageStat.Stat(difference).mean
+    return sum(channel_means) / (len(channel_means) * 255.0)
+
+
+def analyze_visual_qc_frames(
+    frames: list[Image.Image],
+    timestamps: list[float],
+    *,
+    material_hashes: list[str] | None = None,
+    material_sources_valid: bool = True,
+) -> dict[str, Any]:
+    if len(frames) != VISUAL_QC_SAMPLE_COUNT or len(timestamps) != len(frames):
+        raise ValueError(f"视觉门禁必须恰好抽取{VISUAL_QC_SAMPLE_COUNT}帧")
+    normalized_hashes = {
+        str(value).strip().upper() for value in (material_hashes or [])
+        if re.fullmatch(r"[0-9A-Fa-f]{64}", str(value).strip())
+    }
+    known_matches = [
+        {"sha256": digest, "fixture": KNOWN_TEST_MATERIAL_SHA256[digest]}
+        for digest in sorted(normalized_hashes & set(KNOWN_TEST_MATERIAL_SHA256))
+    ]
+    frame_rows: list[dict[str, Any]] = []
+    color_bar_frames: list[int] = []
+    perceptual_hashes: list[int] = []
+    for index, (frame, timestamp) in enumerate(zip(frames, timestamps), start=1):
+        bars = _detect_test_color_bars(frame)
+        if bars["detected"]:
+            color_bar_frames.append(index)
+        perceptual_hashes.append(_frame_perceptual_hash(frame))
+        frame_rows.append({
+            "index": index,
+            "timestamp_seconds": round(float(timestamp), 3),
+            "test_color_bars": bars,
+        })
+
+    hamming_distances = [
+        (left ^ right).bit_count()
+        for left, right in zip(perceptual_hashes, perceptual_hashes[1:])
+    ]
+    frame_differences = [
+        _normalized_frame_difference(left, right)
+        for left, right in zip(frames, frames[1:])
+    ]
+    median_hamming = statistics.median(hamming_distances) if hamming_distances else 0
+    median_difference = statistics.median(frame_differences) if frame_differences else 0.0
+    unique_hashes = len(set(perceptual_hashes))
+    extreme_repetition = (
+        unique_hashes <= 2 and median_difference < 0.008
+    ) or (
+        max(hamming_distances or [0]) <= 2 and median_difference < 0.006
+    )
+
+    blocking_reasons: list[str] = []
+    if not material_sources_valid:
+        blocking_reasons.append("invalid_material_sources")
+    if known_matches:
+        blocking_reasons.append("known_test_fixture_material")
+    if color_bar_frames:
+        blocking_reasons.append("test_pattern_color_bars")
+    review_reasons = ["extreme_visual_repetition"] if extreme_repetition else []
+    status = "blocked" if blocking_reasons else ("needs_visual_review" if review_reasons else "passed")
+    return {
+        "status": status,
+        "sample_count": len(frames),
+        "blocking_reasons": blocking_reasons,
+        "review_reasons": review_reasons,
+        "checks": {
+            "known_test_fixture": {
+                "status": "blocked" if known_matches else "passed",
+                "matches": known_matches,
+            },
+            "test_color_bars": {
+                "status": "blocked" if color_bar_frames else "passed",
+                "detected_frame_count": len(color_bar_frames),
+                "detected_frame_indices": color_bar_frames,
+            },
+            "visual_repetition": {
+                "status": "needs_visual_review" if extreme_repetition else "passed",
+                "unique_perceptual_hashes": unique_hashes,
+                "median_consecutive_hamming_distance": median_hamming,
+                "median_normalized_frame_difference": round(median_difference, 6),
+            },
+        },
+        "frames": frame_rows,
+    }
+
+
+def _build_visual_contact_sheet(
+    frames: list[Image.Image],
+    timestamps: list[float],
+    destination: Path,
+    status: str,
+) -> None:
+    columns, rows = 4, 3
+    cell_width, cell_height = 240, 426
+    header_height = 64
+    sheet = Image.new("RGB", (columns * cell_width, header_height + rows * cell_height), "#101820")
+    draw = ImageDraw.Draw(sheet)
+    status_color = {"passed": "#77D970", "needs_visual_review": "#F5C451", "blocked": "#F26B5E"}.get(
+        status, "#F26B5E"
+    )
+    draw.rectangle((0, 0, sheet.width, header_height), fill="#101820")
+    draw.text((18, 17), f"FORMAL VISUAL QC | {status.upper()} | 12 SAMPLES", fill=status_color)
+    for index, (frame, timestamp) in enumerate(zip(frames, timestamps)):
+        column, row = index % columns, index // columns
+        origin_x = column * cell_width
+        origin_y = header_height + row * cell_height
+        cell = Image.new("RGB", (cell_width, cell_height), "#06090C")
+        contained = ImageOps.contain(frame.convert("RGB"), (cell_width, cell_height), Image.Resampling.LANCZOS)
+        paste_x = (cell_width - contained.width) // 2
+        paste_y = (cell_height - contained.height) // 2
+        cell.paste(contained, (paste_x, paste_y))
+        cell_draw = ImageDraw.Draw(cell)
+        cell_draw.rectangle((0, cell_height - 28, 116, cell_height), fill="#101820")
+        cell_draw.text((8, cell_height - 22), f"{index + 1:02d}  {timestamp:06.2f}s", fill="#FFFFFF")
+        sheet.paste(cell, (origin_x, origin_y))
+    temporary = destination.with_name(destination.name + ".tmp")
+    sheet.save(temporary, format="PNG", optimize=True)
+    temporary.replace(destination)
+
+
+def _visual_material_hashes(path: Path | None) -> tuple[list[str], bool]:
+    if path is None or not path.is_file():
+        return [], True
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return [], False
+    sources = payload.get("sources") if isinstance(payload, dict) else None
+    if not isinstance(sources, list):
+        return [], False
+    hashes: list[str] = []
+    for source in sources:
+        if not isinstance(source, dict):
+            return [], False
+        digest = str(source.get("sha256", "")).strip().upper()
+        if digest and not re.fullmatch(r"[0-9A-F]{64}", digest):
+            return [], False
+        if digest:
+            hashes.append(digest)
+    return hashes, True
+
+
+def verify_video_visuals(
+    video_path: Path,
+    *,
+    output_dir: Path | None = None,
+    material_sources_path: Path | None = None,
+    ffmpeg_path: Path | None = None,
+    ffprobe_path: Path | None = None,
+) -> dict[str, Any]:
+    video_path = Path(video_path)
+    if not video_path.is_file() or video_path.stat().st_size <= 0:
+        raise RuntimeError("正式成片不存在，无法执行视觉门禁")
+    output_dir = Path(output_dir or video_path.parent)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ffmpeg_path = Path(ffmpeg_path or FFMPEG)
+    ffprobe_path = Path(ffprobe_path or FFPROBE)
+    material_hashes, material_sources_valid = _visual_material_hashes(material_sources_path)
+    with tempfile.TemporaryDirectory(prefix=".visual-qc-", dir=output_dir) as work_name:
+        frames, timestamps = _extract_visual_qc_frames(
+            video_path,
+            Path(work_name),
+            ffmpeg_path,
+            ffprobe_path,
+        )
+        report = analyze_visual_qc_frames(
+            frames,
+            timestamps,
+            material_hashes=material_hashes,
+            material_sources_valid=material_sources_valid,
+        )
+        report.update({
+            "schema_version": 1,
+            "video": {
+                "name": video_path.name,
+                "size": video_path.stat().st_size,
+                "sha256": _file_sha256(video_path),
+            },
+            "material_sources": {
+                "present": bool(material_sources_path and material_sources_path.is_file()),
+                "valid": material_sources_valid,
+                "source_count": len(material_hashes),
+            },
+            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        })
+        _build_visual_contact_sheet(
+            frames,
+            timestamps,
+            output_dir / "contact-sheet.png",
+            str(report["status"]),
+        )
+    atomic_json(output_dir / "visual-qc.json", report)
+    return report
+
+
+def _bind_visual_qc_to_engine_report(folder: Path, visual_qc: dict[str, Any]) -> None:
+    report_path = folder / "engine_report.json"
+    if not report_path.is_file():
+        return
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("MPT生产引擎报告无效") from exc
+    artifacts = report.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise RuntimeError("MPT生产引擎报告产物清单无效")
+    for name in ("contact-sheet.png", "visual-qc.json"):
+        path = folder / name
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise RuntimeError("正式成片视觉门禁产物缺失")
+    control = report.get("control_layer_validation")
+    if not isinstance(control, dict):
+        control = {}
+        report["control_layer_validation"] = control
+    control["visual_qc"] = {
+        "status": visual_qc.get("status"),
+        "blocking_reasons": list(visual_qc.get("blocking_reasons", [])),
+        "review_reasons": list(visual_qc.get("review_reasons", [])),
+        "sample_count": visual_qc.get("sample_count"),
+        "report_sha256": _file_sha256(folder / "visual-qc.json"),
+        "contact_sheet_sha256": _file_sha256(folder / "contact-sheet.png"),
+    }
+    atomic_json(report_path, report)
+
+
 def load_pattern_cards() -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for line in PATTERN_FILE.read_text(encoding="utf-8").splitlines():
@@ -881,6 +1264,7 @@ class ProductionRunner:
         render_adapter: Any | None = None,
         production_engine_adapter: Any | None = None,
         production_engine_options: dict[str, Any] | None = None,
+        visual_qc_adapter: Any | None = None,
     ):
         self.provider = provider
         self.research_config = research_config or {}
@@ -893,6 +1277,7 @@ class ProductionRunner:
         self.render_adapter = render_adapter
         self.production_engine_adapter = production_engine_adapter
         self.production_engine_options = dict(production_engine_options or {})
+        self.visual_qc_adapter = visual_qc_adapter or verify_video_visuals
 
     def run(self, folder: Path, production_input: dict[str, Any] | None = None) -> dict[str, Any]:
         raise RuntimeError("v2生产线必须通过JobStore分阶段运行并完成阶段审查门禁")
@@ -1065,6 +1450,8 @@ class ProductionRunner:
                 render_report = self._render_video(folder, segments, captions, duration, config)
                 render_report["mode"] = "static_requested"
 
+        render_report["visual_qc"] = self.run_visual_qc_stage(folder)
+
         elapsed = round(time.monotonic() - started, 2)
         variants_payload = json.loads((folder / "script_variants.json").read_text(encoding="utf-8"))
         variants = [item for item in variants_payload.get("variants", []) if isinstance(item, dict)]
@@ -1106,12 +1493,63 @@ class ProductionRunner:
             "artifacts": [
                 "research.json", "insight.json", "script_variants.json", "approved_script.json", "review.json",
                 "voice.wav", "captions.srt", "motion_plan.json", "final.mp4", "run_report.json",
+                "contact-sheet.png", "visual-qc.json",
             ] + [
                 name for name in ("material_sources.json", "engine_report.json") if (folder / name).is_file()
             ],
         }
         atomic_json(folder / "run_report.json", report)
         return report
+
+    def run_visual_qc_stage(self, folder: Path) -> dict[str, Any]:
+        """Revalidate the current final video before any run can be published."""
+        visual_qc = self.visual_qc_adapter(
+            folder / "final.mp4",
+            output_dir=folder,
+            material_sources_path=(
+                folder / "material_sources.json" if (folder / "material_sources.json").is_file() else None
+            ),
+            ffmpeg_path=FFMPEG,
+            ffprobe_path=FFPROBE,
+        )
+        if not isinstance(visual_qc, dict) or visual_qc.get("status") not in {
+            "passed", "needs_visual_review", "blocked",
+        }:
+            raise RuntimeError("正式成片视觉门禁返回无效结果")
+        for required_name in ("contact-sheet.png", "visual-qc.json"):
+            required_path = folder / required_name
+            if not required_path.is_file() or required_path.stat().st_size <= 0:
+                raise RuntimeError("正式成片视觉门禁产物缺失")
+        _bind_visual_qc_to_engine_report(folder, visual_qc)
+        summary = {
+            "status": visual_qc["status"],
+            "sample_count": visual_qc.get("sample_count"),
+            "blocking_reasons": list(visual_qc.get("blocking_reasons", [])),
+            "review_reasons": list(visual_qc.get("review_reasons", [])),
+            "report_sha256": _file_sha256(folder / "visual-qc.json"),
+            "contact_sheet_sha256": _file_sha256(folder / "contact-sheet.png"),
+        }
+        existing_report_path = folder / "run_report.json"
+        if existing_report_path.is_file():
+            try:
+                existing_report = json.loads(existing_report_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError("成功运行报告无效，无法重新执行视觉门禁") from exc
+            if not isinstance(existing_report, dict):
+                raise RuntimeError("成功运行报告无效，无法重新执行视觉门禁")
+            render = existing_report.get("render")
+            if not isinstance(render, dict):
+                render = {}
+                existing_report["render"] = render
+            render["visual_qc"] = summary
+            atomic_json(existing_report_path, existing_report)
+        if visual_qc["status"] == "needs_visual_review":
+            reasons = ",".join(str(item) for item in summary["review_reasons"]) or "manual_visual_review_required"
+            raise VideoVisualQualityBlocked(f"正式成片等待视觉复核：{reasons}")
+        if visual_qc["status"] == "blocked":
+            reasons = ",".join(str(item) for item in summary["blocking_reasons"]) or "unsafe_visuals"
+            raise VideoVisualQualityBlocked(f"正式成片视觉门禁阻断：{reasons}")
+        return summary
 
     def rebuild_run_report(self, folder: Path, approvals: dict[str, Any]) -> dict[str, Any]:
         """Recalculate report-only fields from an already verified successful artifact set."""

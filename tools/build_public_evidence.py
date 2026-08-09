@@ -17,10 +17,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from core.review_policy import approval_validation_line
 
-from verify_public_evidence import (
+from tools.verify_public_evidence import (
     CANONICAL,
     MPT_ENGINE_ARTIFACTS,
     REQUIRED,
+    SECRET_PATTERNS,
     _engine_contract,
     probe_video,
     scan_text,
@@ -31,6 +32,40 @@ from verify_public_evidence import (
 
 
 EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+MAINLAND_PHONE_PATTERN = SECRET_PATTERNS["mainland phone"]
+
+
+def sanitize_research_text(text: str) -> tuple[str, int, int]:
+    text, redacted_email_count = EMAIL_PATTERN.subn("[REDACTED_EMAIL]", text)
+    text, redacted_phone_count = MAINLAND_PHONE_PATTERN.subn("[REDACTED_PHONE]", text)
+    return text, redacted_email_count, redacted_phone_count
+
+
+def record_public_sanitization(
+    approvals: dict[str, object],
+    research_path: Path,
+    redacted_email_count: int,
+    redacted_phone_count: int,
+) -> None:
+    research_approval = approvals.get("research")
+    if not isinstance(research_approval, dict):
+        raise RuntimeError("源运行缺少研究审批记录")
+    research_approval["source_artifact_sha256"] = research_approval.get("artifact_sha256")
+    research_approval["public_artifact_sha256"] = sha256(research_path)
+    research_approval["public_sanitization"] = {
+        "email_addresses_redacted": redacted_email_count,
+        "mainland_phone_numbers_redacted": redacted_phone_count,
+        "scope": "source-page contact text only",
+    }
+
+
+def public_sanitization_validation_line(redacted_email_count: int, redacted_phone_count: int) -> str:
+    return (
+        "公开副本脱敏：research.json 中 "
+        f"{redacted_email_count} 处来源页联系邮箱替换为 [REDACTED_EMAIL]，"
+        f"{redacted_phone_count} 处大陆手机号替换为 [REDACTED_PHONE]；"
+        "原审批哈希保留在 approvals.json，公开副本哈希另行记录。"
+    )
 
 
 def main() -> int:
@@ -83,19 +118,18 @@ def main() -> int:
             shutil.copy2(source / name, temporary / name)
         research_path = temporary / "research.json"
         research_text = research_path.read_text(encoding="utf-8")
-        research_text, redacted_email_count = EMAIL_PATTERN.subn("[REDACTED_EMAIL]", research_text)
-        if redacted_email_count:
+        research_text, redacted_email_count, redacted_phone_count = sanitize_research_text(research_text)
+        if redacted_email_count or redacted_phone_count:
             research_path.write_text(research_text, encoding="utf-8")
-            approvals_path = temporary / "approvals.json"
-            approvals = json.loads(approvals_path.read_text(encoding="utf-8"))
-            research_approval = approvals.get("research", {})
-            research_approval["source_artifact_sha256"] = research_approval.get("artifact_sha256")
-            research_approval["public_artifact_sha256"] = sha256(research_path)
-            research_approval["public_sanitization"] = {
-                "email_addresses_redacted": redacted_email_count,
-                "scope": "source-page contact text only",
-            }
-            approvals_path.write_text(json.dumps(approvals, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        approvals_path = temporary / "approvals.json"
+        approvals = json.loads(approvals_path.read_text(encoding="utf-8"))
+        record_public_sanitization(
+            approvals,
+            research_path,
+            redacted_email_count,
+            redacted_phone_count,
+        )
+        approvals_path.write_text(json.dumps(approvals, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         source_findings = []
         for path in temporary.iterdir():
             source_findings.extend(scan_text(path))
@@ -127,7 +161,7 @@ def main() -> int:
             f"- 成片：`{media['duration_seconds']}` 秒，`{media['width']}×{media['height']}`，`{media['video_codec']}/{media['audio_codec']}`\n"
             f"- {subtitle_contract_text}\n"
             f"- {approval_line}\n"
-            f"- 公开副本脱敏：research.json 中 {redacted_email_count} 处来源页联系邮箱替换为 [REDACTED_EMAIL]；原审批哈希保留在 approvals.json，公开副本哈希另行记录。\n"
+            f"- {public_sanitization_validation_line(redacted_email_count, redacted_phone_count)}\n"
             "- 脱敏：包内不含 Key、Cookie、Authorization、本机绝对路径、原始配置、邮箱或手机号。\n"
             "- 清单：公开包加入本说明，并对公开副本重新计算逐文件大小与 SHA-256。\n"
         )

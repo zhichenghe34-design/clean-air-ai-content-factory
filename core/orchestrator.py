@@ -56,7 +56,15 @@ OPTIONAL_ENGINE_ARTIFACTS = [
     "material_sources.json",
     "engine_report.json",
 ]
-PUBLIC_ARTIFACTS = [*CANONICAL_ARTIFACTS, *OPTIONAL_ENGINE_ARTIFACTS]
+OPTIONAL_VISUAL_QC_ARTIFACTS = [
+    "contact-sheet.png",
+    "visual-qc.json",
+]
+PUBLIC_ARTIFACTS = [
+    *CANONICAL_ARTIFACTS,
+    *OPTIONAL_ENGINE_ARTIFACTS,
+    *OPTIONAL_VISUAL_QC_ARTIFACTS,
+]
 REVIEW_ARTIFACTS = {"research.json", "approved_script.json", "review.json"}
 LEGACY_CLEAN_AIR_MARKERS = ("甲醛", "除醛", "测醛", "室内空气", "装修污染")
 RUNNING_STATES = {"research_running", "content_running", "rendering"}
@@ -849,6 +857,10 @@ class JobStore:
             try:
                 for item in source_items:
                     shutil.copy2(source_dir / str(item["name"]), staging / str(item["name"]))
+                visual_qc_stage = getattr(runner, "run_visual_qc_stage", None)
+                if not callable(visual_qc_stage):
+                    raise RuntimeError("报告重建缺少正式成片视觉门禁")
+                visual_qc_stage(staging)
                 runner.rebuild_run_report(staging, job["approvals"])
                 self._write(staging / "approvals.json", job["approvals"])
                 manifest = self._build_manifest(job, run, staging, runner)

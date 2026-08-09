@@ -309,11 +309,26 @@ class GenericProductionTests(unittest.TestCase):
             (folder / "final.mp4").write_bytes(b"test-video")
             return {"ok": True, "mode": "fake", "duration_seconds": 52}
 
+        def visual_qc_adapter(video_path: Path, *, output_dir: Path, **_kwargs) -> dict:
+            (output_dir / "contact-sheet.png").write_bytes(b"test-contact-sheet")
+            payload = {
+                "schema_version": 1,
+                "status": "passed",
+                "sample_count": 12,
+                "blocking_reasons": [],
+                "review_reasons": [],
+            }
+            (output_dir / "visual-qc.json").write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
+            return payload
+
         runner = ProductionRunner(
             provider=None,
             research_config={"enabled": False},
             voice_adapter=voice_adapter,
             render_adapter=render_adapter,
+            visual_qc_adapter=visual_qc_adapter,
         )
         with tempfile.TemporaryDirectory() as folder_name:
             folder = Path(folder_name)
