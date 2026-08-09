@@ -27,7 +27,12 @@ from core.motion_runtime_contract import (
 )
 from core.production_engine import ENGINE_COMMIT, ENGINE_MODE, ENGINE_NAME, ENGINE_VERSION
 from core.provider import BudgetLedger, ProviderError
-from core.web_agent import EXACT_EVIDENCE_RULES, WebResearchAgent
+from core.web_agent import (
+    CLEAN_AIR_EXACT_TOPIC_MARKERS,
+    EXACT_EVIDENCE_RULES,
+    WebResearchAgent,
+    _capability_pack_has_clean_air_scope,
+)
 from core.web_tools import TrustedWebToolRegistry
 
 
@@ -400,7 +405,8 @@ SOURCE_PAGE_GENERIC_ATTRIBUTIONS = (
     "该文章称",
 )
 
-LEGACY_DOMAIN_TERMS = ("甲醛", "除醛", "测醛", "新房", "入住", "检测报告", "试验舱", "实验舱")
+LEGACY_BRAND_TERMS = ("净界",)
+CLEAN_AIR_DOMAIN_TERMS = CLEAN_AIR_EXACT_TOPIC_MARKERS
 
 
 class ScriptRevisionRequired(RuntimeError):
@@ -448,6 +454,18 @@ def _pack_report(capability_pack: dict[str, Any] | None) -> dict[str, Any]:
 
 def _is_legacy_pack(capability_pack: dict[str, Any] | None) -> bool:
     return _pack_id(capability_pack) == "legacy-clean-air-v2"
+
+
+def _trusted_pack_allows_clean_air_domain_terms(
+    capability_pack: dict[str, Any] | None,
+) -> bool:
+    """Allow clean-air vocabulary only for a validated, topic-bound local pack."""
+
+    snapshot = _pack_snapshot(capability_pack)
+    goal = str(snapshot.get("goal", ""))
+    return _capability_pack_has_clean_air_scope(capability_pack) and any(
+        marker in goal for marker in CLEAN_AIR_EXACT_TOPIC_MARKERS
+    )
 
 
 def _string_list(value: Any) -> list[str]:
@@ -1408,7 +1426,10 @@ def review_script(
     snapshot = _pack_snapshot(capability_pack)
     pack_text = json.dumps(snapshot, ensure_ascii=False)
     if isinstance(capability_pack, dict) and not _is_legacy_pack(capability_pack):
-        leaked = [term for term in LEGACY_DOMAIN_TERMS if term in script and term not in pack_text]
+        leaked = [term for term in LEGACY_BRAND_TERMS if term in script and term not in pack_text]
+        if not _trusted_pack_allows_clean_air_domain_terms(capability_pack):
+            leaked.extend(term for term in CLEAN_AIR_DOMAIN_TERMS if term in script)
+        leaked = list(dict.fromkeys(leaked))
         if leaked:
             warnings.append({
                 "type": "legacy_domain_leak",

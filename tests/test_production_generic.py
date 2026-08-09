@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from core.capability_pack import local_capability_pack
 from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
 from core.production import (
     ProductionRunner,
@@ -126,6 +127,68 @@ class GenericProductionTests(unittest.TestCase):
             result = review_script(script, [], GENERIC_PACK, [])
             self.assertTrue(result["blocked"], script)
             self.assertTrue(any(item["type"] == warning_type for item in result["warnings"]), script)
+
+    def test_trusted_dynamic_clean_air_pack_allows_clean_air_terms_without_weakening_other_scopes(self):
+        goal = (
+            "为上海本地除甲醛服务企业制作一条面向新装修家庭的52秒竖屏科普视频，"
+            "解释为什么数值低不等于安全，并明确证据边界。"
+        )
+        clean_air_pack = local_capability_pack(goal)
+        finding = {
+            "finding_id": "finding-cctv-page-formal-e2e",
+            "claim": "央视网转载的上观新闻文章称：甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "allowed_use": "可以带归属地说明：该报道认为检测盒只能看出大致范围。",
+            "source_label": "央视网转载上观新闻页面",
+            "claim_scope": "source_page_statement_only",
+            "source_scope": "source_page_statement_only",
+            "independent_fact_supported": False,
+            "strict_review_status": "proven_for_limited_use",
+            "script_eligible": True,
+            "evidence": [{
+                "source_type": "source_page",
+                "source_scope": "source_page_statement_only",
+                "excerpt": "甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            }],
+        }
+        script = (
+            "先别急着下结论，先看哪些内容已经被证据支持。"
+            "央视网转载的上观新闻文章称：甲醛检测盒只能看出室内甲醛浓度的大致范围。"
+            "这项结论只适用于原证据的对象、时间和范围，不能外推。"
+            "最后交给刚完成装修、准备入住新房的上海家庭复核。"
+        )
+
+        allowed = review_script(script, [finding], clean_air_pack, [])
+        self.assertFalse(allowed["blocked"], allowed["warnings"])
+        self.assertFalse(any(
+            item["type"] == "legacy_domain_leak" for item in allowed["warnings"]
+        ))
+        clean_air_synonyms = review_script(
+            "除醛科普请保存检测报告。", [], clean_air_pack, []
+        )
+        self.assertFalse(clean_air_synonyms["blocked"], clean_air_synonyms["warnings"])
+
+        generic_pack = local_capability_pack("为本地餐饮门店制作一条新品介绍短视频")
+        ordinary_terms = review_script(
+            "新房客户准备入住，检测报告随后归档。", [], generic_pack, []
+        )
+        self.assertFalse(ordinary_terms["blocked"], ordinary_terms["warnings"])
+
+        for pack in (
+            generic_pack,
+            {**clean_air_pack, "sha256": "0" * 64},
+        ):
+            with self.subTest(pack_id=pack["id"], industry=pack["snapshot"]["industry"]):
+                blocked = review_script("甲醛与除醛科普。", [], pack, [])
+                self.assertTrue(blocked["blocked"])
+                self.assertTrue(any(
+                    item["type"] == "legacy_domain_leak" for item in blocked["warnings"]
+                ))
+
+        leaked_brand = review_script("净界服务说明。", [], clean_air_pack, [])
+        self.assertTrue(leaked_brand["blocked"])
+        self.assertTrue(any(
+            item["type"] == "legacy_domain_leak" for item in leaked_brand["warnings"]
+        ))
 
     def test_unapproved_qualitative_fact_is_blocked_and_exact_finding_can_support_it(self):
         claim = "咖啡豆来自埃塞俄比亚高海拔产区，因此风味更明亮"
