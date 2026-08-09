@@ -20,6 +20,11 @@ from typing import Any
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, ImageStat
 
 from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
+from core.motion_runtime_contract import (
+    HYPERFRAMES_RENDERER,
+    HYPERFRAMES_VERSION,
+    MOTION_ENGINE_NAME,
+)
 from core.production_engine import ENGINE_COMMIT, ENGINE_MODE, ENGINE_NAME, ENGINE_VERSION
 from core.provider import BudgetLedger, ProviderError
 from core.web_agent import EXACT_EVIDENCE_RULES, WebResearchAgent
@@ -27,6 +32,139 @@ from core.web_tools import TrustedWebToolRegistry
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PRODUCTION_MODES = frozenset({"motion", "footage", "hybrid", "simple"})
+MOTION_ENGINE_MODE = "local_cli"
+
+
+def resolve_production_mode(
+    production_input: dict[str, Any] | None,
+    *,
+    legacy_engine_adapter: bool = False,
+) -> str:
+    """Resolve the new mode contract while retaining narrow v0.2 compatibility."""
+
+    values = production_input or {}
+    mode = values.get("production_mode")
+    if mode is None:
+        if legacy_engine_adapter:
+            # Before production_mode existed, explicitly injecting the coarse
+            # production adapter was the only way to select footage rendering.
+            return "footage"
+        return "simple" if values.get("render_mode") == "simple" else "motion"
+    if not isinstance(mode, str) or mode not in PRODUCTION_MODES:
+        raise RuntimeError("生产模式无效")
+    return mode
+
+
+def production_mode_contract(mode: str) -> dict[str, Any]:
+    """Return legacy fields canonicalized for a selected production mode."""
+
+    if mode == "motion":
+        return {"production_mode": mode, "render_mode": "animated", "require_animation": True}
+    if mode in {"footage", "hybrid"}:
+        return {"production_mode": mode, "render_mode": "animated", "require_animation": False}
+    if mode == "simple":
+        return {"production_mode": mode, "render_mode": "simple", "require_animation": False}
+    raise RuntimeError("生产模式无效")
+
+
+def _resolve_hyperframes_runtime() -> dict[str, Any]:
+    """Resolve an offline CLI runtime without npm/npx or system-browser fallback."""
+
+    configured_node = os.environ.get("SHIYI_NODE_EXECUTABLE", "").strip()
+    configured_cli = os.environ.get("SHIYI_HYPERFRAMES_CLI", "").strip()
+    configured_browser = os.environ.get("HYPERFRAMES_BROWSER_PATH", "").strip()
+    packaged = bool(configured_node or configured_cli or configured_browser) or (
+        os.environ.get("SHIYI_PACKAGED_RUNTIME", "").strip() == "1"
+    )
+    if packaged:
+        if not configured_node or not configured_cli or not configured_browser:
+            raise FileNotFoundError("封包HyperFrames运行时不完整")
+        node = Path(configured_node).expanduser()
+        cli = Path(configured_cli).expanduser()
+        browser = Path(configured_browser).expanduser()
+        if not node.is_file() or not cli.is_file() or not browser.is_file():
+            raise FileNotFoundError("封包HyperFrames运行时文件不可用")
+        runtime_version = _verified_hyperframes_version(cli)
+        return {
+            "node": node,
+            "cli": cli,
+            "browser": browser,
+            "runtime_source": "packaged",
+            "version": runtime_version,
+            "renderer": HYPERFRAMES_RENDERER,
+        }
+
+    # Development mode may use only the already-installed, pinned repository
+    # dependency.  It never downloads packages and never invokes npm/npx.
+    discovered_node = shutil.which("node.exe" if os.name == "nt" else "node")
+    cli = REPO_ROOT / "node_modules" / "hyperframes" / "bin" / "hyperframes.mjs"
+    if not discovered_node or not cli.is_file():
+        raise FileNotFoundError("开发模式HyperFrames运行时未安装；请离线执行项目锁定依赖安装")
+    runtime_version = _verified_hyperframes_version(cli)
+    return {
+        "node": Path(discovered_node),
+        "cli": cli,
+        "browser": None,
+        "runtime_source": "development_repo",
+        "version": runtime_version,
+        "renderer": HYPERFRAMES_RENDERER,
+    }
+
+
+def _verified_hyperframes_version(cli: Path) -> str:
+    """Bind an executable CLI to the shared, pinned runtime identity."""
+
+    package_json = cli.parent.parent / "package.json"
+    if not package_json.is_file():
+        raise FileNotFoundError("HyperFrames运行时缺少package.json版本身份")
+    try:
+        package = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("HyperFrames运行时package.json无法解析") from exc
+    actual_version = package.get("version") if isinstance(package, dict) else None
+    if actual_version != HYPERFRAMES_VERSION:
+        raise ValueError(
+            f"HyperFrames运行时版本不匹配：要求{HYPERFRAMES_VERSION}"
+        )
+    return HYPERFRAMES_VERSION
+
+
+def _hyperframes_commands(quality: str) -> tuple[list[str], list[str], dict[str, Any]]:
+    runtime = _resolve_hyperframes_runtime()
+    prefix = [str(runtime["node"]), str(runtime["cli"])]
+    return (
+        [*prefix, "check", "--strict"],
+        [
+            *prefix,
+            "render",
+            "--output",
+            "renders/final.mp4",
+            "--quality",
+            quality,
+            "--workers",
+            "2",
+            "--no-best-effort",
+            "--strict",
+        ],
+        runtime,
+    )
+
+
+def _injected_render_adapter_identity(adapter: Any) -> dict[str, Any]:
+    """Describe a test hook without allowing it to impersonate HyperFrames."""
+
+    module = str(getattr(adapter, "__module__", type(adapter).__module__) or "").strip()
+    name = str(
+        getattr(adapter, "__qualname__", getattr(adapter, "__name__", type(adapter).__qualname__))
+        or "render_adapter"
+    ).strip()
+    callable_name = ".".join(part for part in (module, name) if part)[:240]
+    return {
+        "kind": "injected_test_adapter",
+        "callable": callable_name or "render_adapter",
+        "formal_engine": False,
+    }
 
 
 def _file_sha256(path: Path) -> str:
@@ -75,8 +213,9 @@ DEFAULT_INPUT: dict[str, Any] = {
     "pattern_card_ids": [],
     "voice_engine": "voxcpm2",
     "aspect_ratio": "9:16",
+    "production_mode": "motion",
     "render_mode": "animated",
-    "require_animation": False,
+    "require_animation": True,
     "enable_web_research": True,
     "source_urls": [],
 }
@@ -1404,20 +1543,33 @@ class ProductionRunner:
         started_at = datetime.now().astimezone().isoformat(timespec="seconds")
         config = dict(DEFAULT_INPUT)
         config.update(production_input or {})
+        production_mode = resolve_production_mode(
+            production_input,
+            legacy_engine_adapter=(
+                self.production_engine_adapter is not None
+                and not isinstance((production_input or {}).get("production_mode"), str)
+            ),
+        )
+        config.update(production_mode_contract(production_mode))
         if approvals.get("research", {}).get("status") != "approved" or approvals.get("compliance", {}).get("status") != "approved":
             raise RuntimeError("研究与合规阶段审查门禁尚未全部批准")
+        if production_mode == "hybrid":
+            raise RuntimeError("hybrid生产模式尚未实现，不能降级或伪装为其他引擎")
         approved = json.loads((folder / "approved_script.json").read_text(encoding="utf-8"))
         review = json.loads((folder / "review.json").read_text(encoding="utf-8"))
         if review.get("status") == "blocked" or review.get("blocked"):
             raise RuntimeError("合规审核仍处于阻断状态")
         segments = self._segments(config, str(approved["script"]))
         production_engine_report: dict[str, Any] | None = None
-        if self.production_engine_adapter is not None:
+        if production_mode == "footage":
+            if self.production_engine_adapter is None:
+                raise RuntimeError("footage生产模式要求已验证的MoneyPrinterTurbo适配器")
             engine_stage = self._run_production_engine(folder, approved, config, segments)
             voice_report = engine_stage["voice"]
             duration = float(engine_stage["duration_seconds"])
             render_report = engine_stage["render"]
-            production_engine_report = engine_stage["engine"]
+            production_engine_report = dict(engine_stage["engine"])
+            production_engine_report["selected_mode"] = "footage"
         else:
             voice_report = self.voice_adapter(folder, approved["script"], config) if self.voice_adapter else self._synthesize_voice(folder, approved["script"], config)
             if not (folder / "voice.wav").is_file():
@@ -1431,24 +1583,54 @@ class ProductionRunner:
             config["topic"], config["audience"], segments, duration, capability_pack=capability_pack
         )
         atomic_json(folder / "motion_plan.json", motion_plan)
-        if self.production_engine_adapter is None:
-            render_mode = str(config.get("render_mode", "animated"))
+        injected_adapter_identity: dict[str, Any] | None = None
+        if production_mode != "footage":
             if self.render_adapter:
+                injected_adapter_identity = _injected_render_adapter_identity(self.render_adapter)
                 render_report = self.render_adapter(folder, motion_plan, config)
+                if not isinstance(render_report, dict):
+                    raise RuntimeError("渲染适配器返回了无效诊断报告")
                 if not (folder / "final.mp4").is_file():
                     raise RuntimeError("渲染适配器没有生成final.mp4")
-            elif render_mode == "animated":
-                try:
-                    render_report = self._render_animated_video(folder, motion_plan, config)
-                except Exception as exc:
-                    (folder / "animation_fallback.log").write_text(str(exc), encoding="utf-8")
-                    if config.get("require_animation"):
-                        raise
-                    render_report = self._render_video(folder, segments, captions, duration, config)
-                    render_report.update({"mode": "static_fallback", "fallback_reason": str(exc)})
+                render_report["diagnostic_only"] = True
+                render_report["renderer_identity"] = dict(injected_adapter_identity)
+            elif production_mode == "motion":
+                # Motion is the formal default and is deliberately fail-closed:
+                # HyperFrames failure must never become a static or MPT result.
+                render_report = self._render_animated_video(folder, motion_plan, config)
             else:
                 render_report = self._render_video(folder, segments, captions, duration, config)
                 render_report["mode"] = "static_requested"
+            if production_mode == "motion":
+                if injected_adapter_identity is None:
+                    production_engine_report = {
+                        "name": MOTION_ENGINE_NAME,
+                        "version": HYPERFRAMES_VERSION,
+                        "renderer": HYPERFRAMES_RENDERER,
+                        "mode": MOTION_ENGINE_MODE,
+                        "selected_mode": "motion",
+                        "health": "completed",
+                    }
+                else:
+                    production_engine_report = {
+                        "name": "Injected render adapter",
+                        "version": None,
+                        "mode": "diagnostic_adapter",
+                        "selected_mode": "motion",
+                        "health": "diagnostic_only",
+                        "adapter_identity": dict(injected_adapter_identity),
+                    }
+            else:
+                render_report["diagnostic_only"] = True
+                production_engine_report = {
+                    "name": "Simple diagnostic renderer",
+                    "version": "internal",
+                    "mode": "diagnostic",
+                    "selected_mode": "simple",
+                    "health": "diagnostic_only",
+                }
+
+        render_report["production_mode"] = production_mode
 
         render_report["visual_qc"] = self.run_visual_qc_stage(folder)
 
@@ -1467,8 +1649,9 @@ class ProductionRunner:
             item for item in research.get("findings", []) if str(item.get("finding_id")) in approved_ids
         ]
         report = {
-            "status": "complete",
+            "status": "diagnostic_only" if production_mode == "simple" else "complete",
             "topic": config["topic"],
+            "production_mode": production_mode,
             "started_at": started_at,
             "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "wall_clock_seconds": elapsed,
@@ -2246,33 +2429,29 @@ class ProductionRunner:
         }
 
     def _render_animated_video(self, folder: Path, motion_plan: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
-        if not npm:
-            raise FileNotFoundError("未找到npm，无法运行受信HyperFrames动画渲染器")
-        executable = REPO_ROOT / "node_modules" / ".bin" / ("hyperframes.cmd" if os.name == "nt" else "hyperframes")
-        if not executable.is_file():
-            raise FileNotFoundError("HyperFrames适配器未安装；请先在项目根目录执行npm ci，运行时禁止自动下载")
         project_dir = folder / "animation_project"
         capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
         build_report = build_motion_project(
             project_dir, motion_plan, folder / "voice.wav", capability_pack=capability_pack
         )
+        quality = str(config.get("animation_quality", "standard"))
+        check_command, render_command, runtime = _hyperframes_commands(quality)
         env = os.environ.copy()
-        env["PATH"] = str(executable.parent) + os.pathsep + env.get("PATH", "")
+        if runtime["browser"] is not None:
+            env["HYPERFRAMES_BROWSER_PATH"] = str(runtime["browser"])
         if FFMPEG.exists():
             env["PATH"] = str(FFMPEG.parent) + os.pathsep + env.get("PATH", "")
 
         check = subprocess.run(
-            [npm, "run", "check"], cwd=project_dir, env=env,
+            check_command, cwd=project_dir, env=env,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
         )
         (folder / "animation_check.log").write_text((check.stdout or "") + "\n" + (check.stderr or ""), encoding="utf-8")
         if check.returncode:
             raise RuntimeError(f"动画工程检查失败: {(check.stderr or check.stdout or '')[-1200:]}")
         output = project_dir / "renders" / "final.mp4"
-        quality = str(config.get("animation_quality", "standard"))
         render = subprocess.run(
-            [npm, "run", "render", "--", "--output", "renders/final.mp4", "--quality", quality, "--workers", "2", "--strict"],
+            render_command,
             cwd=project_dir, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800,
         )
         (folder / "animation_render.log").write_text((render.stdout or "") + "\n" + (render.stderr or ""), encoding="utf-8")
@@ -2302,6 +2481,9 @@ class ProductionRunner:
             "width": video_stream.get("width"),
             "height": video_stream.get("height"),
             "fps": video_stream.get("r_frame_rate"),
+            "runtime_source": runtime["runtime_source"],
+            "runtime_version": HYPERFRAMES_VERSION,
+            "renderer": HYPERFRAMES_RENDERER,
             "motion_validation": build_report["validation"],
             "subtitle_mode": "animated_caption_overlay_and_sidecar_srt",
         }

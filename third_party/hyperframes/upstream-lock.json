@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "HyperFrames",
+  "repository": "https://github.com/heygen-com/hyperframes",
+  "upstream_tag": "v0.7.86",
+  "upstream_commit": "1a52351f05237433006e6ca92db18feafed16fed",
+  "npm_package": "hyperframes",
+  "npm_version": "0.7.86",
+  "npm_resolved": "https://registry.npmjs.org/hyperframes/-/hyperframes-0.7.86.tgz",
+  "npm_integrity": "sha512-R8Vds5hY9XULMsCGUa+qynC7F0tL7KZyDaL6cgQ4xyJAATC9fOIPgRMOBkOHYd9JOntRqbR9bFSsfK7mYJjaow==",
+  "license": "Apache-2.0",
+  "license_source": "https://raw.githubusercontent.com/heygen-com/hyperframes/v0.7.86/LICENSE",
+  "license_sha256": "4259155FB06F127687EE7B0A8A3682D45132DB0F2DA26CBC0B7A2D1E796436B8"
+}

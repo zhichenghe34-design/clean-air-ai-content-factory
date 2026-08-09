@@ -306,6 +306,206 @@ class CombinedLauncherTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, "MPT_HEALTH_TIMEOUT")
 
+    def test_motion_launcher_mode_uses_only_bundled_tools_and_starts_without_mpt(self):
+        node = self.project / "runtime" / "node" / "node.exe"
+        cli = self.project / "runtime" / "hyperframes" / "node_modules" / "hyperframes" / "bin" / "hyperframes.mjs"
+        browser = self.project / "runtime" / "browser" / "chrome-headless-shell.exe"
+        for path in (node, cli, browser):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"fixture")
+        motion = LauncherConfig(
+            **{
+                **self.config.__dict__,
+                "mpt_root": self.root / "missing-mpt",
+                "mpt_python": self.root / "missing-mpt" / "python.exe",
+                "material_root": self.root / "missing-mpt" / "materials",
+                "motion_runtime_required": True,
+                "node_executable": node,
+                "hyperframes_cli": cli,
+                "hyperframes_browser": browser,
+                "node_version": "22.13.1",
+                "hyperframes_version": "0.7.86",
+                "browser_version": "152.0.7928.2",
+            }
+        )
+        validate_preinstalled_layout(motion)
+        with self.assertRaises(LauncherError) as wrong_hyperframes:
+            validate_preinstalled_layout(
+                LauncherConfig(**{**motion.__dict__, "hyperframes_version": "0.7.103"})
+            )
+        self.assertEqual("HYPERFRAMES_VERSION_MISMATCH", wrong_hyperframes.exception.code)
+        probe_commands = []
+        probe_preinstalled_runtimes(
+            motion,
+            runner=lambda command, **_kwargs: (
+                probe_commands.append(list(command))
+                or subprocess.CompletedProcess(
+                    command,
+                    0,
+                    (
+                        b"v22.13.1"
+                        if command == [str(node), "--version"]
+                        else b"0.7.86"
+                        if command == [str(node), str(cli), "--version"]
+                        else b"Chrome Headless Shell 152.0.7928.2"
+                    ),
+                    b"",
+                )
+            ),
+        )
+        self.assertIn([str(node), "--version"], probe_commands)
+        self.assertIn([str(node), str(cli), "--version"], probe_commands)
+        self.assertIn([str(browser), "--version"], probe_commands)
+        environment = build_app_environment(
+            {
+                "PATH": "host-npm-and-chrome",
+                "SYSTEMROOT": "WindowsRoot",
+                "NODE_OPTIONS": "--import=host-loader.mjs",
+                "NODE_PATH": "host-node-modules",
+                "NPM_CONFIG_REGISTRY": "https://registry.invalid",
+                "COREPACK_HOME": "host-corepack",
+                "HTTPS_PROXY": "http://proxy.invalid",
+                "SHIYI_MOTION_HEALTH_VERIFIED": "1",
+                "HYPERFRAME_RUNTIME_URL": "https://runtime.invalid",
+                "HYPERFRAMES_PREVIEW_HOST": "preview.invalid",
+                "PRODUCER_ENDPOINT": "https://producer.invalid",
+                "KEEP_TEMP": "1",
+                "GEMINI_API_KEY": "model-secret",
+                "OPENROUTER_API_KEY": "model-secret",
+                "HF_TOKEN": "model-secret",
+                "MODEL_PROVIDER": "host-model",
+                "PUPPETEER_EXECUTABLE_PATH": "host-browser.exe",
+            },
+            motion,
+            app_port=18765,
+            mpt_port=19080,
+        )
+        self.assertEqual("0", environment["SHIYI_MPT_ENABLED"])
+        self.assertEqual(str(node), environment["SHIYI_NODE_EXECUTABLE"])
+        self.assertEqual(str(cli), environment["SHIYI_HYPERFRAMES_CLI"])
+        self.assertEqual(str(browser), environment["HYPERFRAMES_BROWSER_PATH"])
+        self.assertNotIn("host-npm-and-chrome", environment["PATH"])
+        for stripped in (
+            "NODE_OPTIONS",
+            "NODE_PATH",
+            "NPM_CONFIG_REGISTRY",
+            "COREPACK_HOME",
+            "HTTPS_PROXY",
+            "SHIYI_MOTION_HEALTH_VERIFIED",
+            "HYPERFRAME_RUNTIME_URL",
+            "HYPERFRAMES_PREVIEW_HOST",
+            "PRODUCER_ENDPOINT",
+            "KEEP_TEMP",
+            "GEMINI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "HF_TOKEN",
+            "MODEL_PROVIDER",
+            "PUPPETEER_EXECUTABLE_PATH",
+        ):
+            self.assertNotIn(stripped, environment)
+        for name in (
+            "HYPERFRAMES_NO_UPDATE_CHECK",
+            "HYPERFRAMES_NO_AUTO_INSTALL",
+            "HYPERFRAMES_NO_TELEMETRY",
+            "HYPERFRAMES_SKIP_SKILLS",
+            "DO_NOT_TRACK",
+            "NO_UPDATE_NOTIFIER",
+            "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
+        ):
+            self.assertEqual("1", environment[name])
+        self.assertEqual("true", environment["NPM_CONFIG_OFFLINE"])
+        self.assertEqual("true", environment["PUPPETEER_SKIP_DOWNLOAD"])
+
+        verified_environment = build_app_environment(
+            {"SYSTEMROOT": "WindowsRoot"},
+            motion,
+            app_port=18765,
+            mpt_port=19080,
+            motion_health_verified=True,
+        )
+        self.assertEqual("1", verified_environment["SHIYI_MOTION_HEALTH_VERIFIED"])
+
+        created = []
+        app_process = FakeProcess([None, 0])
+
+        def fake_popen(command, **kwargs):
+            created.append((list(command), kwargs))
+            return app_process
+
+        with (
+            patch("scripts.launch_combined.select_loopback_port", side_effect=[18765, 19080]),
+            patch("scripts.launch_combined._emit") as emit,
+        ):
+            result = run_combined(
+                motion,
+                popen_factory=fake_popen,
+                health_waiter=lambda *_args, **_kwargs: self.fail("MPT must not be probed"),
+                workbench_health_waiter=lambda *_args, **_kwargs: None,
+                process_terminator=lambda _process: None,
+                sleeper=lambda _seconds: None,
+                motion_health_verified=True,
+            )
+        self.assertEqual(0, result)
+        self.assertEqual(1, len(created))
+        self.assertEqual("0", created[0][1]["env"]["SHIYI_MPT_ENABLED"])
+        self.assertEqual("1", created[0][1]["env"]["SHIYI_MOTION_HEALTH_VERIFIED"])
+        mpt_health_file = Path(created[0][1]["env"]["SHIYI_MPT_HEALTH_FILE"])
+        self.assertEqual(
+            {"healthy": False, "schema_version": 1},
+            json.loads(mpt_health_file.read_text(encoding="utf-8")),
+        )
+        payload = emit.call_args.args[0]
+        self.assertEqual("ready", payload["motion_engine"]["health"])
+        self.assertEqual("disabled", payload["production_engine"]["health"])
+
+    def test_motion_primary_revokes_mpt_health_if_optional_engine_crashes(self):
+        node = self.project / "runtime/node/node.exe"
+        cli = self.project / "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs"
+        browser = self.project / "runtime/browser/chrome-headless-shell.exe"
+        for path in (node, cli, browser):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"fixture")
+        motion = LauncherConfig(
+            **{
+                **self.config.__dict__,
+                "motion_runtime_required": True,
+                "node_executable": node,
+                "hyperframes_cli": cli,
+                "hyperframes_browser": browser,
+                "node_version": "22.13.1",
+                "hyperframes_version": "0.7.86",
+                "browser_version": "152.0.7928.2",
+            }
+        )
+        processes = [FakeProcess([None, 1]), FakeProcess([None, 0])]
+        created = []
+
+        def fake_popen(command, **kwargs):
+            created.append((list(command), kwargs))
+            return processes[len(created) - 1]
+
+        with (
+            patch("scripts.launch_combined.select_loopback_port", side_effect=[18765, 19080]),
+            patch("scripts.launch_combined._emit"),
+        ):
+            result = run_combined(
+                motion,
+                popen_factory=fake_popen,
+                health_waiter=lambda *_args, **_kwargs: None,
+                workbench_health_waiter=lambda *_args, **_kwargs: None,
+                process_terminator=lambda _process: None,
+                sleeper=lambda _seconds: None,
+                motion_health_verified=True,
+            )
+        self.assertEqual(0, result)
+        app_environment = created[1][1]["env"]
+        self.assertEqual("1", app_environment["SHIYI_MPT_HEALTH_VERIFIED"])
+        health_path = Path(app_environment["SHIYI_MPT_HEALTH_FILE"])
+        self.assertEqual(
+            {"healthy": False, "schema_version": 1},
+            json.loads(health_path.read_text(encoding="utf-8")),
+        )
+
     def test_controller_starts_engine_before_app_sets_exact_cors_and_cleans_both(self):
         created = []
         processes = [FakeProcess([None, None]), FakeProcess([None, 0])]

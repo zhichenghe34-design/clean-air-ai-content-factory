@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import copy
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from core.animation_registry import (
+    AnimationRegistry,
+    AnimationRegistryError,
+    DEFAULT_PACK_PATH,
+    canonical_sha256,
+    validate_animation_pack,
+)
+from core.motion_director import (
+    FONT_BOLD_FILE,
+    FONT_REGULAR_FILE,
+    MotionPlanError,
+    TEMPLATE_FILE,
+    build_motion_plan,
+    build_motion_project,
+    validate_motion_plan,
+)
+
+
+def _segments(count: int = 6) -> list[dict[str, str]]:
+    captions = [
+        "先明确用户真正需要解决的问题。",
+        "把流程拆成可检查的执行步骤。",
+        "时间与阶段必须按顺序记录。",
+        "每条结论都要核验资料来源。",
+        "比较方案时说明各自适用边界。",
+        "最后给出下一步行动原则。",
+        "未知风险保持未知，不用动画替代证据。",
+        "收束所有依据并形成明确判断。",
+    ]
+    return [
+        {"kicker": f"要点{i}", "title": f"可信动画{i}", "caption": captions[i - 1]}
+        for i in range(1, count + 1)
+    ]
+
+
+class AnimationRegistryTests(unittest.TestCase):
+    def test_bundled_pack_is_hash_bound_and_families_are_explicit(self):
+        registry = AnimationRegistry.load()
+        summary = registry.summary()
+        self.assertGreaterEqual(summary["block_count"], 12)
+        self.assertGreaterEqual(summary["renderer_family_count"], 5)
+        families = {block["renderer_family"] for block in registry.pack["blocks"]}
+        self.assertEqual(families, {family["id"] for family in registry.pack["renderer_families"]})
+        self.assertEqual(summary["renderer"], "hyperframes-waapi-v1")
+
+    def test_pack_rejects_unknown_fields_and_hash_tampering(self):
+        raw = json.loads(DEFAULT_PACK_PATH.read_text(encoding="utf-8"))
+        with_unknown = copy.deepcopy(raw)
+        with_unknown["download_url"] = "not-allowed"
+        with self.assertRaises(AnimationRegistryError):
+            validate_animation_pack(with_unknown)
+        tampered = copy.deepcopy(raw)
+        tampered["blocks"][0]["label"] = "被篡改"
+        with self.assertRaisesRegex(AnimationRegistryError, "哈希不匹配"):
+            validate_animation_pack(tampered)
+
+    def test_semantic_selection_is_whitelisted_and_avoids_adjacent_repeat(self):
+        registry = AnimationRegistry.load()
+        first, matched = registry.select(
+            semantic_tags=["metric", "evidence"],
+            pack_mode="generic",
+            duration_seconds=7.0,
+            preferred_ids=["stat-ring", "signal-grid"],
+        )
+        second, _ = registry.select(
+            semantic_tags=["metric", "evidence"],
+            pack_mode="generic",
+            duration_seconds=7.0,
+            previous_block_id=first["id"],
+            preferred_ids=[first["id"], "signal-grid", "magnifier"],
+        )
+        self.assertTrue(matched)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertIn(second["id"], {block["id"] for block in registry.pack["blocks"]})
+
+    def test_motion_plan_records_and_validates_selection_receipt(self):
+        plan = build_motion_plan("企业服务怎样建立信任？", "企业客户", _segments(), 48.0)
+        report = validate_motion_plan(plan)
+        self.assertEqual(report["registry_sha256"], plan["animation_registry"]["sha256"])
+        self.assertEqual(plan["animation_pack_mode"], "generic")
+        self.assertEqual(plan["selection_receipt"]["animation_pack_mode"], "generic")
+        self.assertEqual(len(plan["selection_receipt"]["selections"]), len(plan["scenes"]))
+        self.assertTrue(all(
+            left["visual_type"] != right["visual_type"]
+            for left, right in zip(plan["scenes"], plan["scenes"][1:])
+        ))
+        tampered = copy.deepcopy(plan)
+        tampered["selection_receipt"]["selections"][0]["renderer_family"] = "forged-family"
+        with self.assertRaises(MotionPlanError):
+            validate_motion_plan(tampered)
+
+    def test_generic_plan_rejects_legacy_only_block_even_with_rehashed_receipt(self):
+        registry = AnimationRegistry.load()
+        plan = build_motion_plan("企业服务怎样建立信任？", "企业客户", _segments(), 48.0)
+        tampered = copy.deepcopy(plan)
+        scene = tampered["scenes"][2]
+        block = registry.get("liquid-chamber")
+        scene.update({
+            "visual_type": block["id"],
+            "renderer_family": block["renderer_family"],
+            "semantic_tags": ["space", "metric", "boundary"],
+            "primary_motion": block["motion"]["primary"],
+            "secondary_motion": block["motion"]["secondary"],
+            "transition": block["motion"]["transition"],
+        })
+        selection = tampered["selection_receipt"]["selections"][2]
+        selection.update({
+            "block_id": block["id"],
+            "renderer_family": block["renderer_family"],
+            "semantic_tags": list(scene["semantic_tags"]),
+            "matched_tags": sorted(set(scene["semantic_tags"]).intersection(block["semantic_tags"])),
+        })
+        receipt = tampered["selection_receipt"]
+        receipt["sha256"] = canonical_sha256({key: value for key, value in receipt.items() if key != "sha256"})
+        with self.assertRaisesRegex(MotionPlanError, "animation_pack_mode"):
+            validate_motion_plan(tampered)
+
+    def test_receipt_rejects_forged_or_missing_matched_tags_after_rehash(self):
+        plan = build_motion_plan("企业服务怎样建立信任？", "企业客户", _segments(), 48.0)
+        for mutation in ("forged", "empty", "missing"):
+            with self.subTest(mutation=mutation):
+                tampered = copy.deepcopy(plan)
+                selection = tampered["selection_receipt"]["selections"][0]
+                if mutation == "forged":
+                    selection["matched_tags"] = ["risk"]
+                elif mutation == "empty":
+                    selection["matched_tags"] = []
+                else:
+                    selection.pop("matched_tags")
+                receipt = tampered["selection_receipt"]
+                receipt["sha256"] = canonical_sha256({key: value for key, value in receipt.items() if key != "sha256"})
+                with self.assertRaises(MotionPlanError):
+                    validate_motion_plan(tampered)
+
+    def test_legacy_plan_reserves_orbit_summary_for_the_final_scene(self):
+        plan = build_motion_plan(
+            "除醛数据怎样核验？",
+            "新房家庭",
+            _segments(7),
+            52.0,
+            capability_pack={"id": "legacy-clean-air-v2"},
+        )
+        self.assertEqual(plan["scenes"][-1]["visual_type"], "orbit-summary")
+        self.assertEqual(plan["animation_pack_mode"], "legacy_clean_air")
+        self.assertEqual(plan["selection_receipt"]["animation_pack_mode"], "legacy_clean_air")
+        self.assertNotIn("orbit-summary", [scene["visual_type"] for scene in plan["scenes"][:-1]])
+        self.assertIn("liquid-chamber", [scene["visual_type"] for scene in plan["scenes"][:-1]])
+        validate_motion_plan(plan)
+
+    def test_natural_legacy_seven_scene_plan_reserves_space_block_without_collision(self):
+        titles = [
+            "装修后先别急着下结论",
+            "一个数字不等于安全结论",
+            "先看报告的采样条件",
+            "把检测流程拆开核对",
+            "比较工具的适用边界",
+            "结论不能代替专业检测",
+            "给家庭一份行动清单",
+        ]
+        captions = [
+            "装修完成后，气味和体感只能作为线索，不能直接说明室内空气安全。",
+            "检测数字要结合房间空间、采样时间和方法理解，单个数字不能代表安全。",
+            "查看报告时先核对采样点、采样时长、环境条件和资料来源。",
+            "按准备、采样、分析和记录的顺序逐项检查，不跳过关键步骤。",
+            "不同工具适合不同场景，比较时要说明精度、范围和使用限制。",
+            "内容只能帮助整理判断框架，不能代替具备资质的专业检测。",
+            "保存完整报告、保持合理通风，并在重要决策前咨询专业人员。",
+        ]
+        segments = [
+            {"kicker": f"核验步骤{i}", "title": title, "caption": caption}
+            for i, (title, caption) in enumerate(zip(titles, captions), start=1)
+        ]
+        plan = build_motion_plan(
+            "装修后怎样判断室内空气风险？",
+            "新房家庭",
+            segments,
+            45.0,
+            capability_pack={"id": "legacy-clean-air-v2"},
+        )
+        self.assertEqual(plan["scenes"][2]["visual_type"], "liquid-chamber")
+        self.assertNotEqual(plan["scenes"][1]["visual_type"], "liquid-chamber")
+        self.assertTrue(all(item["matched_tags"] for item in plan["selection_receipt"]["selections"]))
+        validate_motion_plan(plan)
+
+    def test_uneven_eight_scene_script_keeps_every_scene_within_registry_duration(self):
+        segments = _segments(8)
+        segments[0]["caption"] = "短句。"
+        segments[1]["caption"] = "这是一段明显更长的解释，用来验证极端不均匀文本权重不会生成低于可信最小时长的镜头。"
+        plan = build_motion_plan("不均匀脚本测试", "目标受众", segments, 45.0)
+        registry = AnimationRegistry.load()
+        for scene in plan["scenes"]:
+            block = registry.get(scene["visual_type"])
+            actual = scene["end"] - scene["start"]
+            self.assertGreaterEqual(actual, block["duration_seconds"]["minimum"])
+            self.assertLessEqual(actual, block["duration_seconds"]["maximum"])
+
+    def test_template_is_offline_finite_waapi_and_project_bundles_noto_fonts(self):
+        template = TEMPLATE_FILE.read_text(encoding="utf-8")
+        for forbidden in (
+            "http://", "https://", "cdn.jsdelivr", "gsap", "Microsoft YaHei",
+            "Math.random", "requestAnimationFrame", "setTimeout", "iterations: Infinity",
+        ):
+            self.assertNotIn(forbidden, template)
+        self.assertIn("element.animate", template)
+        self.assertIn('iterations: 1', template)
+        self.assertIn("data-no-timeline", template)
+        self.assertIn("data-layout-allow-overflow", template)
+        self.assertIn(
+            '[{transform:"translateY(150px)"},{transform:"translateY(0)"}]',
+            template,
+        )
+        self.assertNotIn(
+            '[{transform:"translateY(150px)",opacity:0}',
+            template,
+        )
+        self.assertIn('url("assets/NotoSansSC-Regular.ttf")', template)
+        self.assertTrue(FONT_REGULAR_FILE.is_file())
+        self.assertTrue(FONT_BOLD_FILE.is_file())
+
+        plan = build_motion_plan("离线动画如何交付？", "企业客户", _segments(4), 45.0)
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "motion"
+            built = build_motion_project(output, plan)
+            self.assertEqual(set(built["font_sha256"]), {FONT_REGULAR_FILE.name, FONT_BOLD_FILE.name})
+            self.assertTrue((output / "assets" / FONT_REGULAR_FILE.name).is_file())
+            self.assertTrue((output / "assets" / FONT_BOLD_FILE.name).is_file())
+
+
+if __name__ == "__main__":
+    unittest.main()

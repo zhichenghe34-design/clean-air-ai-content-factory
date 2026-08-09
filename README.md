@@ -1,6 +1,6 @@
-# 时宜 Agent 内容工厂 v0.3（组合式本地发布候选）
+# 时宜 Agent 内容工厂 v0.3（纯动画主线开发候选）
 
-一个可运行、可审核、可积累纠错经验的短视频内容工厂。计划中的 v0.3 正式主链先从本地确定性安全能力包出发，再完成三选一、研究、脚本、合规和成片。两道哈希门禁始终保留：正式模式由用户审核；受控测试模式由 Codex 通过本地浏览器逐项审查，记录明确标为 `test_only`，最终成片再交给用户验收和反馈。MoneyPrinterTurbo 1.3.3 作为固定版本的本地视频生产引擎，我们的控制层继续负责证据、审查、预算、运行隔离、媒体复验和最终 manifest。
+一个可运行、可审核、可积累纠错经验的短视频内容工厂。计划中的 v0.3 正式主链先从本地确定性安全能力包出发，再完成三选一、研究、脚本、合规和成片。两道哈希门禁始终保留：正式模式由用户审核；受控测试模式由 Codex 通过本地浏览器逐项审查，记录明确标为 `test_only`，最终成片再交给用户验收和反馈。默认生产模式现为本地纯动画：由固定 HyperFrames 0.7.86、可信动画积木注册表和 Noto Sans SC 组成；MoneyPrinterTurbo 1.3.3 保留为实拍素材支线。我们的控制层继续负责证据、审查、预算、运行隔离、媒体复验和最终 manifest。
 
 [![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.14-3776AB)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
@@ -10,7 +10,7 @@
 | 版本 | 当前状态 | 可下载 |
 |---|---|---|
 | v0.2.0 | 当前稳定发布 | 是 |
-| v0.3.0 MPT 组合版 | 本地发布候选；代理测试审查 E2E、用户最终成片验收与新版封包尚待完成 | 否 |
+| v0.3.0 纯动画主线组合版 | 开发候选；动画主链已接入，正式纯动画 E2E、用户验收与新版封包尚待完成 | 否 |
 
 ## Windows 一键体验（当前稳定版 v0.2.0）
 
@@ -44,7 +44,13 @@
 - 同一条非任务规则在 3 个不同成功任务中被验证后，才会原子生成 instruction-only Skill；重复任务不凑数，Skill 不包含命令、脚本、URL或密钥。
 - 原净界逻辑被收进显式 `legacy-clean-air-v2` 能力包。历史任务不改写，旧证据、成片和审批哈希继续保持原用途。
 
-## 组合式视频生产引擎
+## 纯动画主线与实拍支线
+
+- 新任务的默认 `production_mode` 是 `motion`：审批后的脚本会被拆成 4—8 幕，再从本地 `shiyi-animation-pack-v1` 白名单中按语义选择积木。当前基础包包含 13 个积木、8 个明确 renderer family；积木版本、行业模式、逐幕匹配和选择收据都由 SHA-256 绑定。
+- 动画模板只使用本地有限 WAAPI、Noto Sans SC 与确定性时间线；不使用 CDN、运行时下载、随机数、无限循环或现场生成可执行代码。HyperFrames 正式检查使用 `--strict`，正式渲染使用 `--no-best-effort --strict`。
+- 当前 45 秒自然中文七幕 canary 已通过 HyperFrames 0.7.86 的 lint、runtime、layout、motion 和 contrast 严格检查，包含 300 个运动采样；这只证明动画工程合同，不冒充两道阶段审查后的正式成片 E2E。
+- `footage` 保留为 MoneyPrinterTurbo 实拍支线；旧 MPT 任务不会被默认动画路由改写。`hybrid` 当前明确 fail-closed，`simple` 仅用于不可发布的诊断运行。
+- 便携封包合同会固定 Node、HyperFrames、Chrome Headless Shell、字体和 FFmpeg，禁止系统 PATH、`npx`、运行时下载及宿主 Node 注入。当前 135 个可达依赖的许可证闭包已经完成，9 个缺少包内正文的精确版本 override 也已绑定官方来源；真实大包仍须完成构建和全新目录冷启动，完成前不得宣称 v0.3 已可下载。
 
 - MoneyPrinterTurbo 固定为 `1.3.3` / `254cd028906ee657eab844dc94087cdbea2a7aa8`，通过只监听回环地址的内部 HTTP API 接收已经批准的脚本和本地素材；它不能读取 DeepSeek Key，也不能重写事实内容。
 - 固定脚本的独立 CLI 烟雾和真实 HTTP → `ProductionRunner` 联调均已通过。CLI 证据 manifest SHA-256 为 `D184B944BEF773A17790F264ADEC01D3F838AC3B411CF83F829FABEBD4B87E5E`；HTTP 组合成片为 46.600 秒、1080×1920、H.264/yuv420p + AAC，证据 manifest SHA-256 为 `F42EA0D748B7E15287978462112E7481E8F9CB80FBBF015B70ACE183204DB64F`。这些都只属于内部工程证据，不冒充用户两道人审后的正式比赛证据。
@@ -78,7 +84,7 @@ npm.cmd ci
 
 默认地址是 `http://127.0.0.1:8765`。如果 8765 被占用，程序只在 127.0.0.1 上顺延寻找端口，控制台会显示实际端口。
 
-这条命令只启动工作台源码，不会自动启动 MoneyPrinterTurbo。v0.3 组合开发环境使用 `scripts/launch_combined.ps1` 同时启动两个回环服务，并要求 MPT、Python 与 FFmpeg 都已预装；最终便携包会把这些运行时和根目录双击入口一并封装，运行时不会下载依赖。
+这条命令只启动工作台源码，不会自动启动动画或实拍引擎。v0.3 组合开发环境使用 `scripts/launch_combined.ps1`：固定动画运行时通过探针后成为默认生产引擎；MPT 可作为实拍支线启动，缺失或崩溃时只撤销实拍健康状态，不阻断动画工作台。最终便携包会把所需运行时和根目录双击入口一并封装，运行时不会下载依赖。
 
 受控测试时显式增加 `-AgentTestReview`。启动器默认清除父进程遗留的测试开关，只有本次显式参数才会把 `SHIYI_AGENT_TEST_REVIEW=1` 传给工作台；MoneyPrinterTurbo 不会收到这个标志。新任务会固定 `review_policy.stage_review_mode=agent_test`，两道记录均写明 `actor_type=agent`、`review_mode=test`、`human_approval_claimed=false`，最终 manifest 标为 `test_only_pending_human_acceptance`。普通启动仍固定为正式人审模式。
 
@@ -178,7 +184,7 @@ npm.cmd run test:flow
 .\.venv\Scripts\python.exe tools\verify_committed_media.py
 ```
 
-Python 测试由 `unittest discover` 动态发现，当前 256 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及 MoneyPrinterTurbo 适配器、结构化人审/代理测试身份绑定、失败运行隔离、正式成片彩条与测试素材视觉门禁、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、代理测试必须进入详细页、两道门禁不静默代批、窄屏无溢出与零前端错误。CI 使用可注入的假配音/渲染适配器完成快速确定性 E2E。
+Python 测试由 `unittest discover` 动态发现，当前 295 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及纯动画生产模式、动画注册表与选择收据、HyperFrames 固定身份和离线依赖合同、MoneyPrinterTurbo 实拍适配器、结构化人审/代理测试身份绑定、失败运行隔离、正式成片视觉门禁、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、代理测试必须进入详细页、两道门禁不静默代批、窄屏无溢出与零前端错误。CI 使用不可发布的注入式假配音/渲染适配器完成快速确定性 E2E。
 
 ## v2 历史比赛材料（只读基线）
 

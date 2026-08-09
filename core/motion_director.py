@@ -1,16 +1,26 @@
 from __future__ import annotations
 
 import html as html_lib
+import hashlib
 import json
 import re
 import shutil
 from pathlib import Path
 from typing import Any
 
+from core.animation_registry import (
+    AnimationRegistry,
+    AnimationRegistryError,
+    DEFAULT_PACK_PATH,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPO_ROOT / "agent-skills" / "produce-dynamic-health-video"
 TEMPLATE_FILE = SKILL_ROOT / "assets" / "composition-template.html"
+ANIMATION_PACK_FILE = DEFAULT_PACK_PATH
+FONT_REGULAR_FILE = REPO_ROOT / "docs" / "fonts" / "NotoSansSC-Regular.ttf"
+FONT_BOLD_FILE = REPO_ROOT / "docs" / "fonts" / "NotoSansSC-Bold.ttf"
 
 LEGACY_VISUAL_SEQUENCE = (
     "stat-ring",
@@ -35,21 +45,55 @@ GENERIC_VISUAL_SEQUENCE = (
 # Backward-compatible public name used by older integrations.
 VISUAL_SEQUENCE = LEGACY_VISUAL_SEQUENCE
 
-MOTION_RECIPES = {
-    "stat-ring": ("数字计数与圆环描边", "呼吸光晕", "lime-wipe"),
-    "magnifier": ("放大镜沿证据字段扫描", "小字逐行显现", "green-wipe"),
-    "liquid-chamber": ("液位上升与空间框展开", "剂量/体积标签弹入", "lime-wipe"),
-    "clock-wave": ("指针旋转与波形脉冲", "时间标签滑入", "green-wipe"),
-    "report-scan": ("报告面板升起与扫描线下移", "字段逐行显现", "green-wipe"),
-    "compare": ("左右场景对向入场", "不等号脉冲", "orange-wipe"),
-    "orbit-summary": ("要点围绕核心结论汇聚", "核心光环呼吸", "lime-wipe"),
-    "signal-grid": ("信息节点依次点亮并汇入核心", "背景信号缓慢流动", "lime-wipe"),
-    "focus-lens": ("焦点沿资料字段移动", "依据逐行显现", "green-wipe"),
-    "process-flow": ("流程节点按顺序展开", "连接线持续推进", "lime-wipe"),
-    "timeline-pulse": ("时间轴向前推进", "节奏波形持续脉冲", "green-wipe"),
-    "source-stack": ("来源卡片分层升起", "核验标记逐项显现", "green-wipe"),
-    "option-compare": ("两种方案对向入场", "适用边界居中强调", "orange-wipe"),
+_TAG_KEYWORDS = {
+    "audience": ("客户", "用户", "受众", "家庭", "人群"),
+    "metric": ("数据", "数字", "指标", "比例", "价格", "剂量", "浓度", "%"),
+    "evidence": ("证据", "依据", "核验", "检测", "事实"),
+    "source": ("来源", "报告", "资料", "出处", "官方"),
+    "document": ("报告", "资料", "文件", "字段", "记录"),
+    "process": ("步骤", "流程", "先", "再", "过程", "执行"),
+    "timeline": ("时间", "阶段", "周期", "长期", "短期", "先后"),
+    "comparison": ("对比", "比较", "区别", "不等于", "不能直接", "方案"),
+    "boundary": ("边界", "限制", "条件", "适用", "未知", "不能"),
+    "risk": ("风险", "错误", "误区", "警惕", "不安全"),
+    "space": ("空间", "体积", "房间", "整屋", "场景"),
+    "action": ("行动", "选择", "建议", "下一步", "确认"),
 }
+
+
+def _registry() -> AnimationRegistry:
+    try:
+        return AnimationRegistry.load(ANIMATION_PACK_FILE)
+    except AnimationRegistryError as exc:
+        raise MotionPlanError(f"可信动画积木注册表无效：{exc}") from exc
+
+
+def _semantic_tags(text: str, index: int, total: int) -> list[str]:
+    tags: list[str] = []
+    if index == 1:
+        tags.append("hook")
+    for tag, keywords in _TAG_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            tags.append(tag)
+    role_fallback = ("evidence", "process", "timeline", "source", "comparison", "action")
+    if index < total:
+        tags.append(role_fallback[(index - 1) % len(role_fallback)])
+    else:
+        tags.extend(("summary", "action", "boundary"))
+    return list(dict.fromkeys(tags))
+
+
+def _scene_durations(weights: list[int], duration: float) -> list[float]:
+    """Keep semantic weighting without producing unusably short scenes."""
+
+    average = sum(weights) / len(weights)
+    factors = [max(0.8, min(1.2, 0.8 + 0.4 * weight / average)) for weight in weights]
+    scale = duration / sum(factors)
+    values = [factor * scale for factor in factors]
+    # With 4-8 scenes and the release duration contract this should always hold.
+    if any(value < 3.5 or value > 20.0 for value in values):
+        values = [duration / len(weights)] * len(weights)
+    return values
 
 
 def _pack_snapshot(capability_pack: dict[str, Any] | None) -> dict[str, Any]:
@@ -175,31 +219,86 @@ def build_motion_plan(
         raise MotionPlanError("音频时长必须大于0")
 
     weights = [max(8, len(str(item.get("caption", "")))) for item in segments]
-    total_weight = sum(weights)
+    scene_durations = _scene_durations(weights, duration)
     cursor = 0.0
     scenes: list[dict[str, Any]] = []
+    receipt_selections: list[dict[str, Any]] = []
     legacy = _is_legacy_pack(capability_pack)
     visual_sequence = LEGACY_VISUAL_SEQUENCE if legacy else GENERIC_VISUAL_SEQUENCE
-    for index, (segment, weight) in enumerate(zip(segments, weights), start=1):
-        end = duration if index == len(segments) else cursor + duration * weight / total_weight
-        visual = "orbit-summary" if index == len(segments) else visual_sequence[min(index - 1, len(visual_sequence) - 2)]
-        primary, secondary, transition = MOTION_RECIPES[visual]
+    pack_mode = "legacy_clean_air" if legacy else "generic"
+    registry = _registry()
+    previous_block_id: str | None = None
+    for index, (segment, scene_duration) in enumerate(zip(segments, scene_durations), start=1):
+        end = duration if index == len(segments) else cursor + scene_duration
+        safe_kicker = str(segment.get("kicker") or f"要点 {index:02d}").strip()
+        safe_title = str(segment.get("title") or topic).strip()
+        safe_caption = str(segment.get("caption") or "").strip()
+        tags = _semantic_tags(" ".join((safe_kicker, safe_title, safe_caption)), index, len(segments))
+        legacy_space_scene = legacy and index == min(3, len(segments) - 1)
+        if legacy_space_scene:
+            tags = list(dict.fromkeys(tags + ["space", "metric", "boundary"]))
+        preferred = (
+            ("orbit-summary",)
+            if index == len(segments)
+            else visual_sequence[index - 1 :] + visual_sequence[: index - 1]
+        )
+        try:
+            excluded_ids = (
+                tuple(item["id"] for item in registry.pack["blocks"] if item["id"] != "orbit-summary")
+                if index == len(segments)
+                else tuple(item["id"] for item in registry.pack["blocks"] if item["id"] != "liquid-chamber")
+                if legacy_space_scene
+                else ("orbit-summary", "liquid-chamber")
+                if legacy
+                else ("orbit-summary",)
+            )
+            block, matched_tags = registry.select(
+                semantic_tags=tags,
+                pack_mode=pack_mode,
+                duration_seconds=round(end - cursor, 3),
+                previous_block_id=previous_block_id,
+                preferred_ids=preferred,
+                excluded_ids=excluded_ids,
+            )
+        except AnimationRegistryError as exc:
+            raise MotionPlanError(f"场景{index}没有可用的可信动画积木：{exc}") from exc
+        if index == len(segments) and block["id"] != "orbit-summary":
+            raise MotionPlanError("结尾场景必须绑定可信orbit-summary积木")
+        limits = block["text_limits"]
+        for field, value in (("kicker", safe_kicker), ("title", safe_title), ("caption", safe_caption)):
+            if not value or len(value) > int(limits[field]):
+                raise MotionPlanError(f"场景{index}的{field}超出可信积木文字限制")
+        visual = block["id"]
+        motion = block["motion"]
         scenes.append(
             {
                 "id": f"scene-{index:02d}",
                 "index": index,
                 "start": round(cursor, 3),
                 "end": round(end, 3),
-                "kicker": str(segment.get("kicker") or f"要点 {index:02d}"),
-                "title": str(segment.get("title") or topic),
-                "caption": str(segment.get("caption") or "").strip(),
+                "kicker": safe_kicker,
+                "title": safe_title,
+                "caption": safe_caption,
                 "visual_type": visual,
-                "primary_motion": primary,
-                "secondary_motion": secondary,
-                "transition": transition,
+                "renderer_family": block["renderer_family"],
+                "semantic_tags": tags,
+                "primary_motion": motion["primary"],
+                "secondary_motion": motion["secondary"],
+                "transition": motion["transition"],
                 "entrance_lead_seconds": 0.22,
             }
         )
+        receipt_selections.append(
+            {
+                "scene_id": f"scene-{index:02d}",
+                "block_id": visual,
+                "renderer_family": block["renderer_family"],
+                "semantic_tags": tags,
+                "matched_tags": matched_tags,
+                "duration_seconds": round(end - cursor, 3),
+            }
+        )
+        previous_block_id = visual
         cursor = end
 
     snapshot = _pack_snapshot(capability_pack)
@@ -258,6 +357,9 @@ def build_motion_plan(
         },
         "director_rules": director_rules,
         "scenes": scenes,
+        "animation_pack_mode": pack_mode,
+        "animation_registry": registry.summary(),
+        "selection_receipt": registry.build_receipt(receipt_selections, pack_mode),
     }
     validate_motion_plan(plan)
     return plan
@@ -268,36 +370,82 @@ def validate_motion_plan(plan: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(scenes, list) or not 4 <= len(scenes) <= 8:
         raise MotionPlanError("motion_plan.scenes必须包含4到8项")
     errors: list[str] = []
-    visual_types: set[str] = set()
+    renderer_families: set[str] = set()
     previous_end = 0.0
+    previous_visual = ""
+    registry = _registry()
+    pack_mode = plan.get("animation_pack_mode")
+    project = plan.get("project") if isinstance(plan.get("project"), dict) else {}
+    capability_identity = plan.get("capability_pack") if isinstance(plan.get("capability_pack"), dict) else {}
+    project_legacy = project.get("legacy") is True
+    capability_legacy = capability_identity.get("id") == "legacy-clean-air-v2"
+    if project_legacy != capability_legacy:
+        errors.append("项目legacy标记与能力包身份不一致")
+    expected_pack_mode = "legacy_clean_air" if capability_legacy else "generic"
+    if pack_mode != expected_pack_mode:
+        errors.append("animation_pack_mode与项目能力包身份不一致")
+    if plan.get("animation_registry") != registry.summary():
+        errors.append("动画注册表身份与当前可信版本不一致")
     for index, scene in enumerate(scenes, start=1):
         visual = str(scene.get("visual_type", ""))
-        visual_types.add(visual)
-        if visual not in MOTION_RECIPES:
+        try:
+            block = registry.get(visual)
+        except AnimationRegistryError:
             errors.append(f"场景{index}使用未知视觉类型：{visual}")
+            block = None
+        if visual == previous_visual:
+            errors.append(f"场景{index}与上一场重复同一动画积木")
+        previous_visual = visual
+        family = str(scene.get("renderer_family", ""))
+        renderer_families.add(family)
         start, end = float(scene.get("start", -1)), float(scene.get("end", -1))
         if abs(start - previous_end) > 0.02 or end <= start:
             errors.append(f"场景{index}时间轴不连续")
         previous_end = end
         if not str(scene.get("primary_motion", "")).strip() or not str(scene.get("secondary_motion", "")).strip():
             errors.append(f"场景{index}缺少双层运动")
-        if len(str(scene.get("caption", ""))) > 62:
-            errors.append(f"场景{index}字幕过长，可能超过两行")
-    if len(visual_types) < 3:
-        errors.append("整条视频至少需要三种不同视觉语法")
+        if block is not None:
+            if pack_mode not in block["allowed_pack_modes"]:
+                errors.append(f"场景{index}的动画积木不允许用于当前animation_pack_mode")
+            if family != block["renderer_family"]:
+                errors.append(f"场景{index}renderer family与积木登记不一致")
+            scene_duration = end - start
+            bounds = block["duration_seconds"]
+            if not float(bounds["minimum"]) <= scene_duration <= float(bounds["maximum"]):
+                errors.append(f"场景{index}时长超出积木范围")
+            for field, value in (("kicker", scene.get("kicker", "")), ("title", scene.get("title", "")), ("caption", scene.get("caption", ""))):
+                if not isinstance(value, str) or not value.strip() or len(value) > int(block["text_limits"][field]):
+                    errors.append(f"场景{index}的{field}不符合积木文字限制")
+            tags = scene.get("semantic_tags")
+            if not isinstance(tags, list) or not tags or any(not isinstance(tag, str) for tag in tags):
+                errors.append(f"场景{index}缺少有效语义标签")
+            if (
+                scene.get("primary_motion") != block["motion"]["primary"]
+                or scene.get("secondary_motion") != block["motion"]["secondary"]
+                or scene.get("transition") != block["motion"]["transition"]
+            ):
+                errors.append(f"场景{index}运动声明与可信积木不一致")
+    if len(renderer_families) < 3:
+        errors.append("整条视频至少需要三种不同renderer family")
     if scenes[-1].get("visual_type") != "orbit-summary":
         errors.append("结尾必须使用orbit-summary汇聚结论")
     expected_duration = float(plan.get("duration_seconds", 0))
     if abs(previous_end - expected_duration) > 0.05:
         errors.append("场景总时长与音频时长不一致")
+    try:
+        registry.validate_receipt(plan.get("selection_receipt"), scenes, str(pack_mode))
+    except AnimationRegistryError as exc:
+        errors.append(f"动画选择凭证无效：{exc}")
     if errors:
         raise MotionPlanError("；".join(errors))
     return {
         "ok": True,
         "scene_count": len(scenes),
-        "visual_family_count": len(visual_types),
+        "visual_family_count": len(renderer_families),
         "no_static_only_scenes": True,
         "timeline_continuous": True,
+        "registry_sha256": registry.summary()["sha256"],
+        "selection_receipt_sha256": plan["selection_receipt"]["sha256"],
     }
 
 
@@ -310,9 +458,14 @@ def build_motion_project(
     validation = validate_motion_plan(plan)
     if not TEMPLATE_FILE.exists():
         raise FileNotFoundError(f"缺少受信动画模板：{TEMPLATE_FILE}")
+    for font_path in (FONT_REGULAR_FILE, FONT_BOLD_FILE):
+        if not font_path.is_file() or font_path.is_symlink():
+            raise FileNotFoundError(f"缺少已核验离线字体：{font_path.name}")
     project_dir = Path(project_dir)
     assets_dir = project_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(FONT_REGULAR_FILE, assets_dir / FONT_REGULAR_FILE.name)
+    shutil.copy2(FONT_BOLD_FILE, assets_dir / FONT_BOLD_FILE.name)
 
     has_audio = bool(voice_path and Path(voice_path).exists())
     if has_audio:
@@ -445,4 +598,9 @@ def build_motion_project(
         "brand_name": brand_name,
         "has_audio": has_audio,
         "validation": validation,
+        "animation_registry": dict(plan["animation_registry"]),
+        "font_sha256": {
+            FONT_REGULAR_FILE.name: hashlib.sha256((assets_dir / FONT_REGULAR_FILE.name).read_bytes()).hexdigest(),
+            FONT_BOLD_FILE.name: hashlib.sha256((assets_dir / FONT_BOLD_FILE.name).read_bytes()).hexdigest(),
+        },
     }

@@ -35,11 +35,25 @@ from core.orchestrator import (
     JobStore,
     UnprocessableError,
     WorkflowError,
+    is_legacy_footage_input,
     local_fallback_plan,
     topic_in_scope,
     validate_topic_input,
 )
-from core.production import DEFAULT_INPUT, ProductionRunner, estimate_narration_duration, review_script
+from core.motion_runtime_contract import (
+    HYPERFRAMES_RENDERER,
+    HYPERFRAMES_VERSION,
+    MOTION_ENGINE_NAME,
+)
+from core.production import (
+    DEFAULT_INPUT,
+    MOTION_ENGINE_MODE,
+    ProductionRunner,
+    _resolve_hyperframes_runtime,
+    estimate_narration_duration,
+    resolve_production_mode,
+    review_script,
+)
 from core.production_engine import (
     ENGINE_COMMIT,
     ENGINE_MODE,
@@ -91,6 +105,19 @@ topic_selection_bundles: OrderedDict[str, dict] = OrderedDict()
 SELECTION_BUNDLE_TTL_SECONDS = 2 * 60 * 60
 
 
+def _mpt_health_verified() -> bool:
+    if os.environ.get("SHIYI_MPT_HEALTH_VERIFIED", "").strip() != "1":
+        return False
+    state_path = os.environ.get("SHIYI_MPT_HEALTH_FILE", "").strip()
+    if not state_path:
+        return True
+    try:
+        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return state == {"healthy": True, "schema_version": 1}
+
+
 def production_engine_binding(*, strict: bool) -> tuple[ProductionEngineAdapter | None, dict, dict]:
     enabled = os.environ.get("SHIYI_MPT_ENABLED", "").strip() == "1"
     summary = {
@@ -105,6 +132,7 @@ def production_engine_binding(*, strict: bool) -> tuple[ProductionEngineAdapter 
     }
     if not enabled:
         return None, {}, summary
+    health_verified = _mpt_health_verified()
     try:
         timeout_seconds = float(os.environ.get("SHIYI_MPT_TIMEOUT_SECONDS", "1800"))
         if not 60 <= timeout_seconds <= 3600:
@@ -139,6 +167,12 @@ def production_engine_binding(*, strict: bool) -> tuple[ProductionEngineAdapter 
                     "Local material count is outside release bounds.",
                     stage="configuration",
                 )
+        if strict and not health_verified:
+            raise ProductionEngineError(
+                "engine_unverified",
+                "Production engine health is not verified.",
+                stage="configuration",
+            )
         adapter = ProductionEngineAdapter(
             base_url,
             timeout_seconds=timeout_seconds,
@@ -153,7 +187,7 @@ def production_engine_binding(*, strict: bool) -> tuple[ProductionEngineAdapter 
             {
                 "health": (
                     "ready"
-                    if os.environ.get("SHIYI_MPT_HEALTH_VERIFIED", "").strip() == "1"
+                    if health_verified
                     else "configured_unverified"
                 ),
                 "material_strategy": material_strategy,
@@ -172,12 +206,100 @@ def production_engine_binding(*, strict: bool) -> tuple[ProductionEngineAdapter 
 
 def job_with_engine_summary(job: dict) -> dict:
     result = dict(job)
-    _adapter, _options, summary = production_engine_binding(strict=False)
-    summary = dict(summary)
-    if "engine_report.json" in result.get("artifacts", []):
+    artifacts = result.get("artifacts", [])
+    has_engine_report = "engine_report.json" in artifacts
+    production_mode = production_mode_for_persisted_job(result)
+    summary = production_mode_summary(production_mode)
+    if has_engine_report and production_mode == "footage":
         summary["last_successful_run"] = result.get("current_run_id")
     result["production_engine"] = summary
     return result
+
+
+def production_mode_for_persisted_job(job: dict) -> str:
+    """Resolve a stored job without rewriting its historical input snapshot."""
+
+    production_input = job.get("production_input")
+    if not isinstance(production_input, dict):
+        production_input = {}
+    artifacts = job.get("artifacts", [])
+    has_legacy_engine_report = (
+        isinstance(artifacts, list)
+        and "engine_report.json" in artifacts
+        and "production_mode" not in production_input
+    )
+    return resolve_production_mode(
+        production_input,
+        legacy_engine_adapter=(
+            is_legacy_footage_input(production_input) or has_legacy_engine_report
+        ),
+    )
+
+
+def production_mode_summary(production_mode: str) -> dict:
+    """Describe the selected engine, not whichever optional engine is installed."""
+
+    if production_mode == "motion":
+        try:
+            runtime = _resolve_hyperframes_runtime()
+            browser = runtime.get("browser")
+            browser_path = Path(browser) if browser is not None else None
+            health_verified = os.environ.get("SHIYI_MOTION_HEALTH_VERIFIED", "").strip() == "1"
+            if browser_path is None or not browser_path.is_file():
+                enabled, health = False, "unavailable"
+            elif health_verified:
+                enabled, health = True, "ready"
+            else:
+                enabled, health = False, "configured_unverified"
+            runtime_source = runtime["runtime_source"]
+        except (OSError, ValueError):
+            enabled, health = False, "unavailable"
+            runtime_source = None
+        return {
+            "name": MOTION_ENGINE_NAME,
+            "version": HYPERFRAMES_VERSION,
+            "renderer": HYPERFRAMES_RENDERER,
+            "mode": MOTION_ENGINE_MODE,
+            "selected_mode": "motion",
+            "enabled": enabled,
+            "health": health,
+            "runtime_source": runtime_source,
+        }
+    if production_mode == "footage":
+        _adapter, _options, summary = production_engine_binding(strict=False)
+        return {**summary, "selected_mode": "footage"}
+    if production_mode == "hybrid":
+        return {
+            "name": "HyperFrames + MoneyPrinterTurbo",
+            "version": None,
+            "mode": "not_implemented",
+            "selected_mode": "hybrid",
+            "enabled": False,
+            "health": "not_implemented",
+        }
+    if production_mode == "simple":
+        return {
+            "name": "Simple diagnostic renderer",
+            "version": "internal",
+            "mode": "diagnostic",
+            "selected_mode": "simple",
+            "enabled": True,
+            "health": "diagnostic_only",
+        }
+    raise ValueError("invalid production mode")
+
+
+def production_engine_adapter_for_mode(
+    production_mode: str,
+    *,
+    render_stage_requested: bool,
+) -> tuple[ProductionEngineAdapter | None, dict]:
+    """Bind the optional footage engine only at its approved render boundary."""
+
+    if not render_stage_requested or production_mode != "footage":
+        return None, {}
+    adapter, options, _summary = production_engine_binding(strict=True)
+    return adapter, options
 
 
 def pretask_budget_for(goal: str) -> BudgetLedger:
@@ -707,11 +829,11 @@ class AppHandler(BaseHTTPRequestHandler):
                     render_stage_requested = job.get("status") == "compliance_approved" or (
                         job.get("status") == "failed" and job.get("last_failed_stage") == "render"
                     )
-                    engine_adapter, engine_options, _engine_summary = production_engine_binding(
-                        strict=render_stage_requested
+                    production_mode = production_mode_for_persisted_job(job)
+                    engine_adapter, engine_options = production_engine_adapter_for_mode(
+                        production_mode,
+                        render_stage_requested=render_stage_requested,
                     )
-                    if not render_stage_requested:
-                        engine_adapter, engine_options = None, {}
                     runner = ProductionRunner(
                         provider=provider,
                         research_config=config_store.load().get("research", {}),
@@ -829,7 +951,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "memory_count": len(learning_store.list_memories()),
             "learned_skill_count": len(learning_store.list_skills()),
             "dynamic_capability_pack_count": len(capability_registry.list()),
-            "production_engine": production_engine_binding(strict=False)[2],
+            "production_engine": production_mode_summary("motion"),
         }
 
     def _discover(self, body: dict) -> dict:
@@ -862,7 +984,7 @@ class AppHandler(BaseHTTPRequestHandler):
             if not isinstance(options, dict):
                 raise UnprocessableError("production_options必须是JSON对象")
             allowed_options = {
-                "target_duration_seconds", "pattern_card_ids", "voice_engine", "aspect_ratio", "render_mode",
+                "target_duration_seconds", "pattern_card_ids", "voice_engine", "aspect_ratio", "production_mode", "render_mode",
                 "require_animation", "enable_web_research", "source_urls", "motion_scenes", "animation_quality",
             }
             option_unknown = sorted(set(options) - allowed_options)

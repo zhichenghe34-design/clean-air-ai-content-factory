@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "verified_overrides": [
+    {
+      "name": "@esbuild/win32-x64",
+      "version": "0.25.12",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2020 Evan Wallace",
+      "source_url": "https://raw.githubusercontent.com/evanw/esbuild/208f539945b145e7c9d6d844290f81c3fe5af320/npm/esbuild/LICENSE.md",
+      "source_commit": "208f539945b145e7c9d6d844290f81c3fe5af320",
+      "source_sha256": "B40EC5BAEC7BB34FA5B1C09521FA3CD52D5FAD7ADAFED74932A2010D3612A681",
+      "license_file": "dependency-licenses/esbuild-win32-x64-0.25.12-MIT.txt",
+      "license_sha256": "B40EC5BAEC7BB34FA5B1C09521FA3CD52D5FAD7ADAFED74932A2010D3612A681",
+      "notice_files": []
+    },
+    {
+      "name": "@puppeteer/browsers",
+      "version": "3.0.6",
+      "spdx": "Apache-2.0",
+      "copyright": "Copyright 2017 Google Inc.; package sources retain Google Inc. copyright headers",
+      "source_url": "https://raw.githubusercontent.com/puppeteer/puppeteer/58d9b023ed74c3a1f14ec5fd9315872602270c72/LICENSE",
+      "source_commit": "58d9b023ed74c3a1f14ec5fd9315872602270c72",
+      "source_sha256": "A27CA07269B3518550B2E83AED13EADD7D14D924B5864E14889B40CF227530CA",
+      "license_file": "dependency-licenses/puppeteer-Apache-2.0.txt",
+      "license_sha256": "A27CA07269B3518550B2E83AED13EADD7D14D924B5864E14889B40CF227530CA",
+      "notice_files": []
+    },
+    {
+      "name": "brotli",
+      "version": "1.3.3",
+      "spdx": "MIT",
+      "copyright": "Devon Govett and contributors; Copyright (c) 2009, 2010, 2013-2016 Brotli Authors; Copyright 2013 Google Inc.",
+      "source_url": "https://raw.githubusercontent.com/devongovett/brotli.js/e36051345f6d27a56e5f39ea70d2f789b8574046/readme.md",
+      "source_commit": "e36051345f6d27a56e5f39ea70d2f789b8574046",
+      "source_sha256": "8A8BAC543FCCF52A64708FF3315CA2BE90E3E4C270634DF1E4E4B51F0EE9C5D7",
+      "license_file": "dependency-licenses/brotli-1.3.3-MIT-Apache-2.0.txt",
+      "license_sha256": "E1DD3DDBED92E1DF75AB03177A8AFA2E680B92A7CB2CC7983201BA902017B151",
+      "notice_files": []
+    },
+    {
+      "name": "data-uri-to-buffer",
+      "version": "4.0.1",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2014 Nathan Rajlich <nathan@tootallnate.net>",
+      "source_url": "https://raw.githubusercontent.com/TooTallNate/node-data-uri-to-buffer/85cd8c854aefbf1bb636789d80364cfac8ea1583/README.md",
+      "source_commit": "85cd8c854aefbf1bb636789d80364cfac8ea1583",
+      "source_sha256": "A7CC4332ACFA1F9B6530E01AAC77FEFE74F2EFA32579215FDDAA473013F9A25C",
+      "license_file": "dependency-licenses/data-uri-to-buffer-4.0.1-MIT.txt",
+      "license_sha256": "82CF09D509993B3AE01DC47893B8B7E946CAB4272424135DA13049C002D2B09A",
+      "notice_files": []
+    },
+    {
+      "name": "dfa",
+      "version": "1.2.0",
+      "spdx": "MIT",
+      "copyright": "Upstream author attribution: Devon Govett; exact release contains no standalone copyright notice",
+      "source_url": "https://raw.githubusercontent.com/devongovett/dfa/3f5e603e5082caedabefefdf53e8a6ca3111e966/README.md",
+      "source_commit": "3f5e603e5082caedabefefdf53e8a6ca3111e966",
+      "source_sha256": "30BD445925AA53205FF7F9AFA6A43E21358FAB656E471DF6E028431AEFC426C7",
+      "license_file": "dependency-licenses/dfa-1.2.0-MIT.txt",
+      "license_sha256": "D9BF1C81AB21DA0A5AE872EFBE1A5EB2F956C35C38541BB3F55D7D188B388418",
+      "notice_files": []
+    },
+    {
+      "name": "fontkit",
+      "version": "2.0.4",
+      "spdx": "MIT",
+      "copyright": "Upstream author attribution: Devon Govett; exact release contains no standalone project copyright notice",
+      "source_url": "https://raw.githubusercontent.com/foliojs/fontkit/fbf3b9ef21eebd219eb73e666faed573af0fba09/README.md",
+      "source_commit": "fbf3b9ef21eebd219eb73e666faed573af0fba09",
+      "source_sha256": "8A1CF12D8AE7277F047C3000AF7677927F2DA9243627223BA5715D40DF4979D6",
+      "license_file": "dependency-licenses/fontkit-2.0.4-MIT.txt",
+      "license_sha256": "4B0F0AF1EDB3C50A016A6FD2B9A9E643D8D7511317C2475C542072EB59B6F300",
+      "notice_files": []
+    },
+    {
+      "name": "onnxruntime-common",
+      "version": "1.21.1",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Microsoft Corporation",
+      "source_url": "https://raw.githubusercontent.com/microsoft/onnxruntime/8f7cce3a49fdbdac96e0868b75b7d0159db7ac7f/LICENSE",
+      "source_commit": "8f7cce3a49fdbdac96e0868b75b7d0159db7ac7f",
+      "source_sha256": "2F07C72751AED99790B8A4869CF2311DF85A860B22DED05FA22803587A48922C",
+      "license_file": "dependency-licenses/onnxruntime-1.21.1-MIT.txt",
+      "license_sha256": "2F07C72751AED99790B8A4869CF2311DF85A860B22DED05FA22803587A48922C",
+      "notice_files": [
+        {
+          "notice_file": "dependency-licenses/onnxruntime-1.21.1-ThirdPartyNotices.txt",
+          "notice_sha256": "8C06E8CFF286A4A117B3B246A4C7DA68428A144AF757823DB50E3D6520941EC6",
+          "source_url": "https://raw.githubusercontent.com/microsoft/onnxruntime/8f7cce3a49fdbdac96e0868b75b7d0159db7ac7f/ThirdPartyNotices.txt",
+          "source_sha256": "8C06E8CFF286A4A117B3B246A4C7DA68428A144AF757823DB50E3D6520941EC6"
+        }
+      ]
+    },
+    {
+      "name": "onnxruntime-node",
+      "version": "1.21.1",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Microsoft Corporation",
+      "source_url": "https://raw.githubusercontent.com/microsoft/onnxruntime/8f7cce3a49fdbdac96e0868b75b7d0159db7ac7f/LICENSE",
+      "source_commit": "8f7cce3a49fdbdac96e0868b75b7d0159db7ac7f",
+      "source_sha256": "2F07C72751AED99790B8A4869CF2311DF85A860B22DED05FA22803587A48922C",
+      "license_file": "dependency-licenses/onnxruntime-1.21.1-MIT.txt",
+      "license_sha256": "2F07C72751AED99790B8A4869CF2311DF85A860B22DED05FA22803587A48922C",
+      "notice_files": [
+        {
+          "notice_file": "dependency-licenses/onnxruntime-1.21.1-ThirdPartyNotices.txt",
+          "notice_sha256": "8C06E8CFF286A4A117B3B246A4C7DA68428A144AF757823DB50E3D6520941EC6",
+          "source_url": "https://raw.githubusercontent.com/microsoft/onnxruntime/8f7cce3a49fdbdac96e0868b75b7d0159db7ac7f/ThirdPartyNotices.txt",
+          "source_sha256": "8C06E8CFF286A4A117B3B246A4C7DA68428A144AF757823DB50E3D6520941EC6"
+        }
+      ]
+    },
+    {
+      "name": "puppeteer-core",
+      "version": "25.4.0",
+      "spdx": "Apache-2.0",
+      "copyright": "Copyright 2017 Google Inc.; package sources retain Google Inc. copyright headers",
+      "source_url": "https://raw.githubusercontent.com/puppeteer/puppeteer/f5b96c54c01d4bcbeaa3c603ec5adf6782363b29/LICENSE",
+      "source_commit": "f5b96c54c01d4bcbeaa3c603ec5adf6782363b29",
+      "source_sha256": "A27CA07269B3518550B2E83AED13EADD7D14D924B5864E14889B40CF227530CA",
+      "license_file": "dependency-licenses/puppeteer-Apache-2.0.txt",
+      "license_sha256": "A27CA07269B3518550B2E83AED13EADD7D14D924B5864E14889B40CF227530CA",
+      "notice_files": []
+    }
+  ],
+  "unresolved": []
+}

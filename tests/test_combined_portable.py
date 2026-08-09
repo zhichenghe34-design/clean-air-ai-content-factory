@@ -14,6 +14,11 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from core.motion_runtime_contract import (
+    HYPERFRAMES_VERSION as CONTRACT_HYPERFRAMES_VERSION,
+    NODE_MINIMUM_MAJOR as CONTRACT_NODE_MINIMUM_MAJOR,
+)
+from scripts import launch_combined
 from tools.build_combined_portable import (
     CHECKSUMS_FILE,
     EXPECTED_MPT_COMMIT,
@@ -22,9 +27,14 @@ from tools.build_combined_portable import (
     PACKAGE_ROOT_NAME,
     ROOT_LAUNCHER_NAME,
     BuildInputs,
+    MotionRuntimeInputs,
+    MOTION_PACKAGE_PROFILE,
     build_combined_portable,
+    _read_hyperframes_license_contract,
+    _validate_hyperframes_dependency_closure,
     sha256_file,
 )
+from tools import verify_combined_portable
 from tools.verify_combined_portable import verify_folder, verify_zip
 from scripts.launch_combined import LauncherError, verify_packaged_integrity
 
@@ -108,6 +118,48 @@ class CombinedPortableTests(unittest.TestCase):
             )
             + "\n",
         )
+        source_root = Path(__file__).resolve().parents[1]
+        for relative in (
+            "third_party/hyperframes/LICENSE",
+            "third_party/hyperframes/README.md",
+            "third_party/hyperframes/upstream-lock.json",
+        ):
+            self._write(self.repo, relative, (source_root / relative).read_bytes())
+        dependency_license = self._write(
+            self.repo,
+            "third_party/hyperframes/dependency-licenses/esbuild-win32-x64-MIT.txt",
+            "Verified fixture MIT license text\n",
+        )
+        self._write(
+            self.repo,
+            "third_party/hyperframes/dependency-license-overrides.json",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "complete",
+                    "verified_overrides": [
+                        {
+                            "name": "@esbuild/win32-x64",
+                            "version": "0.25.12",
+                            "spdx": "MIT",
+                            "copyright": "Copyright fixture",
+                            "source_url": (
+                                "https://raw.githubusercontent.com/evanw/esbuild/"
+                                "208f539945b145e7c9d6d844290f81c3fe5af320/npm/esbuild/LICENSE.md"
+                            ),
+                            "source_commit": "208f539945b145e7c9d6d844290f81c3fe5af320",
+                            "source_sha256": sha256_file(dependency_license),
+                            "license_file": "dependency-licenses/esbuild-win32-x64-MIT.txt",
+                            "license_sha256": sha256_file(dependency_license),
+                            "notice_files": [],
+                        }
+                    ],
+                    "unresolved": [],
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+        )
 
     def _make_mpt_fixture(self) -> None:
         boundary_license = (self.repo / "third_party/moneyprinterturbo/LICENSE").read_text(encoding="utf-8")
@@ -162,6 +214,195 @@ class CombinedPortableTests(unittest.TestCase):
             repo_commit="a" * 40,
         )
 
+    def _motion_inputs(self, suffix: str = "motion") -> BuildInputs:
+        node = self.root / "node-runtime"
+        hyperframes = self.root / "hyperframes-runtime"
+        browser = self.root / "browser-runtime"
+        self._write(node, "node.exe", b"fixed-node")
+        self._write(node, "LICENSE", "Node license fixture\n")
+        self._write(
+            hyperframes,
+            "node_modules/hyperframes/package.json",
+            '{"name":"hyperframes","version":"0.7.86","license":"Apache-2.0",'
+            '"type":"module","dependencies":{"esbuild":"0.25.12"}}\n',
+        )
+        self._write(
+            hyperframes,
+            "node_modules/hyperframes/bin/hyperframes.mjs",
+            "import { marker } from 'esbuild';\nif (marker !== 'bundled') process.exit(9);\nconsole.log('0.7.86');\n",
+        )
+        self._write(
+            hyperframes,
+            "node_modules/esbuild/package.json",
+            '{"name":"esbuild","version":"0.25.12","license":"MIT","type":"module",'
+            '"exports":"./index.js","optionalDependencies":{"@esbuild/win32-x64":"0.25.12"}}\n',
+        )
+        self._write(hyperframes, "node_modules/esbuild/index.js", "export const marker = 'bundled';\n")
+        self._write(hyperframes, "node_modules/esbuild/LICENSE.md", "MIT fixture\n")
+        self._write(
+            hyperframes,
+            "node_modules/@esbuild/win32-x64/package.json",
+            '{"name":"@esbuild/win32-x64","version":"0.25.12","license":"MIT"}\n',
+        )
+        self._write(browser, "chrome-headless-shell.exe", b"fixed-browser")
+        self._write(browser, "LICENSE.headless_shell", "Chromium license fixture\n")
+        return replace(
+            self._inputs(suffix),
+            package_profile=MOTION_PACKAGE_PROFILE,
+            motion_runtime=MotionRuntimeInputs(
+                node_runtime=node,
+                hyperframes_runtime=hyperframes,
+                browser_runtime=browser,
+                node_version="22.13.1",
+                hyperframes_version="0.7.86",
+                browser_version="152.0.7928.2",
+            ),
+        )
+
+    def test_motion_primary_requires_and_hashes_complete_offline_runtime(self) -> None:
+        with self.assertRaisesRegex(ValueError, "必须显式提供离线动画运行时"):
+            build_combined_portable(
+                replace(self._inputs("missing-motion"), package_profile=MOTION_PACKAGE_PROFILE)
+            )
+
+        inputs = self._motion_inputs()
+        manifest = build_combined_portable(inputs)
+        self.assertEqual(2, manifest["schema_version"])
+        self.assertEqual("motion_primary", manifest["package_profile"])
+        self.assertEqual("offline_bundled_required", manifest["motion_runtime"]["mode"])
+        self.assertFalse(manifest["motion_runtime"]["runtime_downloads_allowed"])
+        self.assertFalse(manifest["motion_runtime"]["system_fallback_allowed"])
+        for relative in (
+            "runtime/node/node.exe",
+            "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs",
+            "runtime/hyperframes/node_modules/esbuild/index.js",
+            "runtime/hyperframes/RUNTIME-MANIFEST.json",
+            "runtime/browser/chrome-headless-shell.exe",
+            "licenses/Node-license.txt",
+            "licenses/HyperFrames-Apache-2.0.txt",
+            "licenses/HyperFrames-third-party-SBOM.json",
+            "licenses/hyperframes-dependencies/esbuild-win32-x64-MIT.txt",
+            "licenses/Chrome-Headless-Shell-license.txt",
+        ):
+            self.assertTrue((inputs.output / relative).is_file(), relative)
+        self.assertEqual([], verify_folder(inputs.output))
+
+        (inputs.output / "runtime/browser/chrome-headless-shell.exe").write_bytes(b"tampered")
+        self.assertTrue(any("SHA-256" in error for error in verify_folder(inputs.output)))
+
+    def test_real_installed_closure_has_complete_exact_version_license_evidence(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        inventory = _validate_hyperframes_dependency_closure(repository_root, "0.7.86")
+        identities = {(item["name"], item["version"]) for item in inventory}
+        self.assertIn(("hyperframes", "0.7.86"), identities)
+        self.assertIn(("esbuild", "0.25.12"), identities)
+        contract = _read_hyperframes_license_contract(repository_root)
+        overrides = contract["overrides"]
+        self.assertIsInstance(overrides, dict)
+        self.assertEqual(
+            {
+                ("@esbuild/win32-x64", "0.25.12"),
+                ("@puppeteer/browsers", "3.0.6"),
+                ("brotli", "1.3.3"),
+                ("data-uri-to-buffer", "4.0.1"),
+                ("dfa", "1.2.0"),
+                ("fontkit", "2.0.4"),
+                ("onnxruntime-common", "1.21.1"),
+                ("onnxruntime-node", "1.21.1"),
+                ("puppeteer-core", "25.4.0"),
+            },
+            set(overrides),
+        )
+        for name in ("onnxruntime-common", "onnxruntime-node"):
+            notice_sources = overrides[(name, "1.21.1")]["notice_sources"]
+            self.assertEqual(1, len(notice_sources))
+            self.assertEqual(
+                "8C06E8CFF286A4A117B3B246A4C7DA68428A144AF757823DB50E3D6520941EC6",
+                notice_sources[0]["source_sha256"],
+            )
+
+    def test_license_contract_rejects_unpinned_source_or_tampered_notice(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "third_party" / "hyperframes"
+        for mutation, expected_error in (
+            ("source_commit", "官方来源锁无效"),
+            ("notice_sha256", "NOTICE.*哈希不一致"),
+        ):
+            with self.subTest(mutation=mutation):
+                root = self.root / f"license-{mutation}"
+                boundary = root / "third_party" / "hyperframes"
+                shutil.copytree(source, boundary)
+                override_path = boundary / "dependency-license-overrides.json"
+                payload = json.loads(override_path.read_text(encoding="utf-8"))
+                if mutation == "source_commit":
+                    payload["verified_overrides"][0]["source_commit"] = "0" * 40
+                else:
+                    onnx = next(
+                        item
+                        for item in payload["verified_overrides"]
+                        if item["name"] == "onnxruntime-node"
+                    )
+                    onnx["notice_files"][0]["notice_sha256"] = "0" * 64
+                override_path.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    _read_hyperframes_license_contract(root)
+
+    def test_motion_primary_rejects_any_other_hyperframes_version(self) -> None:
+        inputs = self._motion_inputs("wrong-hf-version")
+        assert inputs.motion_runtime is not None
+        with self.assertRaisesRegex(ValueError, "仅允许固定版本 0.7.86"):
+            build_combined_portable(
+                replace(
+                    inputs,
+                    motion_runtime=replace(inputs.motion_runtime, hyperframes_version="0.7.103"),
+                )
+            )
+
+    @unittest.skipUnless(shutil.which("node"), "requires a local Node executable for the isolated copied-CLI proof")
+    def test_copied_hyperframes_closure_runs_with_copied_node(self) -> None:
+        inputs = self._motion_inputs("real-copied-cli")
+        assert inputs.motion_runtime is not None
+        system_node = Path(shutil.which("node") or "")
+        shutil.copy2(system_node, inputs.motion_runtime.node_runtime / "node.exe")
+        version = subprocess.run(
+            [str(system_node), "--version"], check=True, capture_output=True, text=True
+        ).stdout.strip().lstrip("v")
+        inputs = replace(
+            inputs,
+            motion_runtime=replace(inputs.motion_runtime, node_version=version),
+        )
+        build_combined_portable(inputs)
+        packaged_node = inputs.output / "runtime/node/node.exe"
+        packaged_cli = inputs.output / "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs"
+        completed = subprocess.run(
+            [str(packaged_node), str(packaged_cli), "--version"],
+            cwd=inputs.output / "runtime/hyperframes",
+            env={
+                "PATH": str(packaged_node.parent),
+                "NODE_PATH": "",
+                "NPM_CONFIG_OFFLINE": "true",
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("0.7.86", completed.stdout)
+
+    def test_motion_primary_rejects_network_animation_assets(self) -> None:
+        self._write(
+            self.repo,
+            "agent-skills/fixture/network.html",
+            '<script src="https://cdn.example.invalid/runtime.js"></script>\n',
+        )
+        inputs = self._motion_inputs("network-motion")
+        with self.assertRaisesRegex(ValueError, "网络资源"):
+            build_combined_portable(inputs)
+        self.assertFalse(inputs.output.exists())
+
     def test_builds_and_verifies_exact_combined_layout(self) -> None:
         inputs = self._inputs()
         manifest = build_combined_portable(inputs)
@@ -201,7 +442,14 @@ class CombinedPortableTests(unittest.TestCase):
         self.assertIn('if ($AgentTestReview) { $arguments += "--agent-test-review" }', powershell_launcher)
         self.assertNotRegex(launcher.casefold(), r"pip\s+install|uv\s+sync|npx\s+--yes")
         packaged_verifier = subprocess.run(
-            [sys.executable, str(inputs.output / "tools/verify_combined_portable.py"), str(inputs.output), "--startup"],
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                str(inputs.output / "tools/verify_combined_portable.py"),
+                str(inputs.output),
+                "--startup",
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -209,6 +457,27 @@ class CombinedPortableTests(unittest.TestCase):
             errors="replace",
         )
         self.assertEqual(0, packaged_verifier.returncode, packaged_verifier.stdout + packaged_verifier.stderr)
+        packaged_launcher = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                str(inputs.output / "scripts/launch_combined.py"),
+                "--help",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        self.assertEqual(0, packaged_launcher.returncode, packaged_launcher.stdout + packaged_launcher.stderr)
+
+    def test_pre_integrity_runtime_constants_match_shared_contract(self) -> None:
+        self.assertEqual(CONTRACT_HYPERFRAMES_VERSION, verify_combined_portable.HYPERFRAMES_VERSION)
+        self.assertEqual(CONTRACT_NODE_MINIMUM_MAJOR, verify_combined_portable.NODE_MINIMUM_MAJOR)
+        self.assertEqual(CONTRACT_HYPERFRAMES_VERSION, launch_combined.HYPERFRAMES_VERSION)
+        self.assertEqual(CONTRACT_NODE_MINIMUM_MAJOR, launch_combined.NODE_MINIMUM_MAJOR)
 
     def test_manifest_and_zip_are_deterministic(self) -> None:
         first = self._inputs("first")

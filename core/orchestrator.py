@@ -71,7 +71,7 @@ RUNNING_STATES = {"research_running", "content_running", "rendering"}
 IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 PRODUCTION_INPUT_FIELDS = {
     "topic", "audience", "target_duration_seconds", "pattern_card_ids", "voice_engine",
-    "aspect_ratio", "render_mode", "require_animation", "enable_web_research", "source_urls",
+    "aspect_ratio", "production_mode", "render_mode", "require_animation", "enable_web_research", "source_urls",
     "motion_scenes", "animation_quality", "capability_pack", "learning_rules", "project_id",
     "selection_bundle_id", "candidate_id",
 }
@@ -125,6 +125,51 @@ def topic_in_scope(value: object) -> bool:
         return True
     except (TypeError, ValueError):
         return False
+
+
+def is_legacy_footage_input(value: object) -> bool:
+    """Identify persisted pre-``production_mode`` jobs that used the MPT route.
+
+    New jobs are normalized before they are written and therefore always carry
+    ``production_mode``.  This narrow signature is only for reading an existing
+    v2 job; callers must not add the missing field back to that historical
+    record merely to dispatch a retry.
+    """
+
+    return bool(
+        isinstance(value, dict)
+        and "production_mode" not in value
+        and value.get("render_mode") != "simple"
+        and value.get("require_animation") is not True
+    )
+
+
+def preserve_legacy_footage_contract(
+    original: dict[str, Any], normalized: dict[str, Any]
+) -> dict[str, Any]:
+    """Keep legacy mode fields byte-for-byte absent/present after safe migration."""
+
+    if not is_legacy_footage_input(original):
+        return normalized
+    preserved = dict(normalized)
+    preserved.pop("production_mode", None)
+    for field in ("render_mode", "require_animation"):
+        if field in original:
+            preserved[field] = original[field]
+        else:
+            preserved.pop(field, None)
+    return preserved
+
+
+def render_result_is_diagnostic(value: object) -> bool:
+    """Return whether a render result is ineligible for a formal manifest."""
+
+    if not isinstance(value, dict):
+        return False
+    if value.get("status") == "diagnostic_only":
+        return True
+    render = value.get("render")
+    return isinstance(render, dict) and render.get("diagnostic_only") is True
 
 
 def validate_topic_input(
@@ -228,6 +273,29 @@ def validate_topic_input(
         raise UnprocessableError("当前原型只允许9:16竖屏")
     if "render_mode" in normalized and normalized["render_mode"] not in {"animated", "simple"}:
         raise UnprocessableError("render_mode必须是animated或simple")
+    if "require_animation" in normalized and not isinstance(normalized["require_animation"], bool):
+        raise UnprocessableError("require_animation必须是布尔值")
+    production_mode = normalized.get("production_mode")
+    if production_mode is None:
+        # Preserve the released render_mode input while making motion the
+        # canonical mode for every newly normalized task.
+        production_mode = "simple" if normalized.get("render_mode") == "simple" else "motion"
+    if not isinstance(production_mode, str) or production_mode not in {
+        "motion", "footage", "hybrid", "simple",
+    }:
+        raise UnprocessableError("production_mode必须是motion、footage、hybrid或simple")
+    normalized["production_mode"] = production_mode
+    if production_mode == "motion":
+        normalized["render_mode"] = "animated"
+        normalized["require_animation"] = True
+    elif production_mode in {"footage", "hybrid"}:
+        # render_mode is retained only as a legacy response field.  These
+        # modes are dispatched independently by ProductionRunner.
+        normalized["render_mode"] = "animated"
+        normalized["require_animation"] = False
+    else:
+        normalized["render_mode"] = "simple"
+        normalized["require_animation"] = False
     if "animation_quality" in normalized and normalized["animation_quality"] not in {"draft", "standard", "high"}:
         raise UnprocessableError("animation_quality不在允许范围内")
     for field in ("require_animation", "enable_web_research"):
@@ -535,7 +603,9 @@ class JobStore:
                     job.pop("automatic_content_gate", None)
                     job["status"] = "blocked_compliance" if review.get("status") == "blocked" else "awaiting_compliance_approval"
                 else:
-                    runner.run_render_stage(staging, job["production_input"], job["approvals"])
+                    render_result = runner.run_render_stage(staging, job["production_input"], job["approvals"])
+                    if render_result_is_diagnostic(render_result):
+                        raise RuntimeError("诊断渲染不能发布为正式成功产物")
                     self._write(staging / "approvals.json", job["approvals"])
                     manifest = self._build_manifest(job, run, staging, runner)
                     self._write(staging / "manifest.json", manifest)
@@ -954,7 +1024,10 @@ class JobStore:
         previous_status = str(job.get("status", ""))
         candidate = dict(production_input)
         candidate["learning_rules"] = rules
-        normalized = validate_topic_input(candidate, allow_learning_rules=True)
+        normalized = preserve_legacy_footage_contract(
+            production_input,
+            validate_topic_input(candidate, allow_learning_rules=True),
+        )
         job["production_input"] = normalized
         job["learning_rule_ids"] = [
             str(item.get("rule_id", "")) for item in normalized.get("learning_rules", []) if item.get("rule_id")
@@ -1274,7 +1347,10 @@ class JobStore:
         )
         production_input = dict(production_input)
         production_input["capability_pack"] = pack
-        job["production_input"] = validate_topic_input(production_input, allow_learning_rules=True)
+        job["production_input"] = preserve_legacy_footage_contract(
+            production_input,
+            validate_topic_input(production_input, allow_learning_rules=True),
+        )
         job["capability_pack"] = {"id": pack["id"], "version": pack["version"], "sha256": pack["sha256"]}
         job.setdefault("learning_rule_ids", [])
         job["updated_at"] = now_iso()
