@@ -637,6 +637,24 @@ class V2WorkflowTests(unittest.TestCase):
             self.assertEqual(recovered["budget"]["events"][-1]["error_type"], "process_interrupted")
             self.assertFalse((job_folder / "run.lock").exists())
 
+    def test_current_process_lock_is_not_recovered_as_interrupted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            job_folder = Path(folder) / "jobs" / job["id"]
+            raw = json.loads((job_folder / "job.json").read_text(encoding="utf-8"))
+            raw["status"] = "research_running"
+            raw["active_run_id"] = "live-run"
+            raw["runs"].append({"run_id": "live-run", "stage": "research", "status": "running"})
+            (job_folder / "job.json").write_text(json.dumps(raw), encoding="utf-8")
+            (job_folder / "run.lock").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+
+            current = jobs.get(job["id"])
+
+            self.assertEqual(current["status"], "research_running")
+            self.assertEqual(current["active_run_id"], "live-run")
+            self.assertEqual(current["runs"][-1]["status"], "running")
+            self.assertTrue((job_folder / "run.lock").exists())
+
     def test_legacy_job_is_read_only_and_not_rewritten(self):
         with tempfile.TemporaryDirectory() as folder:
             jobs = JobStore(Path(folder))
