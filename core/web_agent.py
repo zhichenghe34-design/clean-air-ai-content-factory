@@ -49,6 +49,10 @@ ADVERSARIAL_REVIEW_UNAVAILABLE_MESSAGE = "反证审核能力不可用，相关�
 
 LEGACY_CAPABILITY_PACK_ID = "legacy-clean-air-v2"
 CLEAN_AIR_EXACT_TOPIC_MARKERS = ("甲醛", "除醛", "测醛", "室内空气")
+CLEAN_AIR_TRUSTED_SEED_TOPIC_MARKERS = ("检测", "数值", "自测", "气味", "超标")
+CLEAN_AIR_TRUSTED_SEED_URLS = (
+    "https://news.cctv.com/2024/01/12/ARTI0RRp15kG0egFQzmuD47m240112.shtml",
+)
 
 
 def _string_list(value: Any) -> list[str]:
@@ -173,6 +177,20 @@ def _capability_pack_has_clean_air_scope(capability_pack: dict[str, Any] | None)
         industry == "家居与本地服务"
         or _is_clean_air_exact_topic(industry)
     )
+
+
+def _trusted_exact_seed_urls(
+    topic: str,
+    capability_pack: dict[str, Any] | None,
+) -> list[str]:
+    normalized = re.sub(r"\s+", "", str(topic))
+    if not (
+        _is_clean_air_exact_topic(normalized)
+        and _capability_pack_has_clean_air_scope(capability_pack)
+        and any(marker in normalized for marker in CLEAN_AIR_TRUSTED_SEED_TOPIC_MARKERS)
+    ):
+        return []
+    return list(CLEAN_AIR_TRUSTED_SEED_URLS)
 
 
 def _rule_source_host_matches(url: str, rule: dict[str, Any]) -> bool:
@@ -445,7 +463,7 @@ class WebResearchAgent:
         capability_pack: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self.registry.set_topic(topic)
-        seed_urls = source_urls or []
+        user_seed_urls = [str(value).strip() for value in source_urls or [] if str(value).strip()]
         legacy_exact_rules = (
             isinstance(capability_pack, dict)
             and str(capability_pack.get("id", "")) == LEGACY_CAPABILITY_PACK_ID
@@ -454,6 +472,8 @@ class WebResearchAgent:
             _is_clean_air_exact_topic(topic)
             and _capability_pack_has_clean_air_scope(capability_pack)
         )
+        trusted_seed_urls = [] if user_seed_urls else _trusted_exact_seed_urls(topic, capability_pack)
+        seed_urls = self.registry.authorize_seed_urls([*trusted_seed_urls, *user_seed_urls])
         for url in seed_urls[: self.registry.max_pages]:
             self.registry.execute("extract_url", {"url": url})
         request = {
@@ -463,7 +483,8 @@ class WebResearchAgent:
             ),
             "topic": topic,
             "audience": audience,
-            "user_source_urls": seed_urls,
+            "user_source_urls": user_seed_urls,
+            "server_trusted_source_urls": trusted_seed_urls,
             "capability_pack": capability_pack or {},
         }
         initial: ResearchState = {

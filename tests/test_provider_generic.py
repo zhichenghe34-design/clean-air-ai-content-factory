@@ -19,6 +19,7 @@ from core.provider import (
 )
 from core.strict_audit import strict_audit_research
 from core.web_agent import (
+    CLEAN_AIR_TRUSTED_SEED_URLS,
     EXACT_EVIDENCE_RULES,
     WebResearchAgent,
     bind_exact_evidence_candidates,
@@ -1096,10 +1097,12 @@ class SourceTrustTests(unittest.TestCase):
     def test_dynamic_clean_air_topic_binds_cctv_exact_findings_for_limited_use(self):
         rules = [rule for rule in EXACT_EVIDENCE_RULES if rule.get("source_hosts") == ["news.cctv.com"]]
         self.assertEqual(len(rules), 3)
-        url = "https://news.cctv.com/2024/01/12/clean-air.shtml"
+        url = CLEAN_AIR_TRUSTED_SEED_URLS[0]
         captured_text = "\n".join(str(rule["excerpt"]) for rule in rules)
+        extracted_urls = []
 
         def extract(value, output_dir):
+            extracted_urls.append(value)
             return {
                 "status": "complete",
                 "source": {"final_url": value, "title": "甲醛自测方式靠谱吗？"},
@@ -1141,8 +1144,9 @@ class SourceTrustTests(unittest.TestCase):
                     } for item in findings],
                 }
 
-        topic = "甲醛检测盒和便携自测仪为什么不能替代专业检测？"
-        clean_air_pack = local_capability_pack(topic)
+        goal = "为上海本地除甲醛服务企业制作一条面向新装修家庭的52秒竖屏科普视频，解释为什么数值低不等于安全，并明确证据边界。"
+        topic = "数值低就安全？揭秘室内空气质量检测的三大陷阱"
+        clean_air_pack = local_capability_pack(goal)
         self.assertEqual(clean_air_pack["source"], "local")
         self.assertEqual(clean_air_pack["audit"]["generated_by"], "deterministic_local_generator")
         self.assertEqual(clean_air_pack["snapshot"]["industry"], "家居与本地服务")
@@ -1150,15 +1154,17 @@ class SourceTrustTests(unittest.TestCase):
             registry = TrustedWebToolRegistry(
                 Path(folder),
                 extractor=extract,
-                seed_urls=[url],
+                seed_urls=[],
             )
             result = WebResearchAgent(ApprovedReviewProvider(), registry).run(
                 topic,
                 "新房家庭",
-                [url],
+                [],
                 capability_pack=clean_air_pack,
             )
 
+        self.assertEqual(extracted_urls, [url])
+        self.assertEqual(result["tool_trace"][0]["arguments"]["url"], url)
         self.assertEqual(result["local_evidence_binding"]["added_count"], 3)
         self.assertEqual(result["strict_audit"]["passed_count"], 3)
         self.assertTrue(result["strict_audit"]["model_review_required"])
@@ -1169,6 +1175,103 @@ class SourceTrustTests(unittest.TestCase):
         self.assertTrue(all("CMA" in " ".join(item["limitations"]) for item in result["findings"]))
         self.assertEqual(result["sources"][0]["publisher"], "央视网（转载上观新闻）")
         self.assertEqual(result["sources"][0]["source_type"], "source_page")
+
+    def test_clean_air_service_topic_without_measurement_intent_does_not_auto_seed_cctv(self):
+        class EmptyProvider:
+            api_key = "mock-only"
+
+            @staticmethod
+            def chat_with_tools(messages, tools, tool_choice="auto"):
+                return {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "status": "partial",
+                        "summary": "没有读取来源",
+                        "findings": [],
+                        "content_patterns": [],
+                        "evidence_gaps": [],
+                        "sources": [],
+                    }, ensure_ascii=False),
+                }
+
+            @staticmethod
+            def parse_json_content(content):
+                return json.loads(content)
+
+        for topic in (
+            "除甲醛服务从预约到交付的流程说明",
+            "室内空气安全：新房通风与入住注意事项",
+            "除甲醛服务怎么保障施工安全",
+        ):
+            with self.subTest(topic=topic):
+                clean_air_pack = local_capability_pack(topic)
+                extracted_urls = []
+
+                def extract(value, output_dir):
+                    extracted_urls.append(value)
+                    raise AssertionError("non-measurement clean-air topic must not receive a trusted seed")
+
+                with tempfile.TemporaryDirectory() as folder:
+                    registry = TrustedWebToolRegistry(Path(folder), extractor=extract)
+                    result = WebResearchAgent(EmptyProvider(), registry).run(
+                        topic,
+                        "新房家庭",
+                        [],
+                        capability_pack=clean_air_pack,
+                    )
+
+                self.assertEqual(extracted_urls, [])
+                self.assertEqual(result["findings"], [])
+                self.assertEqual(result["strict_audit"]["passed_count"], 0)
+
+    def test_explicit_user_source_takes_precedence_over_clean_air_trusted_seed(self):
+        class EmptyProvider:
+            api_key = "mock-only"
+
+            @staticmethod
+            def chat_with_tools(messages, tools, tool_choice="auto"):
+                return {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "status": "partial",
+                        "summary": "用户来源没有固定证据原句",
+                        "findings": [],
+                        "content_patterns": [],
+                        "evidence_gaps": [],
+                        "sources": [],
+                    }, ensure_ascii=False),
+                }
+
+            @staticmethod
+            def parse_json_content(content):
+                return json.loads(content)
+
+        topic = "数值低就安全？揭秘室内空气质量检测的三大陷阱"
+        pack = local_capability_pack("为除甲醛服务制作检测数值科普视频")
+        user_url = "https://example.com/user-source"
+        extracted_urls = []
+
+        def extract(value, output_dir):
+            extracted_urls.append(value)
+            return {
+                "status": "complete",
+                "source": {"final_url": value, "title": "用户指定页面"},
+                "content": {"text": "页面没有固定证据原句", "text_chars": 10},
+                "attempts": [{"route": "fake", "status": "complete"}],
+                "warnings": [],
+            }
+
+        with tempfile.TemporaryDirectory() as folder:
+            registry = TrustedWebToolRegistry(Path(folder), extractor=extract, seed_urls=[user_url])
+            result = WebResearchAgent(EmptyProvider(), registry).run(
+                topic,
+                "新房家庭",
+                [user_url],
+                capability_pack=pack,
+            )
+
+        self.assertEqual(extracted_urls, [user_url])
+        self.assertEqual(result["findings"], [])
 
     def test_dynamic_food_scope_rejects_incidental_clean_air_topic_marker(self):
         rule = next(rule for rule in EXACT_EVIDENCE_RULES if rule.get("source_hosts") == ["news.cctv.com"])

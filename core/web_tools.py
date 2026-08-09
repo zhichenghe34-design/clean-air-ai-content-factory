@@ -70,8 +70,19 @@ class TrustedWebToolRegistry:
         self.trace: list[dict[str, Any]] = []
         self.allowed_urls: set[str] = set()
         self.topic = ""
-        for url in seed_urls or []:
-            self.allowed_urls.add(canonical_url(url))
+        self.authorize_seed_urls(seed_urls or [])
+
+    def authorize_seed_urls(self, urls: list[str] | tuple[str, ...]) -> list[str]:
+        """Authorize bounded, server-selected seed pages before tool execution."""
+
+        normalized: list[str] = []
+        for url in urls:
+            value = canonical_url(url)
+            if value not in self.allowed_urls:
+                self.allowed_urls.add(value)
+            if value not in normalized:
+                normalized.append(value)
+        return normalized
 
     def set_topic(self, topic: str) -> None:
         self.topic = str(topic).strip()[:120]
