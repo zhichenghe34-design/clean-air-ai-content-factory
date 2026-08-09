@@ -376,14 +376,26 @@ class CombinedPortableTests(unittest.TestCase):
         build_combined_portable(inputs)
         packaged_node = inputs.output / "runtime/node/node.exe"
         packaged_cli = inputs.output / "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs"
+        isolated_environment = {
+            key: os.environ[key]
+            for key in launch_combined.ENGINE_ENV_ALLOWLIST
+            if os.environ.get(key)
+        }
+        system_root = isolated_environment.get("SYSTEMROOT") or isolated_environment.get("WINDIR")
+        fixed_path = [str(packaged_node.parent)]
+        if system_root:
+            fixed_path.append(str(Path(system_root) / "System32"))
+        isolated_environment.update(
+            {
+                "PATH": os.pathsep.join(fixed_path),
+                "NODE_PATH": "",
+                "NPM_CONFIG_OFFLINE": "true",
+            }
+        )
         completed = subprocess.run(
             [str(packaged_node), str(packaged_cli), "--version"],
             cwd=inputs.output / "runtime/hyperframes",
-            env={
-                "PATH": str(packaged_node.parent),
-                "NODE_PATH": "",
-                "NPM_CONFIG_OFFLINE": "true",
-            },
+            env=isolated_environment,
             check=False,
             capture_output=True,
             text=True,
