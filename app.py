@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import secrets
+import socket
 import threading
 import time
 import webbrowser
@@ -80,6 +81,13 @@ RUNTIME_DIR = Path(os.environ.get("SHIYI_RUNTIME_DIR", APP_DIR / "runtime")).exp
 RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 DISCOVERY_CACHE = RUNTIME_DIR / "discovery.json"
 CATALOG_FILE = APP_DIR / "catalog" / "package-catalog.json"
+_launch_instance_token = os.environ.pop("SHIYI_LAUNCH_INSTANCE_TOKEN", "").strip()
+LAUNCH_INSTANCE_SHA256 = (
+    hashlib.sha256(_launch_instance_token.encode("utf-8")).hexdigest()
+    if _launch_instance_token
+    else None
+)
+del _launch_instance_token
 
 config_store = ConfigStore(RUNTIME_DIR)
 config_store.ensure_storage_layout()
@@ -938,6 +946,9 @@ class AppHandler(BaseHTTPRequestHandler):
             "name": "时宜 Agent 内容工厂",
             "version": "0.3.0",
             "schema_version": 2,
+            # The launcher compares this digest with a fresh per-start secret.
+            # The secret itself is never returned or persisted.
+            "launch_instance_sha256": LAUNCH_INSTANCE_SHA256,
             "review_policy": dict(job_store.review_policy),
             "time": datetime.now().astimezone().isoformat(timespec="seconds"),
             "provider": config["provider"]["name"],
@@ -1844,15 +1855,32 @@ class AppHandler(BaseHTTPRequestHandler):
             handle.write(line)
 
 
-def find_server(host: str, port: int) -> tuple[ThreadingHTTPServer, int]:
+class LoopbackThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def find_server(
+    host: str,
+    port: int,
+    *,
+    strict_port: bool = False,
+) -> tuple[ThreadingHTTPServer, int]:
     if host != "127.0.0.1":
         raise ValueError("v2安全模式只允许监听127.0.0.1")
     last_error = None
-    for candidate in range(port, port + 20):
+    candidates = (port,) if strict_port else range(port, port + 20)
+    for candidate in candidates:
         try:
-            return ThreadingHTTPServer((host, candidate), AppHandler), candidate
+            return LoopbackThreadingHTTPServer((host, candidate), AppHandler), candidate
         except OSError as exc:
             last_error = exc
+    if strict_port:
+        raise RuntimeError(f"指定端口不可用: {last_error}")
     raise RuntimeError(f"无法找到可用端口: {last_error}")
 
 
@@ -1860,9 +1888,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="时宜 Agent 内容工厂控制台")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--strict-port", action="store_true")
     parser.add_argument("--open", action="store_true", dest="open_browser")
     args = parser.parse_args()
-    server, port = find_server(args.host, args.port)
+    server, port = find_server(args.host, args.port, strict_port=args.strict_port)
     url = f"http://{args.host}:{port}"
     (RUNTIME_DIR / "status.json").write_text(
         json.dumps({"status": "running", "url": url, "pid": __import__("os").getpid()}, ensure_ascii=False, indent=2),

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -14,6 +16,7 @@ from scripts.launch_combined import (
     MOTION_OPTIONAL_MPT_HEALTH_TIMEOUT_SECONDS,
     LauncherConfig,
     LauncherError,
+    _port_is_available,
     build_app_command,
     build_app_environment,
     _claim_launcher_state,
@@ -25,10 +28,12 @@ from scripts.launch_combined import (
     import_legacy_runtime,
     probe_preinstalled_runtimes,
     run_combined,
+    select_loopback_port,
     stop_recorded_processes,
     validate_mpt_network_config,
     validate_preinstalled_layout,
     wait_for_mpt_health,
+    wait_for_workbench_health,
 )
 
 
@@ -177,10 +182,22 @@ class CombinedLauncherTests(unittest.TestCase):
             ],
         )
         self.assertEqual(app[1:7], ["-E", "-s", "-B", "-X", "utf8", str(self.config.app_script)])
-        self.assertEqual(app[-4:], ["--host", "127.0.0.1", "--port", "18765"])
+        self.assertEqual(
+            app[-5:],
+            ["--host", "127.0.0.1", "--port", "18765", "--strict-port"],
+        )
         joined = " ".join(engine + app).lower()
         for forbidden in ("deepseek", "api_key", "authorization", "cookie", "secret"):
             self.assertNotIn(forbidden, joined)
+
+    def test_occupied_loopback_port_is_never_reported_available(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen(1)
+            port = occupied.getsockname()[1]
+            self.assertFalse(_port_is_available(port))
+            if port <= 65516:
+                self.assertNotEqual(port, select_loopback_port(port))
 
     def test_engine_environment_drops_keys_and_cookies_while_app_receives_adapter_address(self):
         parent = {
@@ -194,6 +211,7 @@ class CombinedLauncherTests(unittest.TestCase):
             "SHIYI_ALLOW_TEST_PROVIDER": "1",
             "SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS": "1",
             "SHIYI_AGENT_TEST_REVIEW": "1",
+            "SHIYI_LAUNCH_INSTANCE_TOKEN": "host-controlled-token",
             "PYTHONPATH": "C:\\outside-injection",
             "PYTHONHOME": "C:\\outside-runtime",
         }
@@ -220,6 +238,7 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertNotIn("SHIYI_ALLOW_TEST_PROVIDER", app_env)
         self.assertNotIn("SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS", app_env)
         self.assertNotIn("SHIYI_AGENT_TEST_REVIEW", app_env)
+        self.assertNotIn("SHIYI_LAUNCH_INSTANCE_TOKEN", app_env)
         self.assertNotIn("PYTHONPATH", app_env)
         self.assertNotIn("PYTHONHOME", app_env)
         self.assertEqual("should-not-leak", app_env["DEEPSEEK_API_KEY"])
@@ -227,6 +246,18 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertNotIn("OPENAI_API_KEY", app_env)
         self.assertNotIn("COOKIE", app_env)
         self.assertNotIn("AUTHORIZATION", app_env)
+
+        bound_app_env = build_app_environment(
+            parent,
+            self.config,
+            app_port=18765,
+            mpt_port=19080,
+            launch_instance_token="launcher-generated-token",
+        )
+        self.assertEqual(
+            "launcher-generated-token",
+            bound_app_env["SHIYI_LAUNCH_INSTANCE_TOKEN"],
+        )
 
         agent_test_config = LauncherConfig(
             **{**self.config.__dict__, "agent_test_review": True}
@@ -600,6 +631,114 @@ class CombinedLauncherTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, "MPT_HEALTH_TIMEOUT")
 
+    def test_workbench_health_requires_product_and_fresh_instance_identity(self):
+        expected = hashlib.sha256(b"fresh-launch-token").hexdigest()
+        valid = json.dumps(
+            {
+                "name": "时宜 Agent 内容工厂",
+                "version": "0.3.0",
+                "schema_version": 2,
+                "launch_instance_sha256": expected,
+            }
+        ).encode("utf-8")
+        wait_for_workbench_health(
+            "http://127.0.0.1:18765/api/status",
+            timeout_seconds=1,
+            requester=lambda _url, _timeout: valid,
+            process=FakeProcess([None, None]),
+            expected_instance_sha256=expected,
+        )
+
+        foreign = json.dumps(
+            {
+                "name": "时宜 Agent 内容工厂",
+                "version": "0.3.0",
+                "schema_version": 2,
+                "launch_instance_sha256": hashlib.sha256(b"old-token").hexdigest(),
+            }
+        ).encode("utf-8")
+        ticks = iter((0.0, 0.0, 2.0))
+        with self.assertRaises(LauncherError) as mismatch:
+            wait_for_workbench_health(
+                "http://127.0.0.1:18765/api/status",
+                timeout_seconds=1,
+                requester=lambda _url, _timeout: foreign,
+                clock=lambda: next(ticks),
+                sleeper=lambda _seconds: None,
+                process=FakeProcess([None]),
+                expected_instance_sha256=expected,
+            )
+        self.assertEqual("WORKBENCH_HEALTH_TIMEOUT", mismatch.exception.code)
+
+        with self.assertRaises(LauncherError) as exited_after_response:
+            wait_for_workbench_health(
+                "http://127.0.0.1:18765/api/status",
+                timeout_seconds=1,
+                requester=lambda _url, _timeout: valid,
+                process=FakeProcess([None, 9]),
+                expected_instance_sha256=expected,
+            )
+        self.assertEqual("WORKBENCH_EARLY_EXIT", exited_after_response.exception.code)
+
+        arbitrary_ticks = iter((0.0, 0.0, 2.0))
+        with self.assertRaises(LauncherError) as arbitrary_json:
+            wait_for_workbench_health(
+                "http://127.0.0.1:18765/api/status",
+                timeout_seconds=1,
+                requester=lambda _url, _timeout: b"{}",
+                clock=lambda: next(arbitrary_ticks),
+                sleeper=lambda _seconds: None,
+            )
+        self.assertEqual("WORKBENCH_HEALTH_TIMEOUT", arbitrary_json.exception.code)
+
+    def test_controller_never_publishes_ready_for_foreign_workbench_identity(self):
+        created = []
+        processes = [FakeProcess([None]), FakeProcess([None])]
+
+        def fake_popen(command, **kwargs):
+            created.append((list(command), kwargs))
+            return processes[len(created) - 1]
+
+        def foreign_health(url, **kwargs):
+            foreign = json.dumps(
+                {
+                    "name": "时宜 Agent 内容工厂",
+                    "version": "0.3.0",
+                    "schema_version": 2,
+                    "launch_instance_sha256": hashlib.sha256(b"foreign-token").hexdigest(),
+                }
+            ).encode("utf-8")
+            ticks = iter((0.0, 0.0, 2.0))
+            wait_for_workbench_health(
+                url,
+                timeout_seconds=1,
+                requester=lambda _url, _timeout: foreign,
+                clock=lambda: next(ticks),
+                sleeper=lambda _seconds: None,
+                process=kwargs["process"],
+                expected_instance_sha256=kwargs["expected_instance_sha256"],
+            )
+
+        terminated = []
+        with (
+            patch("scripts.launch_combined.select_loopback_port", side_effect=[18765, 19080]),
+            patch("scripts.launch_combined._write_launcher_state") as write_ready,
+            patch("scripts.launch_combined._emit") as emit,
+        ):
+            with self.assertRaises(LauncherError) as context:
+                run_combined(
+                    self.config,
+                    popen_factory=fake_popen,
+                    health_waiter=lambda *_args, **_kwargs: None,
+                    workbench_health_waiter=foreign_health,
+                    process_terminator=lambda process: terminated.append(process),
+                    sleeper=lambda _seconds: None,
+                )
+        self.assertEqual("WORKBENCH_HEALTH_TIMEOUT", context.exception.code)
+        write_ready.assert_not_called()
+        emit.assert_not_called()
+        self.assertEqual([processes[1], processes[0]], terminated)
+
     def test_motion_launcher_mode_uses_only_bundled_tools_and_starts_without_mpt(self):
         node = self.project / "runtime" / "node" / "node.exe"
         cli = self.project / "runtime" / "hyperframes" / "node_modules" / "hyperframes" / "bin" / "hyperframes.mjs"
@@ -752,6 +891,7 @@ class CombinedLauncherTests(unittest.TestCase):
 
         created = []
         app_process = FakeProcess([None, 0])
+        workbench_checks = []
 
         def fake_popen(command, **kwargs):
             created.append((list(command), kwargs))
@@ -765,7 +905,7 @@ class CombinedLauncherTests(unittest.TestCase):
                 motion,
                 popen_factory=fake_popen,
                 health_waiter=lambda *_args, **_kwargs: self.fail("MPT must not be probed"),
-                workbench_health_waiter=lambda *_args, **_kwargs: None,
+                workbench_health_waiter=lambda *_args, **kwargs: workbench_checks.append(kwargs),
                 process_terminator=lambda _process: None,
                 sleeper=lambda _seconds: None,
                 motion_health_verified=True,
@@ -774,6 +914,11 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertEqual(1, len(created))
         self.assertEqual("0", created[0][1]["env"]["SHIYI_MPT_ENABLED"])
         self.assertEqual("1", created[0][1]["env"]["SHIYI_MOTION_HEALTH_VERIFIED"])
+        launch_token = created[0][1]["env"]["SHIYI_LAUNCH_INSTANCE_TOKEN"]
+        self.assertEqual(
+            hashlib.sha256(launch_token.encode("utf-8")).hexdigest(),
+            workbench_checks[0]["expected_instance_sha256"],
+        )
         mpt_health_file = Path(created[0][1]["env"]["SHIYI_MPT_HEALTH_FILE"])
         self.assertEqual(
             {"healthy": False, "schema_version": 1},
@@ -782,6 +927,22 @@ class CombinedLauncherTests(unittest.TestCase):
         payload = emit.call_args.args[0]
         self.assertEqual("ready", payload["motion_engine"]["health"])
         self.assertEqual("disabled", payload["production_engine"]["health"])
+
+        def app_start_failure(*_args, **_kwargs):
+            raise OSError("fixture start failure")
+
+        with patch("scripts.launch_combined.select_loopback_port", side_effect=[18765, 19080]):
+            with self.assertRaises(LauncherError) as failed_start:
+                run_combined(
+                    motion,
+                    popen_factory=app_start_failure,
+                    health_waiter=lambda *_args, **_kwargs: self.fail("MPT must not be probed"),
+                    workbench_health_waiter=lambda *_args, **_kwargs: None,
+                    process_terminator=lambda _process: None,
+                    sleeper=lambda _seconds: None,
+                    motion_health_verified=True,
+                )
+        self.assertEqual("WORKBENCH_START_FAILED", failed_start.exception.code)
 
     def test_motion_primary_revokes_mpt_health_if_optional_engine_crashes(self):
         node = self.project / "runtime/node/node.exe"
@@ -802,7 +963,7 @@ class CombinedLauncherTests(unittest.TestCase):
                 "browser_version": "152.0.7928.2",
             }
         )
-        processes = [FakeProcess([None, 1]), FakeProcess([None, 0])]
+        processes = [FakeProcess([None, 1]), FakeProcess([None, None, 0])]
         created = []
         health_timeouts = []
 
@@ -847,6 +1008,7 @@ class CombinedLauncherTests(unittest.TestCase):
             return processes[len(created) - 1]
 
         terminated = []
+        workbench_checks = []
         with (
             patch("scripts.launch_combined.select_loopback_port", side_effect=[18765, 19080]),
             patch("scripts.launch_combined._emit"),
@@ -855,7 +1017,7 @@ class CombinedLauncherTests(unittest.TestCase):
                 self.config,
                 popen_factory=fake_popen,
                 health_waiter=lambda *_args, **_kwargs: None,
-                workbench_health_waiter=lambda *_args, **_kwargs: None,
+                workbench_health_waiter=lambda *_args, **kwargs: workbench_checks.append(kwargs),
                 process_terminator=lambda process: terminated.append(process),
                 sleeper=lambda _seconds: None,
             )
@@ -869,6 +1031,11 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertEqual(engine_options["env"]["CORS_ALLOWED_ORIGINS"], "http://127.0.0.1:18765")
         self.assertNotIn("SHIYI_MPT_BASE_URL", engine_options["env"])
         self.assertEqual(app_options["env"]["SHIYI_MPT_BASE_URL"], "http://127.0.0.1:19080/api/v1")
+        launch_token = app_options["env"]["SHIYI_LAUNCH_INSTANCE_TOKEN"]
+        self.assertEqual(
+            hashlib.sha256(launch_token.encode("utf-8")).hexdigest(),
+            workbench_checks[0]["expected_instance_sha256"],
+        )
         self.assertEqual(terminated, [processes[1], processes[0]])
 
 

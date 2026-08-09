@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import stat
@@ -71,6 +72,7 @@ APP_RELEASE_FORBIDDEN_ENV = (
     "SHIYI_NODE_EXECUTABLE",
     "SHIYI_HYPERFRAMES_CLI",
     "SHIYI_MOTION_HEALTH_VERIFIED",
+    "SHIYI_LAUNCH_INSTANCE_TOKEN",
     "HYPERFRAMES_BROWSER_PATH",
     "HYPERFRAMES_FFMPEG_PATH",
     "HYPERFRAMES_FFPROBE_PATH",
@@ -956,7 +958,8 @@ def probe_preinstalled_runtimes(
 
 def _port_is_available(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         try:
             probe.bind((LOOPBACK_HOST, port))
         except OSError:
@@ -1018,7 +1021,7 @@ def build_app_command(config: LauncherConfig, app_port: int) -> list[str]:
             "utf8",
             str(config.app_script),
         ]
-    command.extend(["--host", LOOPBACK_HOST, "--port", str(app_port)])
+    command.extend(["--host", LOOPBACK_HOST, "--port", str(app_port), "--strict-port"])
     return command
 
 
@@ -1048,6 +1051,7 @@ def build_app_environment(
     mpt_ready: bool | None = None,
     motion_health_verified: bool = False,
     mpt_health_file: Path | None = None,
+    launch_instance_token: str | None = None,
 ) -> dict[str, str]:
     environment = {
         key: value
@@ -1130,6 +1134,8 @@ def build_app_environment(
     # This value is sent only to the workbench. MPT receives the same exact
     # origin through its separate, secret-free environment below.
     environment["SHIYI_WORKBENCH_ORIGIN"] = f"http://{LOOPBACK_HOST}:{app_port}"
+    if launch_instance_token:
+        environment["SHIYI_LAUNCH_INSTANCE_TOKEN"] = launch_instance_token
     if config.agent_test_review:
         environment["SHIYI_AGENT_TEST_REVIEW"] = "1"
     return environment
@@ -1185,6 +1191,7 @@ def wait_for_workbench_health(
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
     process: subprocess.Popen[bytes] | None = None,
+    expected_instance_sha256: str | None = None,
 ) -> None:
     if requester is None:
         opener = build_opener(ProxyHandler({}))
@@ -1200,12 +1207,30 @@ def wait_for_workbench_health(
             raise LauncherError("WORKBENCH_EARLY_EXIT", "工作台在就绪前意外退出。")
         try:
             payload = json.loads(requester(url, min(2.0, timeout_seconds)).decode("utf-8"))
-            if isinstance(payload, dict):
+            launch_digest = payload.get("launch_instance_sha256") if isinstance(payload, dict) else None
+            product_matches = bool(
+                isinstance(payload, dict)
+                and payload.get("name") == "时宜 Agent 内容工厂"
+                and payload.get("version") == "0.3.0"
+                and payload.get("schema_version") == 2
+            )
+            instance_matches = expected_instance_sha256 is None or bool(
+                isinstance(launch_digest, str)
+                and secrets.compare_digest(launch_digest, expected_instance_sha256)
+            )
+            if product_matches and instance_matches:
+                if process is not None and process.poll() is not None:
+                    raise LauncherError("WORKBENCH_EARLY_EXIT", "工作台在就绪响应后意外退出。")
                 return
         except (OSError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError):
             pass
         sleeper(0.25)
     raise LauncherError("WORKBENCH_HEALTH_TIMEOUT", "工作台未在限定时间内就绪。")
+
+
+def _new_launch_instance_identity() -> tuple[str, str]:
+    token = secrets.token_urlsafe(32)
+    return token, hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _windows_hidden_process_options() -> dict[str, object]:
@@ -1314,8 +1339,13 @@ def run_combined(
             if engine_process.poll() is not None:
                 raise LauncherError("MPT_EARLY_EXIT", "MPT API 在就绪后意外退出。")
 
+            launch_instance_token, expected_instance_sha256 = _new_launch_instance_identity()
             app_environment = build_app_environment(
-                os.environ, config, app_port=app_port, mpt_port=mpt_port
+                os.environ,
+                config,
+                app_port=app_port,
+                mpt_port=mpt_port,
+                launch_instance_token=launch_instance_token,
             )
             try:
                 app_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -1334,6 +1364,7 @@ def run_combined(
                 f"{workbench_url}/api/status",
                 timeout_seconds=config.health_timeout_seconds,
                 process=app_process,
+                expected_instance_sha256=expected_instance_sha256,
             )
             if app_process.poll() is not None:
                 raise LauncherError("WORKBENCH_EARLY_EXIT", "工作台在就绪后意外退出。")
@@ -1435,6 +1466,7 @@ def _run_motion_primary(
 
             _write_mpt_health_state(mpt_health_file, mpt_ready)
 
+            launch_instance_token, expected_instance_sha256 = _new_launch_instance_identity()
             app_environment = build_app_environment(
                 os.environ,
                 config,
@@ -1443,22 +1475,29 @@ def _run_motion_primary(
                 mpt_ready=mpt_ready,
                 motion_health_verified=motion_health_verified,
                 mpt_health_file=mpt_health_file,
+                launch_instance_token=launch_instance_token,
             )
             app_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
-            app_process = popen_factory(
-                build_app_command(config, app_port),
-                cwd=str(config.project_root),
-                env=app_environment,
-                stdin=None,
-                stdout=None,
-                stderr=None,
-            )
+            try:
+                app_process = popen_factory(
+                    build_app_command(config, app_port),
+                    cwd=str(config.project_root),
+                    env=app_environment,
+                    stdin=None,
+                    stdout=None,
+                    stderr=None,
+                )
+            except OSError as exc:
+                raise LauncherError("WORKBENCH_START_FAILED", "工作台进程无法启动。") from exc
             workbench_url = f"http://{LOOPBACK_HOST}:{app_port}"
             workbench_health_waiter(
                 f"{workbench_url}/api/status",
                 timeout_seconds=config.health_timeout_seconds,
                 process=app_process,
+                expected_instance_sha256=expected_instance_sha256,
             )
+            if app_process.poll() is not None:
+                raise LauncherError("WORKBENCH_EARLY_EXIT", "工作台在就绪后意外退出。")
             launcher_state_path = _write_launcher_state(
                 config,
                 started_at=started_at,

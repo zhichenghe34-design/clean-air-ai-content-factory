@@ -2,6 +2,9 @@ import http.client
 import hashlib
 import json
 import os
+import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -139,6 +142,7 @@ class ApiV2Tests(unittest.TestCase):
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertEqual(payload["version"], "0.3.0")
+        self.assertIsNone(payload["launch_instance_sha256"])
         self.assertEqual(payload["production_engine"]["selected_mode"], "motion")
         engines = payload["production_engines"]
         self.assertEqual(engines["default_mode"], "motion")
@@ -166,6 +170,67 @@ class ApiV2Tests(unittest.TestCase):
         footage = json.loads(body)["production_engines"]["footage"]
         self.assertEqual(footage["health"], "ready")
         self.assertTrue(footage["selectable"])
+
+        digest = hashlib.sha256(b"launcher-token").hexdigest()
+        with mock.patch.object(app, "LAUNCH_INSTANCE_SHA256", digest):
+            status, _, body = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(digest, json.loads(body)["launch_instance_sha256"])
+
+    def test_strict_server_never_falls_forward_from_an_occupied_port(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen(1)
+            port = occupied.getsockname()[1]
+            with self.assertRaises(RuntimeError):
+                app.find_server("127.0.0.1", port, strict_port=True)
+
+    def test_launch_token_is_consumed_at_import_and_never_persisted(self):
+        token = "fixture-launch-token-that-must-not-persist"
+        expected = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with tempfile.TemporaryDirectory() as runtime_name:
+            runtime = Path(runtime_name)
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    "SHIYI_RUNTIME_DIR": str(runtime),
+                    "SHIYI_LAUNCH_INSTANCE_TOKEN": token,
+                }
+            )
+            probe = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    "-X",
+                    "utf8",
+                    "-c",
+                    (
+                        "import json, os, app; "
+                        "print(json.dumps({"
+                        "'token_present': 'SHIYI_LAUNCH_INSTANCE_TOKEN' in os.environ, "
+                        "'digest': app.LAUNCH_INSTANCE_SHA256}))"
+                    ),
+                ],
+                cwd=str(Path(__file__).resolve().parents[1]),
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(0, probe.returncode, probe.stderr)
+            payload = json.loads(probe.stdout.strip())
+            self.assertFalse(payload["token_present"])
+            self.assertEqual(expected, payload["digest"])
+            token_bytes = token.encode("utf-8")
+            persisted = [
+                str(path.relative_to(runtime))
+                for path in runtime.rglob("*")
+                if path.is_file() and token_bytes in path.read_bytes()
+            ]
+            self.assertEqual([], persisted)
 
     def test_clear_api_key_removes_local_session_key_and_invalidates_status(self):
         status, _, body = self.request(
