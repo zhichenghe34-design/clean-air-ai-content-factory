@@ -524,10 +524,18 @@ async function advanceJob(id, { busyAlready = false } = {}) {
     }
     await refresh({ syncHomeView: false });
     await renderHomeJob(job);
+    if (state.selectedJob?.id === id && document.body.dataset.view === "jobs") {
+      await openJob(id, { job, scroll: false });
+    }
   } catch (error) {
     await refresh({ syncHomeView: false }).catch(() => {});
     const job = state.jobs.find(item => item.id === id);
-    if (job) await renderHomeJob(job);
+    if (job) {
+      await renderHomeJob(job);
+      if (state.selectedJob?.id === id && document.body.dataset.view === "jobs") {
+        await openJob(id, { job, scroll: false });
+      }
+    }
     throw error;
   } finally {
     if (ownsBusy) endJobBusy(id);
