@@ -81,6 +81,11 @@ class CombinedPortableTests(unittest.TestCase):
         mpt_license = "MoneyPrinterTurbo MIT fixture\n"
         self._write(self.repo, "app.py", "print('fixture app')\n")
         self._write(self.repo, "LICENSE", product_license)
+        self._write(
+            self.repo,
+            "examples/pattern_cards.jsonl",
+            '{"item_id":"fixture","status":"structure_only_not_evidence"}\n',
+        )
         self._write(self.repo, "core/__init__.py", "")
         self._write(self.repo, "core/runtime.py", "VALUE = 1\n")
         self._write(self.repo, "core/__pycache__/ignored.pyc", b"ignored")
@@ -884,6 +889,7 @@ class CombinedPortableTests(unittest.TestCase):
         self.assertEqual([], verify_zip(inputs.zip_path))
         self.assertTrue((inputs.output / "tools/build_public_evidence.py").is_file())
         self.assertTrue((inputs.output / "tools/verify_public_evidence.py").is_file())
+        self.assertTrue((inputs.output / "examples/pattern_cards.jsonl").is_file())
         self.assertTrue((inputs.output / "runtime/python/python.exe").is_file())
         self.assertTrue((inputs.output / "runtime/ffmpeg/avcodec-61.dll").is_file())
         self.assertTrue(

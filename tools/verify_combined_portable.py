@@ -201,10 +201,11 @@ ROOT_FILES = frozenset(
     {"app.py", "LICENSE", ROOT_LAUNCHER_NAME, STOP_LAUNCHER_NAME, MIGRATION_LAUNCHER_NAME, USAGE_NAME, PACKAGE_MANIFEST, CHECKSUMS_FILE}
 )
 ROOT_DIRECTORIES = frozenset(
-    {"agent-skills", "catalog", "core", "docs", "engine", "licenses", "runtime", "scripts", "static", "third_party", "tools"}
+    {"agent-skills", "catalog", "core", "docs", "engine", "examples", "licenses", "runtime", "scripts", "static", "third_party", "tools"}
 )
 EXACT_FILES = frozenset(
     {
+        "examples/pattern_cards.jsonl",
         "docs/fonts/NotoSansSC-Regular.ttf",
         "docs/fonts/NotoSansSC-Bold.ttf",
         "docs/fonts/OFL.txt",

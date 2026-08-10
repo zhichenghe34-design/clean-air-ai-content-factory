@@ -207,6 +207,7 @@ PYTHON_RUNTIME_PRUNED_REQUIREMENTS = {
 REPO_FILE_ALLOWLIST = (
     "app.py",
     "LICENSE",
+    "examples/pattern_cards.jsonl",
     "scripts/launch_combined.py",
     "scripts/launch_combined.ps1",
     "tools/verify_combined_portable.py",
