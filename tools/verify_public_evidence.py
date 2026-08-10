@@ -9,7 +9,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import unicodedata
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -20,14 +22,22 @@ if str(REPO_ROOT) not in sys.path:
 from core.review_policy import (
     approval_validation_line,
     classify_approval_record,
+    classify_script_edit_record,
     evidence_status_for_policy,
     normalize_review_policy,
+    script_edit_validation_line,
 )
 from core.motion_director import MotionPlanError, validate_motion_plan
 from core.motion_runtime_contract import (
+    H264_CODEC_STRATEGY,
+    HYPERFRAMES_PATCHED_CLI_SHA256,
+    HYPERFRAMES_PATCH_ID,
+    HYPERFRAMES_PATCH_VERSION,
     HYPERFRAMES_RENDERER,
     HYPERFRAMES_VERSION,
     MOTION_ENGINE_NAME,
+    SYSTEM_BROWSER_MINIMUM_MAJOR,
+    SYSTEM_BROWSER_STRATEGY,
 )
 
 
@@ -52,14 +62,19 @@ MOTION_ENGINE_IDENTITY = {
     "mode": "local_cli",
     "selected_mode": "motion",
     "health": "completed",
+    "codec_strategy": H264_CODEC_STRATEGY,
+    "patch_id": HYPERFRAMES_PATCH_ID,
+    "patch_version": HYPERFRAMES_PATCH_VERSION,
+    "patched_cli_sha256": HYPERFRAMES_PATCHED_CLI_SHA256,
 }
 TEXT_SUFFIXES = {".json", ".md", ".srt", ".txt", ".log", ".yml", ".yaml"}
+_WINDOWS_USER_HOME_PATTERN = r"C:" + r"\\Users\\"
 SECRET_PATTERNS = {
     "API Key": re.compile(r"\b(?:sk|ds)-[A-Za-z0-9_-]{12,}\b"),
     "Authorization": re.compile(r"(?i)authorization\s*[:=]\s*(?!null\b|none\b)[^\s,}\]]+"),
     "Cookie": re.compile(r"(?i)(?:set-cookie|cookie)\s*[:=]\s*(?!null\b|none\b)[^\s,}\]]+"),
     "Windows absolute path": re.compile(r"(?i)(?:^|[\s\"'])(?:[A-Z]:\\|\\\\[^\\\s]+\\)"),
-    "User home path": re.compile(r"(?i)(?:/Users/|/home/|C:\\Users\\)[^\s\"']+"),
+    "User home path": re.compile(r"(?i)(?:/Users/|/home/|" + _WINDOWS_USER_HOME_PATTERN + r")[^\s\"']+"),
     "file URI": re.compile(r"(?i)file:///[A-Za-z]:/"),
     "email": re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
     "mainland phone": re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
@@ -100,8 +115,10 @@ def find_ffprobe() -> str | None:
     return shutil.which("ffprobe")
 
 
-def probe_video(path: Path) -> dict[str, Any]:
-    command = find_ffprobe()
+def probe_video(path: Path, ffprobe_path: Path | str | None = None) -> dict[str, Any]:
+    command = str(ffprobe_path) if ffprobe_path is not None else find_ffprobe()
+    if ffprobe_path is not None and not Path(command).is_file():
+        command = None
     if not command:
         raise RuntimeError("FFprobe 不可用，无法验证公开成片")
     output = subprocess.check_output(
@@ -291,6 +308,28 @@ def _validate_v03_review_contract(
     return errors
 
 
+def _validate_script_edit_contract(
+    manifest: dict[str, Any], approved_script: dict[str, Any], contract: str
+) -> list[str]:
+    allow_legacy_human = contract == "legacy_v2"
+    edit_mode, errors = classify_script_edit_record(
+        approved_script, allow_legacy_human=allow_legacy_human
+    )
+    if errors or edit_mode is None:
+        return errors
+    if allow_legacy_human:
+        return [] if edit_mode == "human" else ["旧 v2 改稿身份不能声明为代理测试"]
+    try:
+        policy_mode = normalize_review_policy(manifest.get("review_policy"))[
+            "stage_review_mode"
+        ]
+    except (TypeError, ValueError):
+        return ["批准稿编辑身份无法绑定到有效 review_policy"]
+    if edit_mode != policy_mode:
+        return ["批准稿编辑身份与 manifest review_policy 不一致"]
+    return []
+
+
 def _validate_mpt_review_contract(
     manifest: dict[str, Any], approval_modes: list[str]
 ) -> list[str]:
@@ -376,8 +415,12 @@ def _validate_motion_evidence(
     errors: list[str] = []
     if run_report.get("status") != "complete" or run_report.get("production_mode") != "motion":
         errors.append("run_report.json 不是完成的 motion_v0.3 运行")
-    if run_report.get("production_engine") != MOTION_ENGINE_IDENTITY:
+    production_engine = run_report.get("production_engine")
+    if not isinstance(production_engine, dict) or any(
+        production_engine.get(key) != value for key, value in MOTION_ENGINE_IDENTITY.items()
+    ):
         errors.append("run_report.json 的 HyperFrames 固定版本身份不一致")
+        production_engine = {}
 
     render = run_report.get("render")
     if not isinstance(render, dict):
@@ -399,6 +442,21 @@ def _validate_motion_evidence(
         errors.append("motion_v0.3 不得使用诊断渲染适配器")
     if render.get("runtime_source") != "packaged":
         errors.append("motion_v0.3 必须来自正式便携包内置 HyperFrames 运行时")
+    browser_version = render.get("browser_version")
+    browser_identity_valid = (
+        render.get("browser_strategy") == SYSTEM_BROWSER_STRATEGY
+        and render.get("browser_minimum_major") == SYSTEM_BROWSER_MINIMUM_MAJOR
+        and isinstance(browser_version, str)
+        and re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", browser_version) is not None
+        and int(browser_version.split(".", 1)[0]) >= SYSTEM_BROWSER_MINIMUM_MAJOR
+    )
+    if not browser_identity_valid:
+        errors.append("motion_v0.3 缺少启动器验证的受信系统Edge身份")
+    if any(
+        production_engine.get(key) != render.get(key)
+        for key in ("browser_strategy", "browser_version", "browser_minimum_major")
+    ):
+        errors.append("run_report.json 的生产引擎与渲染浏览器身份不一致")
 
     try:
         motion_plan = json.loads((folder / "motion_plan.json").read_text(encoding="utf-8"))
@@ -501,7 +559,11 @@ def _validate_motion_evidence(
     return errors
 
 
-def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
+def verify(
+    folder: Path,
+    *,
+    ffprobe_path: Path | str | None = None,
+) -> tuple[list[str], dict[str, Any]]:
     errors: list[str] = []
     actual = {item.name for item in folder.iterdir() if item.is_file()}
     missing = sorted(REQUIRED - actual)
@@ -518,6 +580,7 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
     entries = {str(item.get("name")): item for item in manifest.get("artifacts", []) if isinstance(item, dict)}
     contract, contract_errors = _engine_contract(actual, set(entries))
     errors.extend(contract_errors)
+    errors.extend(_validate_script_edit_contract(manifest, approved_script, contract))
     expected_files = REQUIRED | evidence_artifacts_for_contract(contract)
     extra = sorted(actual - expected_files)
     if extra:
@@ -569,6 +632,12 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
     errors.extend(line_errors)
     if expected_approval_line and expected_approval_line not in validation_text:
         errors.append("VALIDATION.md 的审查身份说明与 approvals.json 不一致")
+    expected_edit_line, edit_line_errors = script_edit_validation_line(
+        approved_script, allow_legacy_human=contract == "legacy_v2"
+    )
+    errors.extend(edit_line_errors)
+    if expected_edit_line and expected_edit_line not in validation_text:
+        errors.append("VALIDATION.md 的改稿身份说明与 approved_script.json 不一致")
     if contract == "mpt_v0.3":
         errors.extend(_validate_mpt_review_contract(manifest, approval_modes))
     elif contract == "motion_v0.3":
@@ -610,7 +679,7 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
         if path.is_file():
             errors.extend(scan_text(path))
 
-    media = probe_video(folder / "final.mp4")
+    media = probe_video(folder / "final.mp4", ffprobe_path=ffprobe_path)
     if not 45 <= media["duration_seconds"] <= 60:
         errors.append("成片时长不在 45–60 秒")
     if (media["width"], media["height"]) != (1080, 1920):
@@ -632,7 +701,66 @@ def verify(folder: Path) -> tuple[list[str], dict[str, Any]]:
         contract=contract,
     ))
     media["evidence_contract"] = contract
-    return errors, media
+    # Several independent contract layers may identify the same root cause.
+    # Keep the CLI actionable without weakening any check.
+    return list(dict.fromkeys(errors)), media
+
+
+def verify_archive(
+    archive_path: Path,
+    *,
+    ffprobe_path: Path | str | None = None,
+) -> tuple[list[str], dict[str, Any], dict[str, Any]]:
+    """Verify a public evidence ZIP without trusting archive paths.
+
+    The public package is intentionally flat.  Refusing nested, duplicate,
+    encrypted, or oversized entries keeps this helper safe for the in-app
+    replay check as well as for release QA.
+    """
+
+    archive_path = Path(archive_path)
+    if not archive_path.is_file():
+        return ["公开证据 ZIP 不存在"], {}, {}
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
+            allowed_names = REQUIRED | MPT_ENGINE_ARTIFACTS | MOTION_EVIDENCE_ARTIFACTS
+            unsafe = [
+                name
+                for name in names
+                if not name
+                or "\\" in name
+                or Path(name).name != name
+                or name in {".", ".."}
+                or name not in allowed_names
+            ]
+            if unsafe:
+                return ["公开证据 ZIP 含不安全路径"], {}, {}
+            if len(names) != len(set(names)):
+                return ["公开证据 ZIP 含重复文件名"], {}, {}
+            if any(info.is_dir() or info.flag_bits & 0x1 for info in infos):
+                return ["公开证据 ZIP 含目录或加密条目"], {}, {}
+            if len(infos) > 32 or sum(info.file_size for info in infos) > 2_000_000_000:
+                return ["公开证据 ZIP 超出安全大小限制"], {}, {}
+            with tempfile.TemporaryDirectory(prefix="shiyi-public-evidence-verify-") as temp_name:
+                folder = Path(temp_name)
+                for info in infos:
+                    target = folder / info.filename
+                    with archive.open(info) as source, target.open("wb") as destination:
+                        shutil.copyfileobj(source, destination, length=1024 * 1024)
+                errors, media = verify(folder, ffprobe_path=ffprobe_path)
+                manifest: dict[str, Any] = {}
+                if (folder / "manifest.json").is_file():
+                    try:
+                        payload = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+                        if isinstance(payload, dict):
+                            manifest = payload
+                    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                        pass
+                return errors, media, manifest
+    except Exception as exc:
+        return [f"公开证据 ZIP 无法读取：{type(exc).__name__}"], {}, {}
 
 
 def main() -> int:

@@ -34,6 +34,8 @@ EXPECTED_EXCLUSIONS = {
     "app/services/llm.py",
     "app/controllers/v1/llm.py",
     "app/services/upload_post.py",
+    "app/services/elevenlabs_music.py",
+    "app/services/sonilo.py",
 }
 
 
@@ -53,7 +55,16 @@ class MoneyPrinterTurboBoundaryTests(unittest.TestCase):
         self.assertFalse(self.lock["source_imported"])
         self.assertEqual(
             self.lock["integration_status"],
-            "cli_and_local_http_smoke_passed_formal_human_e2e_pending",
+            "video_only_subset_import_and_local_http_smoke_passed_formal_human_e2e_pending",
+        )
+        self.assertEqual(self.lock["portable_subset"]["id"], "SHIYI_MPT_OFFLINE_SUBSET_V1")
+        self.assertEqual(
+            self.lock["portable_subset"]["mode"],
+            "video_only_adapted_runtime_dependency_closure",
+        )
+        self.assertEqual(
+            {item["path"] for item in self.lock["portable_subset"]["deterministic_modifications"]},
+            {"app/router.py", "app/services/task.py", "app/services/video.py"},
         )
         self.assertNotIn("latest", self.lock_bytes.decode("utf-8").lower())
 

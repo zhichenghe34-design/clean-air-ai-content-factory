@@ -21,14 +21,20 @@ MoneyPrinterTurbo 只作为候选的独立视频生产引擎，负责经验证�
 
 ## 当前采用状态
 
-`source_imported` 当前仍为 `false`，表示上游源码没有复制进 Git 仓库。固定脚本 CLI 烟雾与回环 HTTP → `ProductionRunner` 组合联调均已通过；正式便携包会在独立 staging 中从固定 clean snapshot 复制受控运行文件，并保留本许可证和来源锁。内部联调使用测试审批夹具，不冒充用户两道人审后的正式成功证据。
+`source_imported` 当前仍为 `false`，只表示上游 Git 源码没有提交进本仓库。正式便携构建器已经实现从固定 clean snapshot 在独立 staging 中构建 `SHIYI_MPT_OFFLINE_SUBSET_V1`：复制视频生产所需的 Python/JSON 运行依赖闭包，再按机器可验证的固定规则改造成 video-only 子集，并保留本许可证和来源锁。固定脚本 CLI 烟雾、回环 HTTP → `ProductionRunner` 组合联调、便携 Python 导入探针和隔离的真实视频 canary 均已通过；这些是源码/临时 staging 的工程验证，不表示最终对象 ZIP 已重建，也不冒充用户两道人审后的正式成功证据。
 
-允许评估的模块仅限锁文件列出的素材、缓存、任务、产物、配音、字幕、视频服务及非 LLM 视频 API 控制器。实际采用某个模块前仍须检查其依赖、网络行为、输入输出和失败隔离。
+便携子集对三处上游文件做确定性适配：`app/router.py` 仅注册视频路由；`app/services/task.py` 移除 LLM、社交发布和外部音乐 Provider 导入，并注入明确拒绝越界调用的离线桩；`app/services/video.py` 将所有正式视频写出（含图片素材分支）与 concat 固定为经验证的 `h264_mf` quality 72 路径，移除 `libx264` 默认值和失败回退。构建器随后实际导入 `app.asgi`，确认 `/api/v1/videos` 与已批准 `video_script`/`video_terms` 路径可用，同时确认 LLM、社交发布和外部音乐 Provider 能力不存在。
+
+随包 MoviePy 的正式身份是 distribution `2.2.1`（上游模块自身仍报告 `2.1.2`，不作为包身份）。构建器在 Python SBOM 生成前应用精确 `shiyi-moviepy-windows-mf` MIT 补丁：只为 `h264_mf` 去掉上游不兼容的 `-preset`，固定 quality 72/`yuv420p`，并同步 `moviepy-2.2.1.dist-info/RECORD`；未知或 writer/RECORD 混合状态直接拒绝。真实 ColorClip + AAC 编码、MPT concat 和 FFprobe 已共同验证输出为 H.264/yuv420p/AAC。适配说明、排除清单、补丁身份和标记由构建器与 verifier 双向校验。
+
+正式 Python 闭包按精确 distribution/RECORD 图从 138 个 distribution 裁剪到 89 个，删除 49 个未采用依赖和重复 ImageIO FFmpeg；最终 5,784 个 RECORD 文件进入逐文件 SBOM。正式 FFmpeg 只能来自仓库锁定的 9 文件 LGPL 共享运行时，不接受任意 FFmpeg 路径或 `libx264` 回退。
+
+允许评估的模块仅限锁文件列出的素材、缓存、任务、产物、配音、字幕、视频服务及非 LLM 视频 API 控制器；为满足这些入口的正常 Python import，可复制其受控运行依赖闭包，但不得借此恢复任何明确排除的能力。实际采用某个模块前仍须检查其依赖、网络行为、输入输出和失败隔离。
 
 ## 明确排除
 
 - 不纳入上游 `resource/fonts`、`resource/songs` 和示例媒体；正式字体使用开源可商用的 Noto Sans SC，BGM 默认关闭或使用单独核验过的素材。
-- 不纳入上游 WebUI、LLM 生成链路或社交平台上传能力。
+- 不纳入上游 WebUI、LLM 生成链路、社交平台上传能力，以及需要外部联网服务的 ElevenLabs/Sonilo 音乐 Provider。
 - 不允许 MoneyPrinterTurbo 读取本项目的模型密钥、Cookie、审批数据或运行历史。
 - 不声称当前系统具备“智能内容去重”，也不声称已经提供公网 SaaS。
 

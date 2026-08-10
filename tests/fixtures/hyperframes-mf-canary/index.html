@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=320, height=568" />
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 320px; height: 568px; margin: 0; overflow: hidden; }
+      body { background: #071824; color: #f4fffc; font-family: sans-serif; }
+      #root { position: relative; width: 320px; height: 568px; overflow: hidden; }
+      .grid {
+        position: absolute; inset: 0;
+        background:
+          linear-gradient(rgba(86,245,208,.12) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(86,245,208,.12) 1px, transparent 1px),
+          linear-gradient(145deg, #071824, #145b67 55%, #391c63);
+        background-size: 24px 24px, 24px 24px, 100% 100%;
+      }
+      .clip { position: absolute; inset: 0; display: grid; place-items: center; }
+      .card { width: 250px; padding: 28px 22px; border: 1px solid #56f5d0; background: #071824dd; }
+      .line { width: 100%; height: 2px; margin: 18px 0; background: #56f5d0; transform-origin: left; }
+      h1 { margin: 0; font-size: 31px; line-height: 1.15; }
+      p { margin: 0; color: #d9fff7; font-size: 17px; }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="h264-mf-canary"
+      data-no-timeline
+      data-start="0"
+      data-duration="2"
+      data-width="320"
+      data-height="568"
+      data-fps="30"
+    >
+      <div class="grid" data-layout-ignore></div>
+      <section id="canary-scene" class="clip" data-start="0" data-duration="2" data-track-index="1">
+        <div class="card">
+          <h1>纯动画编码合同</h1>
+          <div class="line"></div>
+          <p>h264_mf · offline · deterministic</p>
+        </div>
+      </section>
+    </div>
+    <script>
+      const card = document.querySelector(".card");
+      const cardMotion = card.animate(
+        [
+          { transform: "translateY(80px) scale(.8)", opacity: 0 },
+          { transform: "translateY(0) scale(1)", opacity: 1, offset: .45 },
+          { transform: "translateY(-12px) scale(1.03)", opacity: 1 }
+        ],
+        { duration: 2000, fill: "both", iterations: 1, easing: "cubic-bezier(.2,0,0,1)" }
+      );
+      cardMotion.pause();
+      const lineMotion = document.querySelector(".line").animate(
+        [{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }],
+        { duration: 1400, delay: 300, fill: "both", iterations: 1, easing: "ease-out" }
+      );
+      lineMotion.pause();
+    </script>
+  </body>
+</html>

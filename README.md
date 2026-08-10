@@ -50,7 +50,9 @@
 - 动画模板只使用本地有限 WAAPI、Noto Sans SC 与确定性时间线；不使用 CDN、运行时下载、随机数、无限循环或现场生成可执行代码。HyperFrames 正式检查使用 `--strict`，正式渲染使用 `--no-best-effort --strict`。
 - 当前 45 秒自然中文七幕 canary 已通过 HyperFrames 0.7.86 的 lint、runtime、layout、motion 和 contrast 严格检查，包含 300 个运动采样；这只证明动画工程合同，不冒充两道阶段审查后的正式成片 E2E。
 - `footage` 保留为 MoneyPrinterTurbo 实拍支线；旧 MPT 任务不会被默认动画路由改写。`hybrid` 当前明确 fail-closed，`simple` 仅用于不可发布的诊断运行。
-- 便携封包合同会固定 Node、HyperFrames、Chrome Headless Shell、字体和 FFmpeg，禁止系统 PATH、`npx`、运行时下载及宿主 Node 注入。当前 135 个可达依赖的许可证闭包已经完成，9 个缺少包内正文的精确版本 override 也已绑定官方来源；每个候选都必须从对应 clean commit 重建并在全新目录冷启动，不能只凭源码测试宣称可下载。
+- 便携封包合同会内置并固定 Node、HyperFrames、字体和 FFmpeg，但不分发 Chrome、Chrome for Testing 或 Edge 浏览器载荷。动画启动只接受机器级 `Program Files` 固定路径中的 Microsoft Edge 151+，同时核验 Authenticode 签名、Microsoft 产品身份与实际四段文件版本；LocalAppData、宿主路径/版本覆盖、缺失、过旧或伪造可执行文件均 fail-closed。正式就绪前还必须通过一次真实 HyperFrames `--strict` Edge canary 和一次直接 `h264_mf`/AAC 编解码 canary，全程禁止网络下载。当前 135 个 HyperFrames 可达依赖的许可证闭包已经完成，9 个缺少包内正文的精确版本 override 也已绑定官方来源。
+- 正式 FFmpeg 输入已经固定为仓库内 9 个逐文件哈希锁定的 Windows x64 共享文件：自建 FFmpeg `d3ad8a7` + zlib 1.3.2，许可证为 LGPL-2.1-or-later/Zlib，不含 `libx264`、rav1e、GPL/nonfree 编解码库或第二份 ImageIO FFmpeg。21 项真实能力探针覆盖 HyperFrames 与 MPT 所需的 `h264_mf`、原生 AAC、解码、缩放、音频和 concat 能力。对应源码 companion 已在本地冻结为 `ShiyiContentFactory-v0.3.0-FFmpeg-LGPL-source-d3ad8a7.zip`（19,314,160 字节，SHA-256 `A09A28824F6C5EBBFC8CF724136701FA6ADFE7F35BA58670A85F48A9CA856C08`），但尚未上传 GitHub Release；发布前它必须与对象代码 ZIP 同挂 `v0.3.0` Release 并通过同 Release 门禁。
+- 正式便携 Python 合同把已审计运行时从 138 个 distribution 精确裁剪到 89 个，删除 49 个未采用依赖和重复 ImageIO FFmpeg；构建后按 5,784 个 RECORD 文件生成逐文件 SBOM，并保留精确版本许可证正文/override。MoviePy 以 distribution `2.2.1` 为身份，先应用 `shiyi-moviepy-windows-mf` 补丁并同步 wheel `RECORD`，再生成 SBOM；补丁只在 `h264_mf` 时移除不受支持的 `-preset`，固定 quality 72、`yuv420p`，其他 codec 保持上游行为。构建器、独立 verifier 与真实 ColorClip→concat→FFprobe canary 已验证这些合同；最终候选仍必须从对应 clean commit 重建、在全新目录冷启动并重新执行 E2E，不能只凭源码测试宣称可下载。
 
 - MoneyPrinterTurbo 固定为 `1.3.3` / `254cd028906ee657eab844dc94087cdbea2a7aa8`，通过只监听回环地址的内部 HTTP API 接收已经批准的脚本和本地素材；它不能读取 DeepSeek Key，也不能重写事实内容。
 - 固定脚本的独立 CLI 烟雾和真实 HTTP → `ProductionRunner` 联调均已通过。CLI 证据 manifest SHA-256 为 `D184B944BEF773A17790F264ADEC01D3F838AC3B411CF83F829FABEBD4B87E5E`；HTTP 组合成片为 46.600 秒、1080×1920、H.264/yuv420p + AAC，证据 manifest SHA-256 为 `F42EA0D748B7E15287978462112E7481E8F9CB80FBBF015B70ACE183204DB64F`。这些都只属于内部工程证据，不冒充用户两道人审后的正式比赛证据。
@@ -84,7 +86,7 @@ npm.cmd ci
 
 默认地址是 `http://127.0.0.1:8765`。如果 8765 被占用，程序只在 127.0.0.1 上顺延寻找端口，控制台会显示实际端口。
 
-这条命令只启动工作台源码，不会自动启动动画或实拍引擎。v0.3 组合开发环境使用 `scripts/launch_combined.ps1`：固定动画运行时通过探针后成为默认生产引擎；MPT 可作为实拍支线启动，缺失或崩溃时只撤销实拍健康状态，不阻断动画工作台。最终便携包会把所需运行时和根目录双击入口一并封装，运行时不会下载依赖。
+这条命令只启动工作台源码，不会自动启动动画或实拍引擎。v0.3 组合开发环境使用 `scripts/launch_combined.ps1`：固定动画运行时通过探针后成为默认生产引擎；MPT 可作为实拍支线启动，缺失或崩溃时只撤销实拍健康状态，不阻断动画工作台。最终便携候选会封装 Node/HyperFrames、字体、9 文件 FFmpeg、裁剪后的 Python/MPT 子集和根目录双击入口，但浏览器继续使用经过验证的系统 Edge；运行时不会下载依赖。
 
 受控测试时显式增加 `-AgentTestReview`。启动器默认清除父进程遗留的测试开关，只有本次显式参数才会把 `SHIYI_AGENT_TEST_REVIEW=1` 传给工作台；MoneyPrinterTurbo 不会收到这个标志。新任务会固定 `review_policy.stage_review_mode=agent_test`，两道记录均写明 `actor_type=agent`、`review_mode=test`、`human_approval_claimed=false`，最终 manifest 标为 `test_only_pending_human_acceptance`。普通启动仍固定为正式人审模式。
 
@@ -158,7 +160,7 @@ engine_report.json（MPT 实拍运行）
 | POST | `/api/jobs/{id}/run` | 只推进到下一道阶段审查门禁，要求 `Idempotency-Key` |
 | POST | `/api/jobs/{id}/approvals/research` | 研究逐 finding 审定 |
 | POST | `/api/jobs/{id}/approvals/compliance` | 最终脚本合规放行 |
-| PATCH | `/api/jobs/{id}/script` | 人工改稿并重算本地合规/时长 |
+| PATCH | `/api/jobs/{id}/script` | 浏览器改稿并重算本地合规/时长；编辑身份由任务固定的 `review_policy` 在服务端写入 |
 | GET | `/api/jobs/{id}/review-artifacts/{name}` | 读取当前待审文件 |
 | GET | `/api/jobs/{id}/artifacts/{name}` | 读取当前成功 manifest 产物 |
 | GET | `/api/jobs/{id}/runs/{run_id}/artifacts/{name}` | 读取历史成功运行产物 |
@@ -186,7 +188,7 @@ npm.cmd run test:flow
 .\.venv\Scripts\python.exe tools\verify_committed_media.py
 ```
 
-Python 测试由 `unittest discover` 动态发现，当前 331 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及纯动画生产模式、动画注册表与选择收据、HyperFrames 固定身份和离线依赖合同、MoneyPrinterTurbo 实拍适配器、结构化人审/代理测试身份绑定、失败运行隔离、正式成片视觉门禁、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、代理测试必须进入详细页、两道门禁不静默代批、窄屏无溢出与零前端错误。CI 使用不可发布的注入式假配音/渲染适配器完成快速确定性 E2E。
+Python 测试由 `unittest discover` 动态发现，当前 403 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及纯动画生产模式、36 积木/12 renderer family 注册表与选择收据、HyperFrames 固定身份、Windows-MF 补丁和离线依赖合同、可信系统 Edge 启动握手、9 文件 LGPL FFmpeg 与同 Release 源码门禁、Python SBOM/裁剪、MoviePy 2.2.1 补丁、MoneyPrinterTurbo video-only `h264_mf` 适配器、结构化人审/代理测试/反向机械审核身份绑定、失败运行隔离、正式成片视觉门禁、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、代理测试必须进入详细页、两道门禁不静默代批、窄屏无溢出与零前端错误。CI 使用不可发布的注入式假配音/渲染适配器完成快速确定性 E2E。
 
 ## v2 历史比赛材料（只读基线）
 

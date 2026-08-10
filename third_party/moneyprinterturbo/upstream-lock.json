@@ -8,7 +8,26 @@
   "license_file": "LICENSE",
   "license_sha256": "9065C26334AF5CDA00F023564EED62B6EC297FC2366924018958758BC78A0C26",
   "source_imported": false,
-  "integration_status": "cli_and_local_http_smoke_passed_formal_human_e2e_pending",
+  "integration_status": "video_only_subset_import_and_local_http_smoke_passed_formal_human_e2e_pending",
+  "portable_subset": {
+    "id": "SHIYI_MPT_OFFLINE_SUBSET_V1",
+    "mode": "video_only_adapted_runtime_dependency_closure",
+    "deterministic_modifications": [
+      {
+        "path": "app/router.py",
+        "change": "register_video_router_only"
+      },
+      {
+        "path": "app/services/task.py",
+        "change": "remove_llm_and_social_upload_imports_and_add_explicit_disabled_stubs"
+      },
+      {
+        "path": "app/services/video.py",
+        "change": "lock_all_formal_video_writes_and_concat_to_h264_mf_quality_72_and_remove_libx264_fallbacks"
+      }
+    ],
+    "required_probe": "import_app_asgi_video_route_present_llm_routes_absent_preapproved_script_terms_path_moviepy_h264_mf_encode_and_concat"
+  },
   "allowed_adoption": {
     "services": [
       "app/services/material.py",
@@ -32,7 +51,9 @@
     "webui",
     "app/services/llm.py",
     "app/controllers/v1/llm.py",
-    "app/services/upload_post.py"
+    "app/services/upload_post.py",
+    "app/services/elevenlabs_music.py",
+    "app/services/sonilo.py"
   ],
   "release_asset_policy": {
     "font": "Noto Sans SC",

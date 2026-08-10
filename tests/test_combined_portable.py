@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import gzip
 import hashlib
 import json
 import os
@@ -8,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 import zipfile
 from dataclasses import replace
@@ -22,6 +25,8 @@ from scripts import launch_combined
 from tools.build_combined_portable import (
     CHECKSUMS_FILE,
     EXPECTED_MPT_COMMIT,
+    EXPECTED_MPT_DETERMINISTIC_MODIFICATIONS,
+    EXPECTED_MPT_REQUIRED_PROBE,
     FIXED_ZIP_TIME,
     PACKAGE_MANIFEST,
     PACKAGE_ROOT_NAME,
@@ -31,6 +36,9 @@ from tools.build_combined_portable import (
     BuildInputs,
     MotionRuntimeInputs,
     MOTION_PACKAGE_PROFILE,
+    PYTHON_RUNTIME_PRUNED_DISTRIBUTIONS,
+    SYSTEM_EDGE_BROWSER_STRATEGY,
+    SYSTEM_EDGE_MINIMUM_MAJOR,
     build_combined_portable,
     _read_hyperframes_license_contract,
     _validate_hyperframes_dependency_closure,
@@ -48,15 +56,13 @@ class CombinedPortableTests(unittest.TestCase):
         self.repo = self.root / "repo"
         self.mpt = self.root / "mpt"
         self.python_runtime = self.root / "python-runtime"
-        self.ffmpeg_runtime = self.root / "ffmpeg-runtime"
+        self.ffmpeg_runtime = self.repo / "third_party" / "ffmpeg" / "runtime" / "win-x64"
         self.materials = (self.root / "input-01.mp4", self.root / "input-02.mp4")
-        self.ffmpeg_license = self.root / "ffmpeg-license.txt"
         self._make_repo_fixture()
         self._make_mpt_fixture()
         self._make_runtime_fixture()
         for index, material in enumerate(self.materials, start=1):
             material.write_bytes(b"fixture-mp4-" + bytes([index]))
-        self.ffmpeg_license.write_text("FFmpeg fixture license\n", encoding="utf-8")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -99,6 +105,8 @@ class CombinedPortableTests(unittest.TestCase):
         )
         verifier_source = source_root / "tools" / "verify_combined_portable.py"
         self._write(self.repo, "tools/verify_combined_portable.py", verifier_source.read_bytes())
+        for name in ("build_public_evidence.py", "verify_public_evidence.py"):
+            self._write(self.repo, f"tools/{name}", (source_root / "tools" / name).read_bytes())
         self._write(self.repo, "third_party/moneyprinterturbo/LICENSE", mpt_license)
         self._write(self.repo, "third_party/moneyprinterturbo/README.md", "# boundary\n")
         license_sha = hashlib.sha256(
@@ -115,6 +123,22 @@ class CombinedPortableTests(unittest.TestCase):
                     "upstream_commit": EXPECTED_MPT_COMMIT,
                     "license": "MIT",
                     "license_sha256": license_sha,
+                    "portable_subset": {
+                        "id": "SHIYI_MPT_OFFLINE_SUBSET_V1",
+                        "mode": "video_only_adapted_runtime_dependency_closure",
+                        "deterministic_modifications": EXPECTED_MPT_DETERMINISTIC_MODIFICATIONS,
+                        "required_probe": EXPECTED_MPT_REQUIRED_PROBE,
+                    },
+                    "excluded_components": [
+                        "resource/fonts",
+                        "resource/songs",
+                        "webui",
+                        "app/services/llm.py",
+                        "app/controllers/v1/llm.py",
+                        "app/services/upload_post.py",
+                        "app/services/elevenlabs_music.py",
+                        "app/services/sonilo.py",
+                    ],
                 },
                 ensure_ascii=False,
             )
@@ -125,6 +149,11 @@ class CombinedPortableTests(unittest.TestCase):
             "third_party/hyperframes/LICENSE",
             "third_party/hyperframes/README.md",
             "third_party/hyperframes/upstream-lock.json",
+            "third_party/hyperframes/windows-mf-patch.json",
+            "tools/apply_hyperframes_windows_mf_patch.py",
+            "tools/verify_ffmpeg_distribution.py",
+            "third_party/python_runtime/moviepy-windows-mf-patch.json",
+            "tools/apply_moviepy_windows_mf_patch.py",
         ):
             self._write(self.repo, relative, (source_root / relative).read_bytes())
         dependency_license = self._write(
@@ -162,12 +191,134 @@ class CombinedPortableTests(unittest.TestCase):
             )
             + "\n",
         )
+        self._write(
+            self.repo,
+            "third_party/python_runtime/README.md",
+            "# fixture Python runtime license boundary\n",
+        )
+        self._write(
+            self.repo,
+            "third_party/python_runtime/pruned-import-boundary.json",
+            (source_root / "third_party/python_runtime/pruned-import-boundary.json").read_bytes(),
+        )
+        self._write(
+            self.repo,
+            "third_party/python_runtime/dependency-license-overrides.json",
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "status": "complete",
+                    "verified_overrides": [],
+                    "unresolved": [],
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+        )
 
     def _make_mpt_fixture(self) -> None:
         boundary_license = (self.repo / "third_party/moneyprinterturbo/LICENSE").read_text(encoding="utf-8")
         self._write(self.mpt, "app/__init__.py", "")
         self._write(self.mpt, "app/asgi.py", "APP = 'fixture'\n")
+        self._write(
+            self.mpt,
+            "app/router.py",
+            "from app.controllers.v1 import llm, video\n\n"
+            "root_api_router = object()\n"
+            "root_api_router.include_router(video.router)\n"
+            "root_api_router.include_router(llm.router)\n",
+        )
+        self._write(
+            self.mpt,
+            "app/services/task.py",
+            "from app.services import (\n"
+            "    elevenlabs_music,\n"
+            "    llm,\n"
+            "    material,\n"
+            "    sonilo,\n"
+            ")\n"
+            "from app.services import upload_post\n"
+            "from app.services import state as sm\n"
+            "from app.utils import file_security, utils\n\n\n"
+            "_VIDEO_MUSIC_PROVIDERS = {\n"
+            "    'sonilo': {'service': sonilo},\n"
+            "    'elevenlabs': {'service': elevenlabs_music},\n"
+            "}\n\n\n"
+            "def _get_video_music_prompt(params: VideoParams) -> str:\n"
+            "    return ''\n\n\n"
+            "def render_with_approved_input(params):\n"
+            "    return params.video_script, params.video_terms\n",
+        )
         self._write(self.mpt, "app/prompts.json", "{}\n")
+        self._write(self.mpt, "app/services/llm.py", "raise RuntimeError('excluded llm')\n")
+        self._write(self.mpt, "app/controllers/v1/llm.py", "raise RuntimeError('excluded route')\n")
+        self._write(self.mpt, "app/services/upload_post.py", "raise RuntimeError('excluded upload')\n")
+        self._write(self.mpt, "app/services/elevenlabs_music.py", "VIDEO_CODEC = 'libx264'\n")
+        self._write(self.mpt, "app/services/sonilo.py", "VIDEO_CODEC = 'libx264'\n")
+        self._write(
+            self.mpt,
+            "app/services/video.py",
+            "from functools import lru_cache\n\n"
+            "_DEFAULT_VIDEO_CODEC = \"libx264\"\n"
+            "_SUPPORTED_VIDEO_CODECS = (\n"
+            "    \"libx264\",\n"
+            "    \"h264_nvenc\",\n"
+            "    \"h264_amf\",\n"
+            "    \"h264_qsv\",\n"
+            "    \"h264_mf\",\n"
+            "    \"h264_videotoolbox\",\n"
+            ")\n"
+            "_runtime_disabled_video_codecs = set()\n\n\n"
+            "def _get_configured_video_codec() -> str:\n"
+            "    return _DEFAULT_VIDEO_CODEC\n\n\n"
+            "@lru_cache(maxsize=16)\n"
+            "def _ffmpeg_encoder_exists(ffmpeg_binary: str, codec: str) -> bool:\n"
+            "    \"\"\"\n"
+            "    检查当前 FFmpeg 是否声明支持指定编码器。\n\n"
+            "    这只能证明 FFmpeg 编译时包含该 encoder，不能证明当前机器硬件和驱动\n"
+            "    一定可用。因此实际编码失败时仍会再回退到 libx264。\n"
+            "    \"\"\"\n"
+            "    return True\n\n\n"
+            "def _get_effective_video_codec(preferred_codec: str | None = None) -> str:\n"
+            "    return preferred_codec or _DEFAULT_VIDEO_CODEC\n\n\n"
+            "def _disable_runtime_video_codec(codec: str, reason: str):\n"
+            "    _runtime_disabled_video_codecs.add(codec)\n\n\n"
+            "def _get_temp_audio_dir(output_dir: str) -> str:\n"
+            "    return output_dir\n\n\n"
+            "def _fallback_write_videofile(clip, output_file: str, failed_codec: str, reason: str, **kwargs):\n"
+            "    clip.write_videofile(output_file, codec=_DEFAULT_VIDEO_CODEC, **kwargs)\n"
+            "    return _DEFAULT_VIDEO_CODEC\n\n\n"
+            "def _write_videofile_with_codec_fallback(clip, output_file: str, codec: str, **kwargs):\n"
+            "    clip.write_videofile(output_file, codec=codec, **kwargs)\n"
+            "    return codec\n\n\n"
+            "def _escape_ffmpeg_concat_path(file_path: str) -> str:\n"
+            "    return file_path\n\n\n"
+            "def concat_video_clips_with_ffmpeg(codec, threads=2):\n"
+            "    command = [\n"
+            "            \"-c:v\",\n"
+            "            codec,\n"
+            "            \"-threads\",\n"
+            "            str(threads or 2),\n"
+            "            \"-pix_fmt\",\n"
+            "            \"yuv420p\",\n"
+            "    ]\n"
+            "    def run_concat(value):\n"
+            "        return value\n"
+            "    try:\n"
+            "        effective_codec = _get_effective_video_codec()\n"
+            "        try:\n"
+            "            return run_concat(effective_codec)\n"
+            "        except Exception as exc:\n"
+            "            if effective_codec == _DEFAULT_VIDEO_CODEC:\n"
+            "                raise\n"
+            "            result_codec = run_concat(_DEFAULT_VIDEO_CODEC)\n"
+            "            _disable_runtime_video_codec(effective_codec, str(exc))\n"
+            "            return result_codec\n"
+            "    finally:\n"
+            "        pass\n\n\n"
+            "def process_image(final_clip, video_file):\n"
+            "                final_clip.write_videofile(video_file, fps=30, logger=None)\n",
+        )
         self._write(self.mpt, "app/__pycache__/ignored.pyc", b"ignored")
         self._write(
             self.mpt,
@@ -188,6 +339,84 @@ class CombinedPortableTests(unittest.TestCase):
         self._write(self.python_runtime, "python.exe", b"portable-python")
         self._write(self.python_runtime, "LICENSE.txt", "Python license fixture\n")
         self._write(self.python_runtime, "Lib/site-packages/fixture.py", "VALUE = 1\n")
+        self._write(
+            self.python_runtime,
+            "Lib/site-packages/imageio_ffmpeg/binaries/README.md",
+            "Bundled binary metadata fixture\n",
+        )
+        self._write(
+            self.python_runtime,
+            "Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe",
+            b"redundant-ffmpeg",
+        )
+        metadata = (
+            "Metadata-Version: 2.4\n"
+            "Name: fixture\n"
+            "Version: 1.0\n"
+            "License-Expression: MIT\n"
+            "License-File: LICENSE\n"
+            "\n"
+        )
+        self._write(
+            self.python_runtime,
+            "Lib/site-packages/fixture-1.0.dist-info/METADATA",
+            metadata,
+        )
+        self._write(
+            self.python_runtime,
+            "Lib/site-packages/fixture-1.0.dist-info/licenses/LICENSE",
+            "Fixture MIT license text\n",
+        )
+        self._write(
+            self.python_runtime,
+            "Lib/site-packages/fixture-1.0.dist-info/RECORD",
+            "fixture.py,,\n"
+            "imageio_ffmpeg/binaries/README.md,,\n"
+            "imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe,,\n"
+            "fixture-1.0.dist-info/METADATA,,\n"
+            "fixture-1.0.dist-info/licenses/LICENSE,,\n"
+            "fixture-1.0.dist-info/RECORD,,\n",
+        )
+        prune_roots = {
+            "ctranslate2",
+            "faster-whisper",
+            "litellm",
+            "onnxruntime",
+            "streamlit",
+            "streamlit-tour",
+            "tokenizers",
+        }
+        orphan_names = sorted(set(PYTHON_RUNTIME_PRUNED_DISTRIBUTIONS) - prune_roots)
+        for name, version in sorted(PYTHON_RUNTIME_PRUNED_DISTRIBUTIONS.items()):
+            dist_info = f"{name.replace('-', '_')}-{version}.dist-info"
+            requirements: list[str] = []
+            if name == "faster-whisper":
+                requirements = [
+                    "ctranslate2<5,>=4.0",
+                    "onnxruntime<2,>=1.14",
+                    "tokenizers<1,>=0.13",
+                ]
+            elif name == "streamlit":
+                requirements = orphan_names
+            elif name == "streamlit-tour":
+                requirements = ["streamlit>=1.51"]
+            metadata_lines = [
+                "Metadata-Version: 2.4",
+                f"Name: {name}",
+                f"Version: {version}",
+            ]
+            metadata_lines.extend(f"Requires-Dist: {requirement}" for requirement in requirements)
+            metadata_lines.append("")
+            self._write(
+                self.python_runtime,
+                f"Lib/site-packages/{dist_info}/METADATA",
+                "\n".join(metadata_lines) + "\n",
+            )
+            self._write(
+                self.python_runtime,
+                f"Lib/site-packages/{dist_info}/RECORD",
+                f"{dist_info}/METADATA,,\n{dist_info}/RECORD,,\n",
+            )
         self._write(self.python_runtime, "Lib/site-packages/__pycache__/ignored.pyc", b"ignored")
         self._write(self.ffmpeg_runtime, "ffmpeg.exe", b"ffmpeg")
         self._write(self.ffmpeg_runtime, "ffprobe.exe", b"ffprobe")
@@ -200,14 +429,33 @@ class CombinedPortableTests(unittest.TestCase):
             "swscale-8.dll",
         ):
             self._write(self.ffmpeg_runtime, name, name.encode("ascii"))
+        ffmpeg_license_root = self.repo / "third_party" / "ffmpeg" / "licenses"
+        for name in (
+            "FFmpeg-COPYING.LGPLv2.1",
+            "FFmpeg-COPYING.LGPLv3",
+            "FFmpeg-LICENSE.md",
+            "zlib-LICENSE",
+        ):
+            self._write(ffmpeg_license_root, name, f"{name} fixture\n")
+        entries = [
+            {
+                "name": path.name,
+                "bytes": path.stat().st_size,
+                "sha256": sha256_file(path),
+            }
+            for path in sorted(self.ffmpeg_runtime.iterdir(), key=lambda item: item.name.casefold())
+        ]
+        self._write(
+            self.repo,
+            "third_party/ffmpeg/upstream-lock.json",
+            json.dumps({"schema_version": 1, "runtime": {"files": entries}}, indent=2) + "\n",
+        )
 
     def _inputs(self, suffix: str = "one") -> BuildInputs:
         return BuildInputs(
             repo=self.repo,
             mpt_source=self.mpt,
             python_runtime=self.python_runtime,
-            ffmpeg_runtime=self.ffmpeg_runtime,
-            ffmpeg_license=self.ffmpeg_license,
             materials=self.materials,
             output=self.root / f"portable-{suffix}",
             zip_path=self.root / f"portable-{suffix}.zip",
@@ -217,9 +465,30 @@ class CombinedPortableTests(unittest.TestCase):
         )
 
     def _motion_inputs(self, suffix: str = "motion") -> BuildInputs:
+        source_root = Path(__file__).resolve().parents[1]
+        source_ffmpeg = source_root / "third_party" / "ffmpeg"
+        fixture_ffmpeg = self.repo / "third_party" / "ffmpeg"
+        if fixture_ffmpeg.exists():
+            shutil.rmtree(fixture_ffmpeg)
+        shutil.copytree(source_ffmpeg, fixture_ffmpeg)
+        reviewed_python = (
+            source_root.parents[1]
+            / "08_产出与验收"
+            / "v0.3发布闭环"
+            / "20260810-motion-primary-candidate-94311a8"
+            / "runtime"
+            / "python"
+            / "Lib"
+            / "site-packages"
+        )
+        for name in ("moviepy", "moviepy-2.2.1.dist-info"):
+            shutil.copytree(
+                reviewed_python / name,
+                self.python_runtime / "Lib" / "site-packages" / name,
+                dirs_exist_ok=True,
+            )
         node = self.root / "node-runtime"
         hyperframes = self.root / "hyperframes-runtime"
-        browser = self.root / "browser-runtime"
         self._write(node, "node.exe", b"fixed-node")
         self._write(node, "LICENSE", "Node license fixture\n")
         self._write(
@@ -235,6 +504,11 @@ class CombinedPortableTests(unittest.TestCase):
         )
         self._write(
             hyperframes,
+            "node_modules/hyperframes/dist/cli.js",
+            (source_root / "node_modules/hyperframes/dist/cli.js").read_bytes(),
+        )
+        self._write(
+            hyperframes,
             "node_modules/esbuild/package.json",
             '{"name":"esbuild","version":"0.25.12","license":"MIT","type":"module",'
             '"exports":"./index.js","optionalDependencies":{"@esbuild/win32-x64":"0.25.12"}}\n',
@@ -246,18 +520,14 @@ class CombinedPortableTests(unittest.TestCase):
             "node_modules/@esbuild/win32-x64/package.json",
             '{"name":"@esbuild/win32-x64","version":"0.25.12","license":"MIT"}\n',
         )
-        self._write(browser, "chrome-headless-shell.exe", b"fixed-browser")
-        self._write(browser, "LICENSE.headless_shell", "Chromium license fixture\n")
         return replace(
             self._inputs(suffix),
             package_profile=MOTION_PACKAGE_PROFILE,
             motion_runtime=MotionRuntimeInputs(
                 node_runtime=node,
                 hyperframes_runtime=hyperframes,
-                browser_runtime=browser,
                 node_version="22.13.1",
                 hyperframes_version="0.7.86",
-                browser_version="152.0.7928.2",
             ),
         )
 
@@ -271,26 +541,215 @@ class CombinedPortableTests(unittest.TestCase):
         manifest = build_combined_portable(inputs)
         self.assertEqual(2, manifest["schema_version"])
         self.assertEqual("motion_primary", manifest["package_profile"])
-        self.assertEqual("offline_bundled_required", manifest["motion_runtime"]["mode"])
+        motion_manifest = manifest["motion_runtime"]
+        self.assertEqual("offline_bundled_with_system_browser", motion_manifest["mode"])
+        self.assertEqual(SYSTEM_EDGE_BROWSER_STRATEGY, motion_manifest["browser_strategy"])
+        self.assertEqual(SYSTEM_EDGE_MINIMUM_MAJOR, motion_manifest["browser_minimum_major"])
+        self.assertTrue(motion_manifest["system_browser_required"])
+        self.assertNotIn("browser_payload", motion_manifest)
+        self.assertTrue(motion_manifest["startup_canary_required"])
         self.assertFalse(manifest["motion_runtime"]["runtime_downloads_allowed"])
-        self.assertFalse(manifest["motion_runtime"]["system_fallback_allowed"])
+        self.assertNotIn("browser_version", motion_manifest)
+        self.assertNotIn("system_fallback_allowed", motion_manifest)
+        self.assertEqual("h264_mf", motion_manifest["codec_strategy"])
+        self.assertEqual("shiyi-hyperframes-windows-mf", motion_manifest["hyperframes_patch_id"])
+        self.assertEqual("1.2.0", motion_manifest["hyperframes_patch_version"])
+        self.assertEqual(
+            "86DA751BA397FF551355BA0C90370D732A297C3DC4652C981E9A8146D8EAC108",
+            motion_manifest["hyperframes_patched_cli_sha256"],
+        )
+        runtime_contract = manifest["runtime"]
+        self.assertEqual("h264_mf", runtime_contract["video_codec"])
+        self.assertEqual("LGPL-2.1-or-later", runtime_contract["ffmpeg_distribution"]["license"])
+        self.assertEqual(9, runtime_contract["ffmpeg_distribution"]["runtime_file_count"])
+        self.assertEqual("shiyi-moviepy-windows-mf", runtime_contract["moviepy_patch"]["patch_id"])
+        self.assertTrue(runtime_contract["moviepy_patch"]["record_consistent"])
         for relative in (
             "runtime/node/node.exe",
             "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs",
             "runtime/hyperframes/node_modules/esbuild/index.js",
             "runtime/hyperframes/RUNTIME-MANIFEST.json",
-            "runtime/browser/chrome-headless-shell.exe",
             "licenses/Node-license.txt",
             "licenses/HyperFrames-Apache-2.0.txt",
             "licenses/HyperFrames-third-party-SBOM.json",
             "licenses/hyperframes-dependencies/esbuild-win32-x64-MIT.txt",
-            "licenses/Chrome-Headless-Shell-license.txt",
+            "licenses/FFmpeg-runtime-lock.json",
+            "licenses/FFmpeg-COPYING.LGPLv2.1",
+            "licenses/FFmpeg-COPYING.LGPLv3",
+            "licenses/FFmpeg-LICENSE.md",
+            "licenses/zlib-LICENSE",
         ):
             self.assertTrue((inputs.output / relative).is_file(), relative)
+        ffmpeg_lock = json.loads(
+            (inputs.output / "licenses/FFmpeg-runtime-lock.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            (inputs.output / "third_party/ffmpeg/upstream-lock.json").read_bytes(),
+            (inputs.output / "licenses/FFmpeg-runtime-lock.json").read_bytes(),
+        )
+        expected_ffmpeg = {entry["name"] for entry in ffmpeg_lock["runtime"]["files"]}
+        actual_ffmpeg = {path.name for path in (inputs.output / "runtime/ffmpeg").iterdir()}
+        self.assertEqual(expected_ffmpeg, actual_ffmpeg)
+        self.assertEqual(9, len(actual_ffmpeg))
+        for entry in ffmpeg_lock["runtime"]["files"]:
+            runtime_file = inputs.output / "runtime/ffmpeg" / entry["name"]
+            self.assertEqual(entry["bytes"], runtime_file.stat().st_size)
+            self.assertEqual(entry["sha256"].upper(), sha256_file(runtime_file))
+            self.assertEqual(b"MZ", runtime_file.read_bytes()[:2])
+        hyperframes_manifest = json.loads(
+            (inputs.output / "runtime/hyperframes/RUNTIME-MANIFEST.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(2, hyperframes_manifest["schema_version"])
+        self.assertEqual("h264_mf", hyperframes_manifest["codec_strategy"])
+        self.assertEqual("shiyi-hyperframes-windows-mf", hyperframes_manifest["patch_id"])
+        self.assertEqual(
+            hyperframes_manifest["patched_cli_sha256"],
+            sha256_file(inputs.output / "runtime/hyperframes/node_modules/hyperframes/dist/cli.js"),
+        )
+        config = tomllib.loads(
+            (inputs.output / "engine/MoneyPrinterTurbo/config.toml").read_text(encoding="utf-8")
+        )
+        self.assertEqual("h264_mf", config["app"]["video_codec"])
+        video_service = (
+            inputs.output / "engine/MoneyPrinterTurbo/app/services/video.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SHIYI_MPT_H264_MF_CODEC_V1", video_service)
+        self.assertEqual(1, video_service.count(".write_videofile("))
+        self.assertNotIn("libx264", video_service)
+        self.assertFalse(
+            (inputs.output / "engine/MoneyPrinterTurbo/app/services/sonilo.py").exists()
+        )
+        self.assertFalse(
+            (inputs.output / "engine/MoneyPrinterTurbo/app/services/elevenlabs_music.py").exists()
+        )
+        python_sbom = json.loads(
+            (inputs.output / "licenses/Python-runtime-SBOM.json").read_text(encoding="utf-8")
+        )
+        moviepy = next(
+            item for item in python_sbom["distributions"] if item["normalized_name"] == "moviepy"
+        )
+        self.assertEqual("2.2.1", moviepy["version"])
+        self.assertEqual("2.1.2", moviepy["modification"]["module_reported_version"])
+        self.assertEqual(
+            "DFE76CD8AED151B99881DD01FA2BC1E040D0788EC364A8C6EF14020F2009D8B9",
+            moviepy["modification"]["writer_sha256"],
+        )
+        self.assertFalse((inputs.output / "runtime/browser").exists())
+        self.assertFalse((inputs.output / "licenses/Chrome-Headless-Shell-license.txt").exists())
         self.assertEqual([], verify_folder(inputs.output))
 
-        (inputs.output / "runtime/browser/chrome-headless-shell.exe").write_bytes(b"tampered")
-        self.assertTrue(any("SHA-256" in error for error in verify_folder(inputs.output)))
+        ffmpeg_binary = inputs.output / "runtime/ffmpeg/ffmpeg.exe"
+        original_ffmpeg = ffmpeg_binary.read_bytes()
+        ffmpeg_binary.write_bytes(original_ffmpeg + b"tamper")
+        errors = verify_folder(inputs.output)
+        self.assertTrue(any("FFmpeg runtime" in error or "SHA-256" in error for error in errors), errors)
+        ffmpeg_binary.write_bytes(original_ffmpeg)
+        self.assertEqual([], verify_folder(inputs.output))
+
+        original_video_service = video_service
+        video_service_path = inputs.output / "engine/MoneyPrinterTurbo/app/services/video.py"
+        video_service_path.write_text(
+            original_video_service + '\nSHIYI_UNREVIEWED_CODEC = "h264_vaapi"\n',
+            encoding="utf-8",
+        )
+        errors = verify_folder(inputs.output)
+        self.assertTrue(
+            any("非审核 H.264 编码器" in error and "h264_vaapi" in error for error in errors),
+            errors,
+        )
+        video_service_path.write_text(original_video_service, encoding="utf-8")
+        self.assertEqual([], verify_folder(inputs.output))
+
+        bundled_browser = inputs.output / "runtime/browser/chrome-headless-shell.exe"
+        bundled_browser.parent.mkdir(parents=True)
+        bundled_browser.write_bytes(b"forbidden-browser")
+        errors = verify_folder(inputs.output)
+        self.assertTrue(any("runtime/browser" in error for error in errors), errors)
+
+    def test_verifier_rejects_even_an_empty_bundled_browser_directory(self) -> None:
+        inputs = self._motion_inputs("empty-browser-directory")
+        build_combined_portable(inputs)
+        (inputs.output / "runtime/browser").mkdir()
+        errors = verify_folder(inputs.output)
+        self.assertTrue(any("runtime/browser" in error for error in errors), errors)
+
+    def test_formal_sources_reject_prepatched_or_drifted_runtime_inputs(self) -> None:
+        inputs = self._motion_inputs("formal-source-drift")
+        cli = inputs.motion_runtime.hyperframes_runtime / "node_modules/hyperframes/dist/cli.js"
+        upstream_cli = cli.read_bytes()
+        patch_result = subprocess.run(
+            [
+                sys.executable,
+                str(self.repo / "tools/apply_hyperframes_windows_mf_patch.py"),
+                "--package-root",
+                str(cli.parents[1]),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(0, patch_result.returncode, patch_result.stdout + patch_result.stderr)
+        with self.assertRaisesRegex(ValueError, "未修改的 npm CLI|unmodified npm CLI"):
+            build_combined_portable(inputs)
+        cli.write_bytes(upstream_cli)
+
+        moviepy_writer = (
+            self.python_runtime
+            / "Lib/site-packages/moviepy/video/io/ffmpeg_writer.py"
+        )
+        moviepy_writer.write_bytes(moviepy_writer.read_bytes() + b"\n# drift\n")
+        with self.assertRaisesRegex(ValueError, "exact upstream 2.2.1 writer/RECORD pair"):
+            build_combined_portable(inputs)
+
+    def test_formal_ffmpeg_source_is_exact_and_old_external_cli_args_are_rejected(self) -> None:
+        inputs = self._motion_inputs("formal-ffmpeg-extra")
+        self._write(self.ffmpeg_runtime, "extra-codec.dll", b"forbidden")
+        with self.assertRaisesRegex(ValueError, "exact frozen file set"):
+            build_combined_portable(inputs)
+
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve().parents[1] / "tools/build_combined_portable.py"),
+            "--mpt-source", "x",
+            "--python-runtime", "x",
+            "--node-runtime", "x",
+            "--hyperframes-runtime", "x",
+            "--node-version", "22.13.1",
+            "--hyperframes-version", "0.7.86",
+            "--material", "x.mp4",
+            "--output", "out",
+            "--zip", "out.zip",
+            "--ffmpeg-runtime", "legacy-btbn",
+            "--ffmpeg-license", "legacy-gpl.txt",
+            "--ffmpeg-build-info", "legacy-build.txt",
+        ]
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(2, completed.returncode)
+        self.assertIn("unrecognized arguments", completed.stderr)
+        self.assertIn("--ffmpeg-runtime", completed.stderr)
+
+    def test_zip_verifier_rejects_chrome_cft_and_edge_payloads(self) -> None:
+        forbidden = (
+            "runtime/browser/chrome-headless-shell.exe",
+            "runtime/chrome-for-testing/chrome.exe",
+            "runtime/edge/msedge.exe",
+            "licenses/Chrome-Headless-Shell-license.txt",
+        )
+        for index, relative in enumerate(forbidden):
+            with self.subTest(relative=relative):
+                inputs = self._motion_inputs(f"forbidden-browser-{index}")
+                build_combined_portable(inputs)
+                with zipfile.ZipFile(inputs.zip_path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr(f"{PACKAGE_ROOT_NAME}/{relative}", b"forbidden")
+                errors = verify_zip(inputs.zip_path)
+                self.assertTrue(any("Chrome" in error and "payload" in error for error in errors), errors)
 
     def test_real_installed_closure_has_complete_exact_version_license_evidence(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
@@ -423,9 +882,31 @@ class CombinedPortableTests(unittest.TestCase):
 
         self.assertEqual([], verify_folder(inputs.output))
         self.assertEqual([], verify_zip(inputs.zip_path))
+        self.assertTrue((inputs.output / "tools/build_public_evidence.py").is_file())
+        self.assertTrue((inputs.output / "tools/verify_public_evidence.py").is_file())
         self.assertTrue((inputs.output / "runtime/python/python.exe").is_file())
         self.assertTrue((inputs.output / "runtime/ffmpeg/avcodec-61.dll").is_file())
+        self.assertTrue(
+            (inputs.output / "runtime/python/Lib/site-packages/imageio_ffmpeg/binaries/README.md").is_file()
+        )
+        self.assertFalse(
+            (
+                inputs.output
+                / "runtime/python/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe"
+            ).exists()
+        )
         self.assertTrue((inputs.output / "engine/MoneyPrinterTurbo/app/asgi.py").is_file())
+        for relative in (
+            "app/services/llm.py",
+            "app/controllers/v1/llm.py",
+            "app/services/upload_post.py",
+        ):
+            self.assertFalse((inputs.output / "engine/MoneyPrinterTurbo" / relative).exists())
+        router = (inputs.output / "engine/MoneyPrinterTurbo/app/router.py").read_text(encoding="utf-8")
+        task_service = (inputs.output / "engine/MoneyPrinterTurbo/app/services/task.py").read_text(encoding="utf-8")
+        self.assertNotIn("include_router(llm.router)", router)
+        self.assertIn("SHIYI_MPT_OFFLINE_SUBSET_V1", task_service)
+        self.assertNotIn("from app.services import upload_post", task_service)
         self.assertTrue((inputs.output / "engine/MoneyPrinterTurbo/storage/local_videos/material-01.mp4").is_file())
         self.assertFalse((inputs.output / "engine/MoneyPrinterTurbo/resource/songs").exists())
         self.assertFalse((inputs.output / "engine/MoneyPrinterTurbo/webui").exists())
@@ -437,6 +918,28 @@ class CombinedPortableTests(unittest.TestCase):
         self.assertRegex(manifest["runtime"]["payload_sha256"], r"^[0-9A-F]{64}$")
         self.assertRegex(manifest["source"]["mpt_payload_sha256"], r"^[0-9A-F]{64}$")
         self.assertEqual("engine/MoneyPrinterTurbo/storage/local_videos", manifest["materials"]["root"])
+        python_sbom = json.loads(
+            (inputs.output / "licenses/Python-runtime-SBOM.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(2, python_sbom["schema_version"])
+        self.assertEqual(1, python_sbom["distribution_count"])
+        self.assertEqual(
+            [(name, version) for name, version in sorted(PYTHON_RUNTIME_PRUNED_DISTRIBUTIONS.items())],
+            [(item["name"], item["version"]) for item in python_sbom["pruned_distributions"]],
+        )
+        self.assertEqual(0, python_sbom["project_verified_license_overrides"])
+        distribution = python_sbom["distributions"][0]
+        self.assertEqual(("fixture", "1.0", "MIT"), (
+            distribution["normalized_name"],
+            distribution["version"],
+            distribution["license"],
+        ))
+        self.assertEqual("installed_distribution", distribution["license_evidence_source"])
+        self.assertEqual(
+            ["runtime/python/Lib/site-packages/fixture-1.0.dist-info/licenses/LICENSE"],
+            [entry["path"] for entry in distribution["license_evidence"]],
+        )
+        self.assertRegex(distribution["payload_sha256"], r"^[0-9A-F]{64}$")
 
         launcher_bytes = (inputs.output / ROOT_LAUNCHER_NAME).read_bytes()
         self.assertFalse(launcher_bytes.startswith(b"\xef\xbb\xbf"))
@@ -509,6 +1012,307 @@ class CombinedPortableTests(unittest.TestCase):
             errors="replace",
         )
         self.assertEqual(0, packaged_launcher.returncode, packaged_launcher.stdout + packaged_launcher.stderr)
+
+    def test_verifier_rejects_redundant_runtime_binary_and_locked_mpt_components(self) -> None:
+        inputs = self._inputs("forbidden-package-content")
+        build_combined_portable(inputs)
+        redundant_binary = (
+            inputs.output
+            / "runtime/python/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-extra.exe"
+        )
+        self._write(redundant_binary.parent, redundant_binary.name, b"redundant")
+        self._write(
+            inputs.output,
+            "engine/MoneyPrinterTurbo/app/services/upload_post.py",
+            "raise RuntimeError('forbidden')\n",
+        )
+
+        errors = verify_folder(inputs.output)
+        self.assertTrue(any("imageio_ffmpeg" in error and "FFmpeg" in error for error in errors), errors)
+        self.assertTrue(any("上游锁明确排除" in error and "upload_post.py" in error for error in errors), errors)
+
+        with zipfile.ZipFile(inputs.zip_path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                PACKAGE_ROOT_NAME
+                + "/runtime/python/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-extra.exe",
+                b"redundant",
+            )
+            archive.writestr(
+                PACKAGE_ROOT_NAME + "/engine/MoneyPrinterTurbo/app/services/LLM.py",
+                b"raise RuntimeError\n",
+            )
+        zip_errors = verify_zip(inputs.zip_path)
+        self.assertTrue(any("imageio_ffmpeg" in error and "FFmpeg" in error for error in zip_errors), zip_errors)
+        self.assertTrue(
+            any("上游锁明确排除" in error and "llm.py" in error.casefold() for error in zip_errors),
+            zip_errors,
+        )
+
+    def test_python_runtime_license_closure_is_exact_version_and_fail_closed(self) -> None:
+        embedded_license = (
+            self.python_runtime
+            / "Lib/site-packages/fixture-1.0.dist-info/licenses/LICENSE"
+        )
+        embedded_license.unlink()
+        record_path = self.python_runtime / "Lib/site-packages/fixture-1.0.dist-info/RECORD"
+        record_path.write_text(
+            record_path.read_text(encoding="utf-8").replace(
+                "fixture-1.0.dist-info/licenses/LICENSE,,\n",
+                "",
+            ),
+            encoding="utf-8",
+        )
+
+        component = {
+            "type": "library",
+            "bom-ref": "pkg:cargo/fixture-native@1.0",
+            "name": "fixture-native",
+            "version": "1.0",
+            "scope": "required",
+            "licenses": [{"expression": "MIT"}],
+            "hashes": [],
+        }
+        native_sbom_bytes = (
+            json.dumps(
+                {"components": [component], "dependencies": [{"ref": component["bom-ref"]}]},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        native_sbom = self._write(
+            self.python_runtime,
+            "Lib/site-packages/fixture-1.0.dist-info/sboms/fixture.cdx.json",
+            native_sbom_bytes,
+        )
+        record_path.write_text(
+            record_path.read_text(encoding="utf-8")
+            + "fixture-1.0.dist-info/sboms/fixture.cdx.json,,\n",
+            encoding="utf-8",
+        )
+        identity = {
+            "bom_ref": component["bom-ref"],
+            "name": component["name"],
+            "version": component["version"],
+            "scope": component["scope"],
+            "license_expressions": ["MIT"],
+            "sha256": [],
+        }
+        identity_line = json.dumps(
+            identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        corpus_bytes = (
+            "FIXTURE THIRD-PARTY LICENSE CORPUS\n"
+            f"Component: {identity_line}\n"
+            "Fixture native MIT license text\n"
+        ).encode("utf-8")
+        encoded_bytes = base64.b64encode(gzip.compress(corpus_bytes, compresslevel=9, mtime=0)) + b"\n"
+        encoded = self._write(
+            self.repo,
+            "third_party/python_runtime/dependency-licenses/fixture-1.0-third-party.txt.gz.b64",
+            encoded_bytes,
+        )
+
+        missing = self._inputs("python-license-missing")
+        with self.assertRaisesRegex(ValueError, "缺少许可证正文且无精确版本覆盖"):
+            build_combined_portable(missing)
+        self.assertFalse(missing.output.exists())
+
+        evidence = self._write(
+            self.repo,
+            "third_party/python_runtime/dependency-licenses/fixture-1.0-MIT.txt",
+            "Exact fixture MIT license text\n",
+        )
+        evidence_sha = sha256_file(evidence)
+        commit = "b" * 40
+        override = {
+            "name": "fixture",
+            "version": "1.0",
+            "spdx": "MIT",
+            "source_repository": "https://github.com/example/fixture",
+            "source_tag": "v1.0",
+            "source_commit": commit,
+            "source_url": f"https://raw.githubusercontent.com/example/fixture/{commit}/LICENSE",
+            "source_sha256": evidence_sha,
+            "license_file": "dependency-licenses/fixture-1.0-MIT.txt",
+            "license_sha256": evidence_sha,
+            "additional_evidence": [
+                {
+                    "kind": "notice",
+                    "source_kind": "embedded-runtime-sbom-derived-license-corpus",
+                    "bound_runtime_path": "Lib/site-packages/fixture-1.0.dist-info/sboms/fixture.cdx.json",
+                    "bound_runtime_sha256": sha256_file(native_sbom),
+                    "component_count": 1,
+                    "dependency_count": 1,
+                    "component_identity_sha256": hashlib.sha256((identity_line + "\n").encode("utf-8")).hexdigest().upper(),
+                    "encoded_file": "dependency-licenses/fixture-1.0-third-party.txt.gz.b64",
+                    "encoded_sha256": sha256_file(encoded),
+                    "encoding": "base64+gzip",
+                    "evidence_file": "dependency-licenses/fixture-1.0-third-party.txt",
+                    "evidence_sha256": hashlib.sha256(corpus_bytes).hexdigest().upper(),
+                    "evidence_size": len(corpus_bytes),
+                }
+            ],
+        }
+        override_path = self.repo / "third_party/python_runtime/dependency-license-overrides.json"
+        override_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "status": "complete",
+                    "verified_overrides": [override],
+                    "unresolved": [],
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inputs = self._inputs("python-license-override")
+        build_combined_portable(inputs)
+        self.assertEqual([], verify_folder(inputs.output))
+        sbom = json.loads(
+            (inputs.output / "licenses/Python-runtime-SBOM.json").read_text(encoding="utf-8")
+        )
+        distribution = sbom["distributions"][0]
+        self.assertEqual(1, sbom["project_verified_license_overrides"])
+        self.assertEqual("project_verified_override", distribution["license_evidence_source"])
+        self.assertEqual(override, distribution["override"])
+        evidence_path = inputs.output / "licenses/python-runtime-dependencies/fixture-1.0-third-party.txt"
+        evidence_path.write_text("tampered\n", encoding="utf-8")
+        errors = verify_folder(inputs.output)
+        self.assertTrue(any("Python runtime" in error and "许可证" in error for error in errors), errors)
+
+    def test_python_runtime_sbom_rejects_unowned_and_identity_drift(self) -> None:
+        inputs = self._inputs("python-sbom-drift")
+        build_combined_portable(inputs)
+        orphan = inputs.output / "runtime/python/Lib/site-packages/orphan.py"
+        orphan.write_text("VALUE = 2\n", encoding="utf-8")
+        errors = verify_folder(inputs.output)
+        self.assertTrue(any("未归属" in error for error in errors), errors)
+        orphan.unlink()
+
+        sbom_path = inputs.output / "licenses/Python-runtime-SBOM.json"
+        sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
+        sbom["distributions"][0]["version"] = "9.9"
+        sbom_path.write_text(json.dumps(sbom, ensure_ascii=False) + "\n", encoding="utf-8")
+        errors = verify_folder(inputs.output)
+        self.assertTrue(
+            any("Python runtime SBOM" in error or "METADATA" in error for error in errors),
+            errors,
+        )
+
+    def test_python_runtime_prune_is_version_locked_and_residual_closed(self) -> None:
+        inputs = self._inputs("python-prune-residual")
+        build_combined_portable(inputs)
+        residual = inputs.output / "runtime/python/Lib/site-packages/streamlit/residual.py"
+        residual.parent.mkdir(parents=True, exist_ok=True)
+        residual.write_text("VALUE = 1\n", encoding="utf-8")
+        errors = verify_folder(inputs.output)
+        self.assertTrue(any("未归属" in error for error in errors), errors)
+
+        streamlit_metadata = next(
+            (self.python_runtime / "Lib/site-packages").glob("streamlit-*.dist-info/METADATA")
+        )
+        streamlit_metadata.write_text(
+            streamlit_metadata.read_text(encoding="utf-8").replace(
+                "Version: 1.59.1",
+                "Version: 9.9.9",
+            ),
+            encoding="utf-8",
+        )
+        drifted = self._inputs("python-prune-version-drift")
+        with self.assertRaisesRegex(ValueError, "受控裁剪版本漂移"):
+            build_combined_portable(drifted)
+        self.assertFalse(drifted.output.exists())
+
+    def test_python_runtime_prune_dependency_graph_drift_fails_closed(self) -> None:
+        fixture_metadata = self.python_runtime / "Lib/site-packages/fixture-1.0.dist-info/METADATA"
+        fixture_metadata.write_text(
+            fixture_metadata.read_text(encoding="utf-8").replace(
+                "\n\n",
+                "\nRequires-Dist: pyarrow\n\n",
+            ),
+            encoding="utf-8",
+        )
+        drifted = self._inputs("python-prune-graph-drift")
+        with self.assertRaisesRegex(ValueError, "受控裁剪依赖图漂移"):
+            build_combined_portable(drifted)
+        self.assertFalse(drifted.output.exists())
+
+    def test_python_runtime_pruned_import_boundary_rejects_new_retained_reference(self) -> None:
+        fixture_module = self.python_runtime / "Lib/site-packages/fixture.py"
+        fixture_module.write_text("import jinja2\n", encoding="utf-8")
+        inputs = self._inputs("python-pruned-import-retained")
+        with self.assertRaisesRegex(ValueError, "未审批的已裁依赖 import"):
+            build_combined_portable(inputs)
+        self.assertFalse(inputs.output.exists())
+
+    def test_python_runtime_pruned_import_boundary_rejects_formal_reference(self) -> None:
+        (self.repo / "app.py").write_text("import av\n", encoding="utf-8")
+        inputs = self._inputs("python-pruned-import-formal")
+        with self.assertRaisesRegex(ValueError, "正式 Python payload.*未审批"):
+            build_combined_portable(inputs)
+        self.assertFalse(inputs.output.exists())
+
+    def test_python_runtime_pruned_import_contract_is_exact_version_locked(self) -> None:
+        contract_path = self.repo / "third_party/python_runtime/pruned-import-boundary.json"
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract["pruned_distributions"][0]["version"] = "9.9.9"
+        contract_path.write_text(json.dumps(contract, ensure_ascii=False) + "\n", encoding="utf-8")
+        inputs = self._inputs("python-pruned-import-contract-drift")
+        with self.assertRaisesRegex(ValueError, "import 模块锁|distribution 锁"):
+            build_combined_portable(inputs)
+        self.assertFalse(inputs.output.exists())
+
+    def test_pruned_runtime_ignores_generated_bytecode_but_rejects_unowned_source(self) -> None:
+        generated = self._write(
+            self.python_runtime,
+            "Lib/site-packages/streamlit/__pycache__/unowned.cpython-312.pyc",
+            b"generated-bytecode",
+        )
+        direct_pyc = self._write(
+            self.python_runtime,
+            "Lib/site-packages/streamlit/unowned.pyc",
+            b"generated-bytecode",
+        )
+        inputs = self._inputs("python-pruned-generated-bytecode")
+        build_combined_portable(inputs)
+        for source in (generated, direct_pyc):
+            relative = source.relative_to(self.python_runtime)
+            self.assertFalse((inputs.output / "runtime/python" / relative).exists())
+            manifest = json.loads((inputs.output / PACKAGE_MANIFEST).read_text(encoding="utf-8"))
+            self.assertNotIn(
+                (Path("runtime/python") / relative).as_posix(),
+                {item["path"] for item in manifest["files"]},
+            )
+
+        unowned_source = self._write(
+            self.python_runtime,
+            "Lib/site-packages/streamlit/unowned.py",
+            "VALUE = 1\n",
+        )
+        rejected = self._inputs("python-pruned-unowned-source")
+        with self.assertRaisesRegex(ValueError, "RECORD|未归属"):
+            build_combined_portable(rejected)
+        self.assertFalse(rejected.output.exists())
+        unowned_source.unlink()
+
+    def test_rejects_mpt_lock_that_drops_an_excluded_component(self) -> None:
+        lock_path = self.repo / "third_party/moneyprinterturbo/upstream-lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["excluded_components"].remove("app/services/upload_post.py")
+        lock_path.write_text(json.dumps(lock, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        inputs = self._inputs("mpt-lock-exclusions")
+        with self.assertRaisesRegex(ValueError, "excluded_components"):
+            build_combined_portable(inputs)
+        self.assertFalse(inputs.output.exists())
+        self.assertFalse(inputs.zip_path.exists())
 
     def test_pre_integrity_runtime_constants_match_shared_contract(self) -> None:
         self.assertEqual(CONTRACT_HYPERFRAMES_VERSION, verify_combined_portable.HYPERFRAMES_VERSION)
@@ -649,13 +1453,18 @@ class CombinedPortableTests(unittest.TestCase):
             "Lib/site-packages/vendor/example.py",
             'EXAMPLE = "C:\\\\Users\\\\someone\\\\fixture"\napi_key = "example-key"\n',
         )
+        fixture_record = self.python_runtime / "Lib/site-packages/fixture-1.0.dist-info/RECORD"
+        fixture_record.write_text(
+            fixture_record.read_text(encoding="utf-8") + "vendor/example.py,,\n",
+            encoding="utf-8",
+        )
         valid = self._inputs("vendor-example")
         build_combined_portable(valid)
         self.assertEqual([], verify_folder(valid.output))
 
         self._write(
             self.python_runtime,
-            "Lib/site-packages/vendor-1.0.dist-info/direct_url.json",
+            "Lib/site-packages/fixture-1.0.dist-info/direct_url.json",
             '{"url":"file:///C:/private/build"}\n',
         )
         invalid = self._inputs("direct-url")
@@ -728,13 +1537,31 @@ class CombinedPortableTests(unittest.TestCase):
             subprocess.CompletedProcess([], 0, stdout="Python 3.12.13\n", stderr=""),
             subprocess.CompletedProcess([], 0, stdout="ffmpeg version 7.1\n", stderr=""),
             subprocess.CompletedProcess([], 0, stdout="ffprobe version 7.1\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
         ]
         with patch("tools.build_combined_portable.subprocess.run", side_effect=results) as runner:
             build_combined_portable(inputs)
-        self.assertEqual(3, runner.call_count)
+        self.assertEqual(4, runner.call_count)
         self.assertEqual("--version", runner.call_args_list[0].args[0][1])
         self.assertEqual("-version", runner.call_args_list[1].args[0][1])
         self.assertEqual("-version", runner.call_args_list[2].args[0][1])
+        self.assertIn("from app.asgi import app", runner.call_args_list[3].args[0][-1])
+        self.assertIn("uvicorn.protocols.http.auto", runner.call_args_list[3].args[0][-1])
+        self.assertIn("pkg_resources", runner.call_args_list[3].args[0][-1])
+
+    def test_formal_preflight_fails_closed_when_mpt_subset_does_not_start(self) -> None:
+        inputs = replace(self._inputs("mpt-preflight-failure"), verify_runtime_executables=True)
+        results = [
+            subprocess.CompletedProcess([], 0, stdout="Python 3.12.13\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="ffmpeg version 7.1\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="ffprobe version 7.1\n", stderr=""),
+            subprocess.CompletedProcess([], 1, stdout="", stderr="ImportError"),
+        ]
+        with patch("tools.build_combined_portable.subprocess.run", side_effect=results):
+            with self.assertRaisesRegex(ValueError, "启动探针失败"):
+                build_combined_portable(inputs)
+        self.assertFalse(inputs.output.exists())
+        self.assertFalse(inputs.zip_path.exists())
 
     @unittest.skipUnless(os.name == "nt" and hasattr(Path, "is_junction"), "NTFS Junction test")
     def test_rejects_junctions_in_sources_and_post_launch_state(self) -> None:

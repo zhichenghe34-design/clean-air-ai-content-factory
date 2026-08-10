@@ -13,9 +13,11 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 import webbrowser
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -26,7 +28,18 @@ LOOPBACK_HOST = "127.0.0.1"
 EXPECTED_MPT_VERSION = "1.3.3"
 EXPECTED_MPT_COMMIT = "254cd028906ee657eab844dc94087cdbea2a7aa8"
 HYPERFRAMES_VERSION = "0.7.86"
+HYPERFRAMES_PATCH_ID = "shiyi-hyperframes-windows-mf"
+HYPERFRAMES_PATCHED_CLI_SHA256 = (
+    "86DA751BA397FF551355BA0C90370D732A297C3DC4652C981E9A8146D8EAC108"
+)
+H264_CODEC_STRATEGY = "h264_mf"
 NODE_MINIMUM_MAJOR = 22
+SYSTEM_EDGE_BROWSER_STRATEGY = "trusted_system_edge"
+# puppeteer-core 25.4.0 in the reviewed HyperFrames closure pins Chromium 151.
+# Edge 151 is therefore the conservative compatibility floor; the real strict
+# browser canary below is still required before motion is advertised as ready.
+SYSTEM_EDGE_MINIMUM_MAJOR = 151
+SYSTEM_EDGE_RELATIVE_PATH = Path("Microsoft/Edge/Application/msedge.exe")
 MPT_API_PREFIX = "/api/v1"
 MPT_OPENAPI_REQUIRED_PATH = "/api/v1/videos"
 MPT_HEALTH_STATE_NAME = "mpt-health.json"
@@ -59,6 +72,7 @@ APP_RELEASE_FORBIDDEN_ENV = (
     "SHIYI_ALLOW_TEST_PROVIDER",
     "SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS",
     "SHIYI_AGENT_TEST_REVIEW",
+    "SHIYI_STAGE_REVIEW_MODE",
     "SHIYI_APP_EXECUTABLE",
     "SHIYI_APP_PYTHON",
     "SHIYI_MPT_ROOT",
@@ -71,6 +85,9 @@ APP_RELEASE_FORBIDDEN_ENV = (
     "SHIYI_MPT_HEALTH_FILE",
     "SHIYI_NODE_EXECUTABLE",
     "SHIYI_HYPERFRAMES_CLI",
+    "SHIYI_HYPERFRAMES_BROWSER_STRATEGY",
+    "SHIYI_HYPERFRAMES_BROWSER_VERSION",
+    "SHIYI_HYPERFRAMES_BROWSER_MINIMUM_MAJOR",
     "SHIYI_MOTION_HEALTH_VERIFIED",
     "SHIYI_LAUNCH_INSTANCE_TOKEN",
     "HYPERFRAMES_BROWSER_PATH",
@@ -153,6 +170,7 @@ class LauncherConfig:
     app_python: Path | None = None
     app_script: Path | None = None
     agent_test_review: bool = False
+    mechanical_review: bool = False
     motion_runtime_required: bool = False
     node_executable: Path | None = None
     hyperframes_cli: Path | None = None
@@ -160,6 +178,16 @@ class LauncherConfig:
     node_version: str | None = None
     hyperframes_version: str | None = None
     browser_version: str | None = None
+    browser_strategy: str | None = None
+    browser_minimum_major: int | None = None
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().upper()
 
 
 def _looks_like_packaged_root(project_root: Path) -> bool:
@@ -460,6 +488,225 @@ def _same_windows_path(left: str, right: str) -> bool:
     return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
 
+def _trusted_windows_root() -> Path:
+    """Read the Windows directory from the kernel, never from caller-controlled env."""
+
+    if os.name != "nt":
+        raise LauncherError("WINDOWS_REQUIRED", "正式纯动画包仅支持 Windows 10/11 x64。")
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetWindowsDirectoryW(buffer, len(buffer))
+    except (AttributeError, OSError) as exc:
+        raise LauncherError("WINDOWS_IDENTITY_UNAVAILABLE", "无法读取受信 Windows 系统目录。") from exc
+    if not 0 < int(length) < len(buffer):
+        raise LauncherError("WINDOWS_IDENTITY_UNAVAILABLE", "无法读取受信 Windows 系统目录。")
+    root = Path(buffer.value)
+    if not root.is_absolute() or not root.is_dir() or _is_reparse_path(root):
+        raise LauncherError("WINDOWS_IDENTITY_UNAVAILABLE", "受信 Windows 系统目录无效。")
+    return root.resolve(strict=True)
+
+
+def _trusted_program_files_roots() -> tuple[Path, ...]:
+    """Resolve machine-wide Program Files roots from HKLM, excluding user env."""
+
+    if os.name != "nt":
+        return ()
+    try:
+        import winreg
+    except ImportError:
+        return ()
+    roots: list[Path] = []
+    access_modes = [winreg.KEY_READ]
+    if hasattr(winreg, "KEY_WOW64_64KEY"):
+        access_modes.insert(0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+    for access in access_modes:
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion",
+                0,
+                access,
+            ) as key:
+                for value_name in ("ProgramFilesDir", "ProgramFilesDir (x86)"):
+                    try:
+                        value, value_type = winreg.QueryValueEx(key, value_name)
+                    except OSError:
+                        continue
+                    if value_type not in {winreg.REG_SZ, winreg.REG_EXPAND_SZ} or not isinstance(value, str):
+                        continue
+                    candidate = Path(value)
+                    if not candidate.is_absolute() or not candidate.is_dir() or _is_reparse_path(candidate):
+                        continue
+                    try:
+                        resolved = candidate.resolve(strict=True)
+                    except OSError:
+                        continue
+                    if all(not _same_windows_path(str(resolved), str(existing)) for existing in roots):
+                        roots.append(resolved)
+        except OSError:
+            continue
+    return tuple(roots)
+
+
+def _validate_trusted_system_edge_path(
+    edge_path: Path,
+    *,
+    program_files_roots: Sequence[Path] | None = None,
+) -> Path:
+    roots = tuple(program_files_roots) if program_files_roots is not None else _trusted_program_files_roots()
+    if not roots:
+        raise LauncherError("SYSTEM_EDGE_TRUST_ROOT_MISSING", "无法读取受信 Program Files 系统目录。")
+    supplied = Path(edge_path)
+    for raw_root in roots:
+        try:
+            root = raw_root.resolve(strict=True)
+        except OSError:
+            continue
+        if not root.is_dir() or _is_reparse_path(raw_root):
+            continue
+        expected = root / SYSTEM_EDGE_RELATIVE_PATH
+        if not _same_windows_path(str(supplied), str(expected)):
+            continue
+        current = root
+        unsafe = False
+        for part in SYSTEM_EDGE_RELATIVE_PATH.parts:
+            current = current / part
+            if not current.exists() or _is_reparse_path(current):
+                unsafe = True
+                break
+        if unsafe or not expected.is_file():
+            raise LauncherError("SYSTEM_EDGE_PATH_UNTRUSTED", "Microsoft Edge 路径含链接或重解析点。")
+        try:
+            resolved = expected.resolve(strict=True)
+        except OSError as exc:
+            raise LauncherError("SYSTEM_EDGE_PATH_UNTRUSTED", "Microsoft Edge 路径无法安全解析。") from exc
+        if not resolved.is_relative_to(root) or not _same_windows_path(str(resolved), str(expected)):
+            raise LauncherError("SYSTEM_EDGE_PATH_UNTRUSTED", "Microsoft Edge 不在受信 Program Files 固定路径。")
+        return resolved
+    raise LauncherError("SYSTEM_EDGE_PATH_UNTRUSTED", "仅允许 Program Files 下的 Microsoft Edge 系统安装。")
+
+
+def _minimal_windows_probe_environment(*, signature_target: Path | None = None) -> dict[str, str]:
+    root = _trusted_windows_root()
+    environment = {"SYSTEMROOT": str(root), "WINDIR": str(root)}
+    for name in ("TEMP", "TMP"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            environment[name] = value
+    if signature_target is not None:
+        environment["SHIYI_EDGE_SIGNATURE_TARGET"] = str(signature_target)
+    return environment
+
+
+def _process_text(value: bytes | str | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8-sig", "replace")
+    return str(value or "")
+
+
+def _probe_trusted_system_edge_identity(
+    edge_path: Path,
+    *,
+    expected_version: str | None = None,
+    minimum_major: int = SYSTEM_EDGE_MINIMUM_MAJOR,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    program_files_roots: Sequence[Path] | None = None,
+    powershell: Path | None = None,
+) -> str:
+    edge = _validate_trusted_system_edge_path(
+        edge_path,
+        program_files_roots=program_files_roots,
+    )
+    shell = powershell or _windows_powershell(str(_trusted_windows_root()))
+    command = (
+        "$ErrorActionPreference='Stop';"
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new();"
+        "$module=Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1';"
+        "Import-Module -Name $module -Force;"
+        "$p=$env:SHIYI_EDGE_SIGNATURE_TARGET;"
+        "$s=Get-AuthenticodeSignature -LiteralPath $p;"
+        "$v=(Get-Item -LiteralPath $p).VersionInfo;"
+        "[ordered]@{signature_status=[string]$s.Status;signer_subject=[string]$s.SignerCertificate.Subject;"
+        "product_name=[string]$v.ProductName;company_name=[string]$v.CompanyName;"
+        "product_version=[string]$v.ProductVersion;file_version=[string]$v.FileVersion}"
+        "|ConvertTo-Json -Compress"
+    )
+    try:
+        completed = runner(
+            [str(shell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+            cwd=str(edge.parent),
+            env=_minimal_windows_probe_environment(signature_target=edge),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LauncherError("SYSTEM_EDGE_IDENTITY_PROBE_FAILED", "Microsoft Edge 身份探针无法执行。") from exc
+    if completed.returncode != 0:
+        raise LauncherError("SYSTEM_EDGE_IDENTITY_PROBE_FAILED", "Microsoft Edge 身份探针未通过。")
+    try:
+        payload = json.loads(_process_text(completed.stdout))
+    except json.JSONDecodeError as exc:
+        raise LauncherError("SYSTEM_EDGE_IDENTITY_INVALID", "Microsoft Edge 身份探针返回无效。") from exc
+    if not isinstance(payload, dict):
+        raise LauncherError("SYSTEM_EDGE_IDENTITY_INVALID", "Microsoft Edge 身份探针返回无效。")
+    subject = str(payload.get("signer_subject", ""))
+    if payload.get("signature_status") != "Valid" or not re.search(
+        r"(?:^|,\s*)O=Microsoft Corporation(?:,|$)", subject
+    ):
+        raise LauncherError("SYSTEM_EDGE_SIGNATURE_INVALID", "Microsoft Edge Authenticode 签名无效或签名方不正确。")
+    if payload.get("product_name") != "Microsoft Edge" or payload.get("company_name") != "Microsoft Corporation":
+        raise LauncherError("SYSTEM_EDGE_IDENTITY_INVALID", "系统浏览器不是 Microsoft Edge 正式产品。")
+    version = str(payload.get("product_version", ""))
+    file_version = str(payload.get("file_version", ""))
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", version) or file_version != version:
+        raise LauncherError("SYSTEM_EDGE_VERSION_INVALID", "Microsoft Edge 产品版本无法核验。")
+    if int(version.split(".", 1)[0]) < int(minimum_major):
+        raise LauncherError(
+            "SYSTEM_EDGE_TOO_OLD",
+            f"纯动画运行时要求 Microsoft Edge {minimum_major} 或更高主版本。",
+            minimum_major=minimum_major,
+        )
+    if expected_version is not None and version != expected_version:
+        raise LauncherError("SYSTEM_EDGE_VERSION_CHANGED", "Microsoft Edge 在启动探针期间发生版本变化。")
+    return version
+
+
+def resolve_trusted_system_edge(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    program_files_roots: Sequence[Path] | None = None,
+    powershell: Path | None = None,
+) -> tuple[Path, str]:
+    roots = tuple(program_files_roots) if program_files_roots is not None else _trusted_program_files_roots()
+    candidates = [root / SYSTEM_EDGE_RELATIVE_PATH for root in roots]
+    failures: list[LauncherError] = []
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            version = _probe_trusted_system_edge_identity(
+                candidate,
+                runner=runner,
+                program_files_roots=roots,
+                powershell=powershell,
+            )
+        except LauncherError as exc:
+            failures.append(exc)
+            continue
+        return candidate.resolve(strict=True), version
+    if failures:
+        raise failures[0]
+    raise LauncherError(
+        "SYSTEM_EDGE_MISSING",
+        f"未找到受信 Microsoft Edge；纯动画包要求 Program Files 中的 Edge {SYSTEM_EDGE_MINIMUM_MAJOR}+。",
+        minimum_major=SYSTEM_EDGE_MINIMUM_MAJOR,
+    )
+
+
 def _claim_launcher_state(
     project_root: Path,
     *,
@@ -722,6 +969,13 @@ def validate_mpt_network_config(mpt_root: Path, mpt_port: int) -> None:
     app_section = config.get("app", {})
     if not isinstance(app_section, dict):
         raise LauncherError("MPT_SAFE_CONFIG_INVALID", "MPT app 配置结构无效。")
+    if app_section.get("video_codec") != H264_CODEC_STRATEGY:
+        raise LauncherError(
+            "MPT_CONFIG_CODEC_STRATEGY_MISMATCH",
+            "MPT must use the fixed h264_mf encoder strategy.",
+            field="app.video_codec",
+            expected=H264_CODEC_STRATEGY,
+        )
     endpoint = app_section.get("endpoint", "")
     allowed_endpoints = {
         "",
@@ -741,12 +995,21 @@ def validate_preinstalled_layout(config: LauncherConfig) -> None:
     _require_directory(config.project_root, "PROJECT_ROOT_MISSING", "项目")
     if config.motion_runtime_required:
         if config.node_executable is None or config.hyperframes_cli is None or config.hyperframes_browser is None:
-            raise LauncherError("MOTION_RUNTIME_MISSING", "正式纯动画包未配置完整的离线动画运行时。")
+            raise LauncherError("MOTION_RUNTIME_MISSING", "正式纯动画包未配置完整的本地动画运行时。")
         if not all(
             isinstance(value, str) and re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", value)
-            for value in (config.node_version, config.hyperframes_version, config.browser_version)
+            for value in (config.node_version, config.hyperframes_version)
         ):
             raise LauncherError("MOTION_VERSION_LOCK_MISSING", "正式纯动画包缺少固定运行时版本锁。")
+        if not isinstance(config.browser_version, str) or not re.fullmatch(
+            r"[0-9]+(?:\.[0-9]+){3}", config.browser_version
+        ):
+            raise LauncherError("SYSTEM_EDGE_VERSION_INVALID", "正式纯动画包尚未核验系统 Edge 版本。")
+        if (
+            config.browser_strategy != SYSTEM_EDGE_BROWSER_STRATEGY
+            or config.browser_minimum_major != SYSTEM_EDGE_MINIMUM_MAJOR
+        ):
+            raise LauncherError("SYSTEM_EDGE_STRATEGY_MISMATCH", "正式纯动画包的系统 Edge 合同无效。")
         if config.hyperframes_version != HYPERFRAMES_VERSION:
             raise LauncherError(
                 "HYPERFRAMES_VERSION_MISMATCH",
@@ -759,7 +1022,26 @@ def validate_preinstalled_layout(config: LauncherConfig) -> None:
             )
         _require_file(config.node_executable, "MOTION_NODE_MISSING", "Node 动画运行时")
         _require_file(config.hyperframes_cli, "HYPERFRAMES_CLI_MISSING", "HyperFrames CLI")
-        _require_file(config.hyperframes_browser, "HYPERFRAMES_BROWSER_MISSING", "无头浏览器")
+        hyperframes_bundle = config.hyperframes_cli.parent.parent / "dist" / "cli.js"
+        _require_file(
+            hyperframes_bundle,
+            "HYPERFRAMES_PATCH_MISSING",
+            "HyperFrames patched runtime payload",
+        )
+        try:
+            hyperframes_payload_sha256 = _file_sha256(hyperframes_bundle)
+        except OSError as exc:
+            raise LauncherError(
+                "HYPERFRAMES_PATCH_INVALID",
+                "HyperFrames patched runtime payload cannot be verified.",
+            ) from exc
+        if hyperframes_payload_sha256 != HYPERFRAMES_PATCHED_CLI_SHA256:
+            raise LauncherError(
+                "HYPERFRAMES_PATCH_MISMATCH",
+                "HyperFrames runtime is not the reviewed Windows Media Foundation payload.",
+                patch_id=HYPERFRAMES_PATCH_ID,
+            )
+        _validate_trusted_system_edge_path(config.hyperframes_browser)
         _require_file(config.ffmpeg, "FFMPEG_MISSING", "FFmpeg")
         _require_file(config.ffprobe, "FFPROBE_MISSING", "FFprobe")
         _require_file(config.font_regular, "NOTO_FONT_MISSING", "Noto Sans SC Regular 字体")
@@ -845,6 +1127,251 @@ def validate_preinstalled_layout(config: LauncherConfig) -> None:
         _require_file(config.app_script, "APP_SCRIPT_MISSING", "工作台入口")
 
 
+HYPERFRAMES_BROWSER_CANARY_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=128,height=128">
+  <title>System Edge startup canary</title>
+  <style>
+    html,body{margin:0;width:128px;height:128px;overflow:hidden;background:#101820}
+    #root{position:relative;width:128px;height:128px;overflow:hidden}
+    .clip{position:absolute;inset:0}
+    #pulse{position:absolute;left:16px;top:48px;width:24px;height:24px;background:#c8e35b;border-radius:50%}
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="system-edge-startup-canary" data-no-timeline
+       data-start="0" data-width="128" data-height="128" data-duration="3" data-fps="10">
+    <section id="canary-scene" class="clip" data-start="0" data-duration="3" data-track-index="1">
+      <div id="pulse"></div>
+    </section>
+  </div>
+  <script>
+    const animation=document.querySelector('#pulse').animate(
+      [{transform:'translateX(0)',opacity:.55},{transform:'translateX(72px)',opacity:1},{transform:'translateX(0)',opacity:.55}],
+      {duration:3000,iterations:1,fill:'both',easing:'linear'}
+    );
+    animation.pause();
+  </script>
+</body>
+</html>
+"""
+
+
+def _probe_hyperframes_browser_canary(
+    config: LauncherConfig,
+    environment: Mapping[str, str],
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> None:
+    """Run a real, tiny, strict HyperFrames check with the trusted system Edge."""
+
+    assert config.node_executable is not None and config.hyperframes_cli is not None
+    with tempfile.TemporaryDirectory(prefix="shiyi-hyperframes-edge-canary-") as temporary:
+        project = Path(temporary)
+        try:
+            (project / "index.html").write_text(HYPERFRAMES_BROWSER_CANARY_HTML, encoding="utf-8")
+            (project / "hyperframes.json").write_text(
+                json.dumps({"name": "system-edge-startup-canary", "entry": "index.html"}) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            raise LauncherError(
+                "HYPERFRAMES_BROWSER_CANARY_FAILED",
+                "无法创建 HyperFrames 系统 Edge 启动探针。",
+            ) from exc
+        command = [
+            str(config.node_executable),
+            str(config.hyperframes_cli),
+            "check",
+            str(project),
+            "--strict",
+            "--json",
+            "--samples",
+            "3",
+            "--timeout",
+            "3000",
+        ]
+        try:
+            completed = runner(
+                command,
+                cwd=str(project),
+                env=dict(environment),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=45,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise LauncherError(
+                "HYPERFRAMES_BROWSER_CANARY_FAILED",
+                "HyperFrames 无法使用受信系统 Edge 完成严格启动探针。",
+            ) from exc
+        try:
+            payload = json.loads(_process_text(completed.stdout))
+        except json.JSONDecodeError as exc:
+            raise LauncherError(
+                "HYPERFRAMES_BROWSER_CANARY_INVALID",
+                "HyperFrames 系统 Edge 启动探针返回无效。",
+            ) from exc
+        if completed.returncode != 0 or not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise LauncherError(
+                "HYPERFRAMES_BROWSER_CANARY_FAILED",
+                "受信系统 Edge 未通过 HyperFrames strict 浏览器探针。",
+            )
+
+
+def _probe_h264_mf_canary(
+    config: LauncherConfig,
+    environment: Mapping[str, str],
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> None:
+    """Encode and inspect a real local sample so a listed-but-broken MF encoder fails closed."""
+
+    with tempfile.TemporaryDirectory(prefix="shiyi-h264-mf-canary-") as temporary:
+        work = Path(temporary)
+        output = work / "canary.mp4"
+        width = height = 128
+        frame_count = 5
+        header = f"P6\n{width} {height}\n255\n".encode("ascii")
+        pixels = bytes(
+            component
+            for y in range(height)
+            for x in range(width)
+            for component in (x * 2 % 256, y * 2 % 256, (x + y) % 256)
+        )
+        audio = work / "audio.wav"
+        try:
+            for frame in range(frame_count):
+                (work / f"frame-{frame:03d}.ppm").write_bytes(header + pixels)
+            with wave.open(str(audio), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(48000)
+                wav.writeframes(b"\0\0" * 24000)
+        except (OSError, wave.Error) as exc:
+            raise LauncherError(
+                "H264_MF_CANARY_FAILED",
+                "The local h264_mf canary fixture could not be created.",
+            ) from exc
+        encode_command = [
+            str(config.ffmpeg),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-framerate",
+            "10",
+            "-i",
+            str(work / "frame-%03d.ppm"),
+            "-i",
+            str(audio),
+            "-c:v",
+            H264_CODEC_STRATEGY,
+            "-rate_control",
+            "quality",
+            "-quality",
+            "72",
+            "-scenario",
+            "archive",
+            "-hw_encoding",
+            "0",
+            "-g",
+            str(frame_count),
+            "-keyint_min",
+            str(frame_count),
+            "-bf",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ]
+        try:
+            encoded = runner(
+                encode_command,
+                cwd=str(config.project_root),
+                env=dict(environment),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise LauncherError(
+                "H264_MF_CANARY_FAILED",
+                "The bundled FFmpeg could not execute the h264_mf canary.",
+            ) from exc
+        if encoded.returncode != 0 or not output.is_file() or output.stat().st_size <= 0:
+            raise LauncherError(
+                "H264_MF_CANARY_FAILED",
+                "The bundled FFmpeg could not encode with the fixed h264_mf strategy.",
+            )
+
+        probe_command = [
+            str(config.ffprobe),
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type,codec_name,pix_fmt",
+            "-of",
+            "json",
+            str(output),
+        ]
+        try:
+            probed = runner(
+                probe_command,
+                cwd=str(config.project_root),
+                env=dict(environment),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=20,
+                check=False,
+            )
+            payload = json.loads(probed.stdout.decode("utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+            raise LauncherError(
+                "H264_MF_CANARY_INVALID",
+                "The h264_mf canary could not be inspected.",
+            ) from exc
+        streams = payload.get("streams") if isinstance(payload, dict) else None
+        if probed.returncode != 0 or not isinstance(streams, list):
+            raise LauncherError(
+                "H264_MF_CANARY_INVALID",
+                "The h264_mf canary inspection returned an invalid result.",
+            )
+        video = next(
+            (item for item in streams if isinstance(item, dict) and item.get("codec_type") == "video"),
+            None,
+        )
+        audio = next(
+            (item for item in streams if isinstance(item, dict) and item.get("codec_type") == "audio"),
+            None,
+        )
+        if (
+            not isinstance(video, dict)
+            or video.get("codec_name") != "h264"
+            or video.get("pix_fmt") != "yuv420p"
+            or not isinstance(audio, dict)
+            or audio.get("codec_name") != "aac"
+        ):
+            raise LauncherError(
+                "H264_MF_CANARY_CONTRACT_MISMATCH",
+                "The h264_mf canary did not produce the required H.264/AAC/yuv420p contract.",
+            )
+
+
 def probe_preinstalled_runtimes(
     config: LauncherConfig,
     runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
@@ -867,6 +1394,12 @@ def probe_preinstalled_runtimes(
     if config.motion_runtime_required:
         assert config.node_executable is not None and config.hyperframes_cli is not None
         assert config.hyperframes_browser is not None
+        _probe_trusted_system_edge_identity(
+            config.hyperframes_browser,
+            expected_version=config.browser_version,
+            minimum_major=config.browser_minimum_major or SYSTEM_EDGE_MINIMUM_MAJOR,
+            runner=runner,
+        )
         motion_environment = build_app_environment(
             os.environ, config, app_port=8765, mpt_port=0, motion_health_verified=False
         )
@@ -886,13 +1419,6 @@ def probe_preinstalled_runtimes(
                     config.hyperframes_cli.parents[3],
                     motion_environment,
                     config.hyperframes_version,
-                ),
-                (
-                    "HYPERFRAMES_BROWSER_INVALID",
-                    [str(config.hyperframes_browser), "--version"],
-                    config.project_root,
-                    motion_environment,
-                    config.browser_version,
                 ),
                 (
                     "SAPI_ZH_CN_VOICE_MISSING",
@@ -953,6 +1479,9 @@ def probe_preinstalled_runtimes(
                 if code == "SAPI_ZH_CN_VOICE_MISSING":
                     raise LauncherError(code, "中文离线语音探针未返回 zh-CN，纯动画配音暂不可用。")
                 raise LauncherError(code, "预置运行环境版本探针与发布锁不一致。")
+    if config.motion_runtime_required:
+        _probe_hyperframes_browser_canary(config, motion_environment, runner)
+        _probe_h264_mf_canary(config, motion_environment, runner)
     return config.motion_runtime_required
 
 
@@ -1108,6 +1637,10 @@ def build_app_environment(
             {
                 "SHIYI_NODE_EXECUTABLE": str(config.node_executable),
                 "SHIYI_HYPERFRAMES_CLI": str(config.hyperframes_cli),
+                "SHIYI_HYPERFRAMES_CODEC_STRATEGY": H264_CODEC_STRATEGY,
+                "SHIYI_HYPERFRAMES_BROWSER_STRATEGY": str(config.browser_strategy),
+                "SHIYI_HYPERFRAMES_BROWSER_VERSION": str(config.browser_version),
+                "SHIYI_HYPERFRAMES_BROWSER_MINIMUM_MAJOR": str(config.browser_minimum_major),
                 "HYPERFRAMES_BROWSER_PATH": str(config.hyperframes_browser),
                 "HYPERFRAMES_FFMPEG_PATH": str(config.ffmpeg),
                 "HYPERFRAMES_FFPROBE_PATH": str(config.ffprobe),
@@ -1138,6 +1671,8 @@ def build_app_environment(
         environment["SHIYI_LAUNCH_INSTANCE_TOKEN"] = launch_instance_token
     if config.agent_test_review:
         environment["SHIYI_AGENT_TEST_REVIEW"] = "1"
+    elif config.mechanical_review:
+        environment["SHIYI_STAGE_REVIEW_MODE"] = "mechanical"
     return environment
 
 
@@ -1514,7 +2049,18 @@ def _run_motion_primary(
                 {
                     "status": "running",
                     "workbench_url": workbench_url,
-                    "motion_engine": {"name": "HyperFrames", "mode": "offline_bundled", "health": "ready"},
+                    "motion_engine": {
+                        "name": "HyperFrames",
+                        "mode": "offline_bundled_with_system_browser",
+                        "health": "ready",
+                        "browser_strategy": config.browser_strategy,
+                        "detected_edge_version": config.browser_version,
+                        "browser_minimum_major": config.browser_minimum_major,
+                        "startup_canaries": {
+                            "hyperframes_strict_check": "passed",
+                            "h264_mf_encode_probe": "passed",
+                        },
+                    },
                     "production_engine": {
                         "name": "MoneyPrinterTurbo",
                         "version": EXPECTED_MPT_VERSION,
@@ -1539,6 +2085,10 @@ def _run_motion_primary(
         finally:
             process_terminator(app_process)
             process_terminator(engine_process)
+            # The health file is shared with the already-running workbench and
+            # can outlive both child processes.  Revoke it on every motion
+            # launcher exit so stale bytes never advertise a stopped MPT.
+            _write_mpt_health_state(mpt_health_file, False)
             if launcher_state_path is not None:
                 _remove_own_launcher_state(launcher_state_path)
 
@@ -1610,6 +2160,15 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
         motion_manifest = package_manifest.get("motion_runtime", {}) if isinstance(package_manifest, dict) else {}
         if motion_required and not isinstance(motion_manifest, dict):
             raise LauncherError("PACKAGE_MANIFEST_INVALID", "便携包动画运行时清单无效。")
+        if motion_required and (
+            motion_manifest.get("browser_strategy") != SYSTEM_EDGE_BROWSER_STRATEGY
+            or motion_manifest.get("browser_minimum_major") != SYSTEM_EDGE_MINIMUM_MAJOR
+            or motion_manifest.get("system_browser_required") is not True
+            or "browser_payload" in motion_manifest
+            or motion_manifest.get("runtime_downloads_allowed") is not False
+            or motion_manifest.get("startup_canary_required") is not True
+        ):
+            raise LauncherError("PACKAGE_MANIFEST_INVALID", "便携包系统 Edge 与启动探针合同无效。")
         node_executable = _packaged_path(project_root, args.node_executable, "runtime/node/node.exe", "Node") if motion_required else None
         hyperframes_cli = _packaged_path(
             project_root,
@@ -1617,9 +2176,11 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
             "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs",
             "HyperFrames CLI",
         ) if motion_required else None
-        hyperframes_browser = _packaged_path(
-            project_root, args.hyperframes_browser, "runtime/browser/chrome-headless-shell.exe", "无头浏览器"
-        ) if motion_required else None
+        # Browser CLI/env overrides are intentionally ignored.  A packaged
+        # motion launch resolves only the machine-wide signed Edge install.
+        hyperframes_browser, detected_browser_version = (
+            resolve_trusted_system_edge() if motion_required else (None, None)
+        )
         return LauncherConfig(
             project_root=project_root,
             mpt_root=mpt_root,
@@ -1638,13 +2199,16 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
             app_python=shared_python,
             app_script=(project_root / "app.py").resolve(),
             agent_test_review=bool(args.agent_test_review),
+            mechanical_review=bool(args.mechanical_review),
             motion_runtime_required=motion_required,
             node_executable=node_executable,
             hyperframes_cli=hyperframes_cli,
             hyperframes_browser=hyperframes_browser,
             node_version=str(motion_manifest.get("node_version", "")) if motion_required else None,
             hyperframes_version=str(motion_manifest.get("hyperframes_version", "")) if motion_required else None,
-            browser_version=str(motion_manifest.get("browser_version", "")) if motion_required else None,
+            browser_version=detected_browser_version,
+            browser_strategy=SYSTEM_EDGE_BROWSER_STRATEGY if motion_required else None,
+            browser_minimum_major=SYSTEM_EDGE_MINIMUM_MAJOR if motion_required else None,
         )
     mpt_root = _default_path(
         args.mpt_root,
@@ -1699,7 +2263,9 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
     motion_required = bool(args.require_motion_runtime)
     node_executable = Path(args.node_executable).expanduser().resolve() if args.node_executable else None
     hyperframes_cli = Path(args.hyperframes_cli).expanduser().resolve() if args.hyperframes_cli else None
-    hyperframes_browser = Path(args.hyperframes_browser).expanduser().resolve() if args.hyperframes_browser else None
+    hyperframes_browser, detected_browser_version = (
+        resolve_trusted_system_edge() if motion_required else (None, None)
+    )
     return LauncherConfig(
         project_root=project_root,
         mpt_root=mpt_root,
@@ -1718,13 +2284,16 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
         app_python=app_python,
         app_script=app_script,
         agent_test_review=bool(args.agent_test_review),
+        mechanical_review=bool(args.mechanical_review),
         motion_runtime_required=motion_required,
         node_executable=node_executable,
         hyperframes_cli=hyperframes_cli,
         hyperframes_browser=hyperframes_browser,
         node_version=args.node_version,
         hyperframes_version=args.hyperframes_version,
-        browser_version=args.browser_version,
+        browser_version=detected_browser_version,
+        browser_strategy=SYSTEM_EDGE_BROWSER_STRATEGY if motion_required else None,
+        browser_minimum_major=SYSTEM_EDGE_MINIMUM_MAJOR if motion_required else None,
     )
 
 
@@ -1742,10 +2311,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--font-bold")
     parser.add_argument("--node-executable")
     parser.add_argument("--hyperframes-cli")
-    parser.add_argument("--hyperframes-browser")
+    # Legacy switches remain parseable so old shortcuts do not break, but are
+    # deliberately ignored; browser identity is resolved from trusted roots.
+    parser.add_argument("--hyperframes-browser", help=argparse.SUPPRESS)
     parser.add_argument("--node-version")
     parser.add_argument("--hyperframes-version")
-    parser.add_argument("--browser-version")
+    parser.add_argument("--browser-version", help=argparse.SUPPRESS)
     parser.add_argument("--require-motion-runtime", action="store_true")
     parser.add_argument("--app-port", type=int, default=8765)
     parser.add_argument("--mpt-port", type=int, default=0)
@@ -1755,10 +2326,16 @@ def build_parser() -> argparse.ArgumentParser:
     maintenance = parser.add_mutually_exclusive_group()
     maintenance.add_argument("--stop", action="store_true", help="只停止由当前便携包记录的进程树")
     maintenance.add_argument("--import-runtime", help="从旧版包内 runtime 复制任务、配置和本机加密 Key")
-    parser.add_argument(
+    review_mode = parser.add_mutually_exclusive_group()
+    review_mode.add_argument(
         "--agent-test-review",
         action="store_true",
         help="仅用于受控测试：两道阶段门禁由Codex浏览器操作，记录不冒充人审",
+    )
+    review_mode.add_argument(
+        "--mechanical-review",
+        action="store_true",
+        help="无人值守内部生产：两道阶段门禁由服务器反向机械审核，最终发布仍需人工确认",
     )
     return parser
 
@@ -1795,19 +2372,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             mpt_port = select_loopback_port(config.mpt_port, exclude={app_port})
             if (config.mpt_root / "app" / "asgi.py").is_file() and config.mpt_python.is_file():
                 validate_mpt_network_config(config.mpt_root, mpt_port)
-            _emit(
-                {
-                    "status": "ready",
-                    "message": "预置依赖、字体、FFmpeg 与本机网络边界已通过检查。",
-                    "downloads_started": False,
-                    "production_engine": {
-                        "name": "MoneyPrinterTurbo",
-                        "version": EXPECTED_MPT_VERSION,
-                        "mode": "local_http",
-                        "health": "not_started",
+            payload: dict[str, object] = {
+                "status": "ready",
+                "message": "预置依赖、字体、FFmpeg 与本机网络边界已通过检查。",
+                "downloads_started": False,
+                "production_engine": {
+                    "name": "MoneyPrinterTurbo",
+                    "version": EXPECTED_MPT_VERSION,
+                    "mode": "local_http",
+                    "health": "not_started",
+                },
+            }
+            if config.motion_runtime_required:
+                payload["motion_runtime"] = {
+                    "health": "ready",
+                    "browser_strategy": config.browser_strategy,
+                    "detected_edge_version": config.browser_version,
+                    "browser_minimum_major": config.browser_minimum_major,
+                    "runtime_downloads_allowed": False,
+                    "startup_canaries": {
+                        "hyperframes_strict_check": "passed",
+                        "h264_mf_encode_probe": "passed",
                     },
                 }
-            )
+            _emit(payload)
             return 0
         return run_combined(config, motion_health_verified=motion_health_verified)
     except LauncherError as exc:

@@ -1,0 +1,256 @@
+{
+  "schema_version": 1,
+  "component": "BtbN FFmpeg Windows GPL shared runtime",
+  "distribution_status": "blocked_pending_rav1e_cargo_vendor_and_same_release_evidence",
+  "license": "GPL-3.0-or-later",
+  "binary": {
+    "version": "N-125953-gd3ad8a7fee-20260803",
+    "provider_repository": "BtbN/FFmpeg-Builds",
+    "release_tag": "autobuild-2026-08-03-14-02",
+    "release_url": "https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-08-03-14-02",
+    "asset_name": "ffmpeg-N-125953-gd3ad8a7fee-win64-gpl-shared.zip",
+    "asset_url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-03-14-02/ffmpeg-N-125953-gd3ad8a7fee-win64-gpl-shared.zip",
+    "bytes": 76583412,
+    "sha256": "b297fb1771b478c02c972cb9ee13b92d067b4fb48a04db9be2334fd16acbf65f",
+    "ffmpeg_commit": "d3ad8a7fee6a647c6362e4a105d949282d50a98f",
+    "build_scripts_commit": "a99e8230eae00d1cee38f23076a7a1f55cd984e2",
+    "workflow_run_id": 30816221544,
+    "workflow_run_url": "https://github.com/BtbN/FFmpeg-Builds/actions/runs/30816221544",
+    "build_job_id": 91700101585,
+    "target_image": "ghcr.io/btbn/ffmpeg-builds/win64-gpl-shared@sha256:8dd29b9c90d6d3cc6b518dec5e4b4a1d4ee664c52be48b39b5d45d1cfa2c0807",
+    "target_image_config_digest": "sha256:28cb6d4578f056d1c672b3514fdf57de538401363220227a41d96f77bafa10d2",
+    "runtime_import_audit": {
+      "method": "PE import-table parse over every locked EXE/DLL",
+      "unexpected_external_runtime_dlls": [],
+      "result": "Imports are limited to Windows/UCRT system DLLs and the locked FFmpeg shared-library set; other enabled codec libraries are statically linked."
+    }
+  },
+  "runtime_files": [
+    {
+      "name": "avcodec-63.dll",
+      "bytes": 98925568,
+      "sha256": "233e39b5b8759f542c0d4931b52d17becda86b1a5e78c384e94e760c8b253327",
+      "upstream_crc32": "c3691dcc"
+    },
+    {
+      "name": "avdevice-63.dll",
+      "bytes": 3700224,
+      "sha256": "6984b48b1215ccf7bf9a73d6a3776474f10b65c0c3ff60967071ab8218261b2e",
+      "upstream_crc32": "6aac3a77"
+    },
+    {
+      "name": "avfilter-12.dll",
+      "bytes": 35560960,
+      "sha256": "f59afc84ce259d24852fe4145c2f4139baf106bd35ea701c7107930acd352daa",
+      "upstream_crc32": "6b202d4a"
+    },
+    {
+      "name": "avformat-63.dll",
+      "bytes": 23064576,
+      "sha256": "0d43440fc17257f05f7a6a5aa5587b22683e511b3a84ecd5ed6689de8c2e872d",
+      "upstream_crc32": "468003a9"
+    },
+    {
+      "name": "avutil-61.dll",
+      "bytes": 2947072,
+      "sha256": "64410b817f21abc4f9b66d063b623f82d65373d6271ba49841a0afe4e715e4f7",
+      "upstream_crc32": "4a6a528b"
+    },
+    {
+      "name": "ffmpeg.exe",
+      "bytes": 547840,
+      "sha256": "c436ef17f55b454e94ddf73dd75834b5bcf34763f07e6b5b8a38fc45de61f9a4",
+      "upstream_crc32": "704eef3c"
+    },
+    {
+      "name": "ffplay.exe",
+      "bytes": 17900544,
+      "sha256": "47155b84ff3a066efec6abdeb656989605e076693fa2c2ddaeac4970f163ce5f",
+      "upstream_crc32": "9c59ef82"
+    },
+    {
+      "name": "ffprobe.exe",
+      "bytes": 229376,
+      "sha256": "1924ff7b4625849c80a3915e8430a382c2b1b5aab768d874acd350e8e549738a",
+      "upstream_crc32": "4caa7aa9"
+    },
+    {
+      "name": "swresample-7.dll",
+      "bytes": 724480,
+      "sha256": "b0590803f176ef683936ce6085a0e7d801a3fcac8d7c73bdfd45803623229c3e",
+      "upstream_crc32": "72fe5f75"
+    },
+    {
+      "name": "swscale-10.dll",
+      "bytes": 2511872,
+      "sha256": "61380d3182f5b02541fadca1533b9ccef58997686fc56af64dece1cffb1a4115",
+      "upstream_crc32": "2a2eb48e"
+    }
+  ],
+  "source_closure": {
+    "status": "blocked",
+    "components": [
+      {
+        "id": "btbn-dependency-source-cache",
+        "role": "corresponding_source",
+        "status": "frozen",
+        "file_name": "BtbN-FFmpeg-Builds-dependency-source-cache-8856967707.zip",
+        "upstream_url": "https://api.github.com/repos/BtbN/FFmpeg-Builds/actions/artifacts/8856967707/zip",
+        "bytes": 2019379002,
+        "sha256": "c0f48bd73ff5b2c6ebdea8df6f1f841c99b31650b12e862abe418cfaa9df1db7",
+        "workflow_run_id": 30816221544,
+        "artifact_id": 8856967707,
+        "upstream_expires_at": "2026-08-17T13:03:59Z",
+        "archive_contract": {
+          "format": "zip",
+          "single_file_member_allowed_names": [
+            "cache.tar.gz",
+            ".cache/cache.tar.gz"
+          ],
+          "nested_tar_required_prefix": ".cache/downloads/"
+        },
+        "nested_archive_audit": {
+          "member_count": 230,
+          "unsafe_member_count": 0,
+          "selected_toolchain_runtime_sources": [
+            {
+              "name": ".cache/downloads/10-mingw_15f89c27dce70c738ea9161284f55ad28d76d952048b46a3ee98cffed3a27202.tar.xz",
+              "bytes": 62911868
+            },
+            {
+              "name": ".cache/downloads/10-mingw-std-threads_f6fe5dc5a067e90cd8b37a748b33962ac2eb09f3b486b287265803070dbf02d2.tar.xz",
+              "bytes": 86260
+            }
+          ]
+        }
+      },
+      {
+        "id": "btbn-build-scripts",
+        "role": "build_scripts",
+        "status": "frozen",
+        "file_name": "BtbN-FFmpeg-Builds-a99e8230eae00d1cee38f23076a7a1f55cd984e2.tar.gz",
+        "upstream_url": "https://api.github.com/repos/BtbN/FFmpeg-Builds/tarball/a99e8230eae00d1cee38f23076a7a1f55cd984e2",
+        "commit": "a99e8230eae00d1cee38f23076a7a1f55cd984e2",
+        "bytes": 101661,
+        "sha256": "ad2e962325fc658e4d9a83caafab89a6a6e57bf0488eede388a8872a90c56856",
+        "archive_contract": {
+          "format": "tar",
+          "required_root_prefix": "BtbN-FFmpeg-Builds-a99e823"
+        }
+      },
+      {
+        "id": "ffmpeg-source",
+        "role": "corresponding_source",
+        "status": "frozen",
+        "file_name": "FFmpeg-d3ad8a7fee6a647c6362e4a105d949282d50a98f.tar.gz",
+        "upstream_url": "https://api.github.com/repos/FFmpeg/FFmpeg/tarball/d3ad8a7fee6a647c6362e4a105d949282d50a98f",
+        "commit": "d3ad8a7fee6a647c6362e4a105d949282d50a98f",
+        "bytes": 17492386,
+        "sha256": "6f7b70d14dbf30b14c2dd78423b289fdceef04e22d3ba7201ffb12066a6ec53b",
+        "archive_contract": {
+          "format": "tar",
+          "required_root_prefix": "FFmpeg-FFmpeg-d3ad8a7"
+        }
+      },
+      {
+        "id": "crosstool-ng-source",
+        "role": "build_scripts",
+        "status": "frozen",
+        "file_name": "crosstool-ng-185f3483e0e5028357b131fb97c4331551a70a1e.tar.gz",
+        "upstream_url": "https://api.github.com/repos/crosstool-ng/crosstool-ng/tarball/185f3483e0e5028357b131fb97c4331551a70a1e",
+        "commit": "185f3483e0e5028357b131fb97c4331551a70a1e",
+        "bytes": 5695510,
+        "sha256": "002cb71bc65a8732c5354fd334ab87d4d2acaa6209d2b2c1bc54d2e0395c2645",
+        "archive_contract": {
+          "format": "tar",
+          "required_root_prefix": "crosstool-ng-crosstool-ng-185f348"
+        }
+      },
+      {
+        "id": "gcc-runtime-source",
+        "role": "toolchain_runtime_corresponding_source",
+        "status": "frozen",
+        "file_name": "gcc-15.2.0.tar.xz",
+        "upstream_url": "https://gcc.gnu.org/pub/gcc/releases/gcc-15.2.0/gcc-15.2.0.tar.xz",
+        "upstream_checksum_url": "https://gcc.gnu.org/pub/gcc/releases/gcc-15.2.0/sha512.sum",
+        "bytes": 101056276,
+        "sha256": "438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e",
+        "sha512": "89047a2e07bd9da265b507b516ed3635adb17491c7f4f67cf090f0bd5b3fc7f2ee6e4cc4008beef7ca884b6b71dffe2bb652b21f01a702e17b468cca2d10b2de",
+        "archive_contract": {
+          "format": "tar",
+          "required_root_prefix": "gcc-15.2.0"
+        }
+      },
+      {
+        "id": "rav1e-source",
+        "role": "corresponding_source",
+        "status": "frozen",
+        "file_name": "rav1e-564ae3b0007ae2b06893fd7166bf88c5a84c5b63.tar.gz",
+        "upstream_url": "https://api.github.com/repos/xiph/rav1e/tarball/564ae3b0007ae2b06893fd7166bf88c5a84c5b63",
+        "commit": "564ae3b0007ae2b06893fd7166bf88c5a84c5b63",
+        "bytes": 3041336,
+        "sha256": "b5fe2ce8375414f08b37ab42b4781e17ecbe96b45e072727873d9654c26f89c9",
+        "archive_contract": {
+          "format": "tar",
+          "required_root_prefix": "xiph-rav1e-564ae3b"
+        }
+      },
+      {
+        "id": "rav1e-cargo-vendor",
+        "role": "corresponding_source_and_offline_build_input",
+        "status": "pending",
+        "file_name": "rav1e-564ae3b-cargo-vendor-build-20260803.tar.zst",
+        "upstream_url": "https://crates.io/",
+        "bytes": null,
+        "sha256": null,
+        "resolution_note": "Must contain the Cargo.lock resulting from BtbN's cargo update cc at build time, the complete vendored crate tree, and offline Cargo source replacement configuration. The rav1e Git archive alone is not this bundle."
+      },
+      {
+        "id": "btbn-build-record",
+        "role": "reproducibility_evidence",
+        "status": "frozen",
+        "file_name": "BtbN-FFmpeg-Builds-build-record-8857322221.dockerbuild",
+        "upstream_url": "https://api.github.com/repos/BtbN/FFmpeg-Builds/actions/artifacts/8857322221/zip",
+        "bytes": 273439,
+        "sha256": "fb5d79db988f1a6bbeb84e7175e54f414cc368f57032c5e9ae58eab35bd50cf5",
+        "workflow_run_id": 30816221544,
+        "artifact_id": 8857322221,
+        "upstream_expires_at": "2026-08-17T13:03:59Z",
+        "archive_contract": {
+          "format": "tar",
+          "required_members": [
+            "index.json",
+            "oci-layout"
+          ]
+        }
+      }
+    ],
+    "release_contract": {
+      "repository": "zhichenghe34-design/clean-air-ai-content-factory",
+      "tag": "v0.3.0",
+      "policy": "A release containing the locked FFmpeg runtime must remain draft and must not be published until every required source and provenance component below is attached to this same GitHub Release with matching byte size and SHA-256. A local path, a future download promise, or a written disclaimer does not satisfy this gate.",
+      "object_code_asset_name_regex": "^ShiyiContentFactory-v0\\.3\\.0-motion-primary-[0-9a-f]{7,40}-Windows-x64\\.zip$",
+      "required_source_component_ids": [
+        "btbn-dependency-source-cache",
+        "btbn-build-scripts",
+        "ffmpeg-source",
+        "crosstool-ng-source",
+        "gcc-runtime-source",
+        "rav1e-source",
+        "rav1e-cargo-vendor"
+      ],
+      "required_provenance_component_ids": [
+        "btbn-build-record"
+      ]
+    },
+    "known_gaps": [
+      "The rav1e Cargo vendor/lock bundle is not frozen yet; BtbN executes cargo update cc and cargo cinstall, so the Git source archive does not include all crate source needed for an offline rebuild.",
+      "No GitHub Release API evidence has yet proved that the source asset set and the v0.3.0 Windows object-code ZIP coexist on the same Release."
+    ]
+  },
+  "official_compliance_references": [
+    "https://ffmpeg.org/legal.html",
+    "https://www.gnu.org/licenses/gpl-3.0.html",
+    "https://github.com/BtbN/FFmpeg-Builds/tree/a99e8230eae00d1cee38f23076a7a1f55cd984e2"
+  ]
+}

@@ -13,9 +13,14 @@ from unittest.mock import patch
 from scripts.launch_combined import (
     EXPECTED_MPT_COMMIT,
     EXPECTED_MPT_VERSION,
+    HYPERFRAMES_PATCHED_CLI_SHA256,
     MOTION_OPTIONAL_MPT_HEALTH_TIMEOUT_SECONDS,
+    SYSTEM_EDGE_BROWSER_STRATEGY,
+    SYSTEM_EDGE_MINIMUM_MAJOR,
+    SYSTEM_EDGE_RELATIVE_PATH,
     LauncherConfig,
     LauncherError,
+    _validate_trusted_system_edge_path,
     _port_is_available,
     build_app_command,
     build_app_environment,
@@ -27,6 +32,7 @@ from scripts.launch_combined import (
     config_from_args,
     import_legacy_runtime,
     probe_preinstalled_runtimes,
+    resolve_trusted_system_edge,
     run_combined,
     select_loopback_port,
     stop_recorded_processes,
@@ -67,6 +73,14 @@ class CombinedLauncherTests(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         self.project = self.root / "project"
         self.mpt = self.root / "mpt"
+        self.program_files = self.root / "Program Files"
+        self.edge = self.program_files / SYSTEM_EDGE_RELATIVE_PATH
+        self.edge.parent.mkdir(parents=True)
+        self.edge.write_bytes(b"signed-edge-fixture")
+        self.windows_root = self.root / "Windows"
+        self.powershell = self.windows_root / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        self.powershell.parent.mkdir(parents=True)
+        self.powershell.write_bytes(b"powershell-fixture")
         (self.project / "docs" / "fonts").mkdir(parents=True)
         (self.project / "third_party" / "moneyprinterturbo").mkdir(parents=True)
         (self.project / ".venv" / "Scripts").mkdir(parents=True)
@@ -120,11 +134,38 @@ class CombinedLauncherTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def _write_safe_mpt_config(self, host="127.0.0.1", endpoint=""):
+    def _write_safe_mpt_config(self, host="127.0.0.1", endpoint="", video_codec="h264_mf"):
         (self.mpt / "config.toml").write_text(
-            f'listen_host = "{host}"\nlisten_port = 8080\n[app]\nendpoint = "{endpoint}"\n',
+            f'listen_host = "{host}"\nlisten_port = 8080\n[app]\n'
+            f'endpoint = "{endpoint}"\nvideo_codec = "{video_codec}"\n',
             encoding="utf-8",
         )
+
+    @staticmethod
+    def _edge_identity_payload(
+        *,
+        version="151.0.4129.72",
+        signature_status="Valid",
+        product_name="Microsoft Edge",
+        company_name="Microsoft Corporation",
+    ):
+        return {
+            "signature_status": signature_status,
+            "signer_subject": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond",
+            "product_name": product_name,
+            "company_name": company_name,
+            "product_version": version,
+            "file_version": version,
+        }
+
+    def _edge_identity_runner(self, **payload_overrides):
+        payload = self._edge_identity_payload(**payload_overrides)
+
+        def runner(command, **kwargs):
+            self.assertEqual(str(self.edge.resolve()), kwargs["env"]["SHIYI_EDGE_SIGNATURE_TARGET"])
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload).encode("utf-8"), b"")
+
+        return runner
 
     def test_preflight_accepts_only_complete_pinned_layout(self):
         validate_preinstalled_layout(self.config)
@@ -134,6 +175,102 @@ class CombinedLauncherTests(unittest.TestCase):
         with self.assertRaises(LauncherError) as context:
             validate_preinstalled_layout(self.config)
         self.assertEqual(context.exception.code, "MPT_VERSION_MISMATCH")
+
+    def test_trusted_system_edge_accepts_only_signed_microsoft_product_at_fixed_path(self):
+        with patch("scripts.launch_combined._trusted_windows_root", return_value=self.windows_root):
+            detected_path, version = resolve_trusted_system_edge(
+                runner=self._edge_identity_runner(),
+                program_files_roots=(self.program_files,),
+                powershell=self.powershell,
+            )
+        self.assertEqual(self.edge.resolve(), detected_path)
+        self.assertEqual("151.0.4129.72", version)
+
+    def test_trusted_system_edge_fails_closed_when_missing_or_too_old(self):
+        empty_root = self.root / "Empty Program Files"
+        empty_root.mkdir()
+        with self.assertRaises(LauncherError) as missing:
+            resolve_trusted_system_edge(program_files_roots=(empty_root,), powershell=self.powershell)
+        self.assertEqual("SYSTEM_EDGE_MISSING", missing.exception.code)
+
+        with (
+            patch("scripts.launch_combined._trusted_windows_root", return_value=self.windows_root),
+            self.assertRaises(LauncherError) as old,
+        ):
+            resolve_trusted_system_edge(
+                runner=self._edge_identity_runner(version="150.0.0.0"),
+                program_files_roots=(self.program_files,),
+                powershell=self.powershell,
+            )
+        self.assertEqual("SYSTEM_EDGE_TOO_OLD", old.exception.code)
+
+    def test_trusted_system_edge_rejects_spoofed_signature_and_product_identity(self):
+        for overrides, expected_code in (
+            ({"signature_status": "NotSigned"}, "SYSTEM_EDGE_SIGNATURE_INVALID"),
+            ({"product_name": "Chromium"}, "SYSTEM_EDGE_IDENTITY_INVALID"),
+            ({"company_name": "Fixture Corp"}, "SYSTEM_EDGE_IDENTITY_INVALID"),
+        ):
+            with self.subTest(overrides=overrides):
+                with (
+                    patch("scripts.launch_combined._trusted_windows_root", return_value=self.windows_root),
+                    self.assertRaises(LauncherError) as rejected,
+                ):
+                    resolve_trusted_system_edge(
+                        runner=self._edge_identity_runner(**overrides),
+                        program_files_roots=(self.program_files,),
+                        powershell=self.powershell,
+                    )
+                self.assertEqual(expected_code, rejected.exception.code)
+
+    def test_local_app_data_edge_path_is_not_a_trusted_system_browser(self):
+        local_edge = self.root / "LocalAppData/Microsoft/Edge/Application/msedge.exe"
+        local_edge.parent.mkdir(parents=True)
+        local_edge.write_bytes(b"user-writable-edge")
+        with self.assertRaises(LauncherError) as rejected:
+            _validate_trusted_system_edge_path(
+                local_edge,
+                program_files_roots=(self.program_files,),
+            )
+        self.assertEqual("SYSTEM_EDGE_PATH_UNTRUSTED", rejected.exception.code)
+
+    def test_motion_config_ignores_browser_cli_and_host_environment_overrides(self):
+        args = build_parser().parse_args(
+            [
+                "--project-root",
+                str(self.project),
+                "--require-motion-runtime",
+                "--node-executable",
+                str(self.project / "runtime/node/node.exe"),
+                "--hyperframes-cli",
+                str(self.project / "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs"),
+                "--hyperframes-browser",
+                str(self.root / "LocalAppData/Microsoft/Edge/Application/msedge.exe"),
+                "--browser-version",
+                "999.0.0.0",
+                "--node-version",
+                "22.13.1",
+                "--hyperframes-version",
+                "0.7.86",
+            ]
+        )
+        host_overrides = {
+            "HYPERFRAMES_BROWSER_PATH": str(self.root / "host-msedge.exe"),
+            "SHIYI_HYPERFRAMES_BROWSER_STRATEGY": "host_override",
+            "SHIYI_HYPERFRAMES_BROWSER_VERSION": "999.0.0.0",
+            "SHIYI_HYPERFRAMES_BROWSER_MINIMUM_MAJOR": "999",
+        }
+        with (
+            patch.dict(os.environ, host_overrides, clear=False),
+            patch(
+                "scripts.launch_combined.resolve_trusted_system_edge",
+                return_value=(self.edge.resolve(), "151.0.4129.72"),
+            ),
+        ):
+            config = config_from_args(args)
+        self.assertEqual(self.edge.resolve(), config.hyperframes_browser)
+        self.assertEqual("151.0.4129.72", config.browser_version)
+        self.assertEqual(SYSTEM_EDGE_BROWSER_STRATEGY, config.browser_strategy)
+        self.assertEqual(SYSTEM_EDGE_MINIMUM_MAJOR, config.browser_minimum_major)
 
     def test_preflight_rejects_material_directory_outside_mpt_allowlist(self):
         outside = self.project / "materials"
@@ -157,6 +294,11 @@ class CombinedLauncherTests(unittest.TestCase):
             validate_mpt_network_config(self.mpt, 19080)
         self.assertEqual(public_endpoint.exception.code, "MPT_CONFIG_ENDPOINT_NOT_LOOPBACK")
         self.assertNotIn("example.invalid", json.dumps(public_endpoint.exception.as_dict()))
+
+        self._write_safe_mpt_config(video_codec="libx264")
+        with self.assertRaises(LauncherError) as wrong_codec:
+            validate_mpt_network_config(self.mpt, 19080)
+        self.assertEqual("MPT_CONFIG_CODEC_STRATEGY_MISMATCH", wrong_codec.exception.code)
 
     def test_commands_are_fixed_loopback_without_shell_or_provider_arguments(self):
         engine = build_engine_command(self.config, 19080)
@@ -211,6 +353,7 @@ class CombinedLauncherTests(unittest.TestCase):
             "SHIYI_ALLOW_TEST_PROVIDER": "1",
             "SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS": "1",
             "SHIYI_AGENT_TEST_REVIEW": "1",
+            "SHIYI_STAGE_REVIEW_MODE": "mechanical",
             "SHIYI_LAUNCH_INSTANCE_TOKEN": "host-controlled-token",
             "PYTHONPATH": "C:\\outside-injection",
             "PYTHONHOME": "C:\\outside-runtime",
@@ -238,6 +381,7 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertNotIn("SHIYI_ALLOW_TEST_PROVIDER", app_env)
         self.assertNotIn("SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS", app_env)
         self.assertNotIn("SHIYI_AGENT_TEST_REVIEW", app_env)
+        self.assertNotIn("SHIYI_STAGE_REVIEW_MODE", app_env)
         self.assertNotIn("SHIYI_LAUNCH_INSTANCE_TOKEN", app_env)
         self.assertNotIn("PYTHONPATH", app_env)
         self.assertNotIn("PYTHONHOME", app_env)
@@ -269,6 +413,20 @@ class CombinedLauncherTests(unittest.TestCase):
             mpt_port=19080,
         )
         self.assertEqual(agent_test_env["SHIYI_AGENT_TEST_REVIEW"], "1")
+
+        mechanical_config = LauncherConfig(
+            **{**self.config.__dict__, "mechanical_review": True}
+        )
+        mechanical_env = build_app_environment(
+            parent,
+            mechanical_config,
+            app_port=18765,
+            mpt_port=19080,
+        )
+        self.assertNotIn("SHIYI_AGENT_TEST_REVIEW", mechanical_env)
+        self.assertEqual(
+            mechanical_env["SHIYI_STAGE_REVIEW_MODE"], "mechanical"
+        )
 
     def test_packaged_config_ignores_host_path_overrides_and_rejects_explicit_escape(self):
         (self.project / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
@@ -742,8 +900,8 @@ class CombinedLauncherTests(unittest.TestCase):
     def test_motion_launcher_mode_uses_only_bundled_tools_and_starts_without_mpt(self):
         node = self.project / "runtime" / "node" / "node.exe"
         cli = self.project / "runtime" / "hyperframes" / "node_modules" / "hyperframes" / "bin" / "hyperframes.mjs"
-        browser = self.project / "runtime" / "browser" / "chrome-headless-shell.exe"
-        for path in (node, cli, browser):
+        bundle = cli.parent.parent / "dist" / "cli.js"
+        for path in (node, cli, bundle):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"fixture")
         sapi_script = self.project / "core" / "sapi_tts.ps1"
@@ -758,59 +916,96 @@ class CombinedLauncherTests(unittest.TestCase):
                 "motion_runtime_required": True,
                 "node_executable": node,
                 "hyperframes_cli": cli,
-                "hyperframes_browser": browser,
+                "hyperframes_browser": self.edge,
                 "node_version": "22.13.1",
                 "hyperframes_version": "0.7.86",
-                "browser_version": "152.0.7928.2",
+                "browser_version": "151.0.4129.72",
+                "browser_strategy": SYSTEM_EDGE_BROWSER_STRATEGY,
+                "browser_minimum_major": SYSTEM_EDGE_MINIMUM_MAJOR,
             }
         )
-        validate_preinstalled_layout(motion)
-        with self.assertRaises(LauncherError) as wrong_hyperframes:
-            validate_preinstalled_layout(
-                LauncherConfig(**{**motion.__dict__, "hyperframes_version": "0.7.103"})
-            )
+        with (
+            patch("scripts.launch_combined._file_sha256", return_value=HYPERFRAMES_PATCHED_CLI_SHA256),
+            patch("scripts.launch_combined._trusted_program_files_roots", return_value=(self.program_files,)),
+        ):
+            validate_preinstalled_layout(motion)
+            with self.assertRaises(LauncherError) as wrong_hyperframes:
+                validate_preinstalled_layout(
+                    LauncherConfig(**{**motion.__dict__, "hyperframes_version": "0.7.103"})
+                )
         self.assertEqual("HYPERFRAMES_VERSION_MISMATCH", wrong_hyperframes.exception.code)
+        with (
+            patch("scripts.launch_combined._file_sha256", return_value="0" * 64),
+            patch("scripts.launch_combined._trusted_program_files_roots", return_value=(self.program_files,)),
+            self.assertRaises(LauncherError) as wrong_patch,
+        ):
+            validate_preinstalled_layout(motion)
+        self.assertEqual("HYPERFRAMES_PATCH_MISMATCH", wrong_patch.exception.code)
         probe_commands = []
-        probe_preinstalled_runtimes(
-            motion,
-            runner=lambda command, **_kwargs: (
-                probe_commands.append(list(command))
-                or subprocess.CompletedProcess(
+
+        def fake_motion_probe(command, **_kwargs):
+            probe_commands.append(list(command))
+            environment = _kwargs.get("env", {})
+            if environment.get("SHIYI_EDGE_SIGNATURE_TARGET"):
+                return subprocess.CompletedProcess(
                     command,
                     0,
-                    (
-                        b"v22.13.1"
-                        if command == [str(node), "--version"]
-                        else b"0.7.86"
-                        if command == [str(node), str(cli), "--version"]
-                        else b"SAPI_VOICE=Fixture;CULTURE=zh-CN"
-                        if "-ProbeOnly" in command
-                        else b"Chrome Headless Shell 152.0.7928.2"
-                    ),
+                    json.dumps(self._edge_identity_payload()).encode("utf-8"),
                     b"",
                 )
-            ),
-        )
+            if "check" in command:
+                return subprocess.CompletedProcess(command, 0, b'{"ok":true}', b"")
+            if command[0] == str(self.config.ffmpeg):
+                Path(command[-1]).write_bytes(b"fixture-mp4")
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+            if command[0] == str(self.config.ffprobe):
+                streams = {
+                    "streams": [
+                        {"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p"},
+                        {"codec_type": "audio", "codec_name": "aac"},
+                    ]
+                }
+                return subprocess.CompletedProcess(command, 0, json.dumps(streams).encode(), b"")
+            stdout = (
+                b"v22.13.1"
+                if command == [str(node), "--version"]
+                else b"0.7.86"
+                if command == [str(node), str(cli), "--version"]
+                else b"SAPI_VOICE=Fixture;CULTURE=zh-CN"
+                if "-ProbeOnly" in command
+                else b""
+            )
+            return subprocess.CompletedProcess(command, 0, stdout, b"")
+
+        with patch(
+            "scripts.launch_combined._trusted_program_files_roots",
+            return_value=(self.program_files,),
+        ):
+            probe_preinstalled_runtimes(motion, runner=fake_motion_probe)
         self.assertIn([str(node), "--version"], probe_commands)
         self.assertIn([str(node), str(cli), "--version"], probe_commands)
-        self.assertIn([str(browser), "--version"], probe_commands)
+        self.assertTrue(any("Get-AuthenticodeSignature" in command[-1] for command in probe_commands))
+        self.assertTrue(any("check" in command and "--strict" in command for command in probe_commands))
+        self.assertFalse(any(command[:2] == [str(self.edge), "--version"] for command in probe_commands))
         self.assertTrue(any("-ProbeOnly" in command and "zh-CN" in command for command in probe_commands))
-        with self.assertRaises(LauncherError) as missing_voice:
-            probe_preinstalled_runtimes(
-                motion,
-                runner=lambda command, **_kwargs: subprocess.CompletedProcess(
-                    command,
-                    1 if "-ProbeOnly" in command else 0,
-                    (
-                        b"v22.13.1"
-                        if command == [str(node), "--version"]
-                        else b"0.7.86"
-                        if command == [str(node), str(cli), "--version"]
-                        else b"Chrome Headless Shell 152.0.7928.2"
-                    ),
-                    b"missing zh-CN voice" if "-ProbeOnly" in command else b"",
-                ),
-            )
+        encode_command = next(command for command in probe_commands if command[0] == str(self.config.ffmpeg))
+        self.assertIn("h264_mf", encode_command)
+        self.assertIn("quality", encode_command)
+        self.assertIn("archive", encode_command)
+        self.assertIn("-framerate", encode_command)
+        self.assertNotIn("lavfi", encode_command)
+        for forbidden in ("libx264", "-crf", "-preset", "-x264-params"):
+            self.assertNotIn(forbidden, encode_command)
+        def missing_voice_runner(command, **kwargs):
+            if "-ProbeOnly" in command:
+                return subprocess.CompletedProcess(command, 1, b"", b"missing zh-CN voice")
+            return fake_motion_probe(command, **kwargs)
+
+        with (
+            patch("scripts.launch_combined._trusted_program_files_roots", return_value=(self.program_files,)),
+            self.assertRaises(LauncherError) as missing_voice,
+        ):
+            probe_preinstalled_runtimes(motion, runner=missing_voice_runner)
         self.assertEqual("SAPI_ZH_CN_VOICE_MISSING", missing_voice.exception.code)
         environment = build_app_environment(
             {
@@ -831,6 +1026,10 @@ class CombinedLauncherTests(unittest.TestCase):
                 "HF_TOKEN": "model-secret",
                 "MODEL_PROVIDER": "host-model",
                 "PUPPETEER_EXECUTABLE_PATH": "host-browser.exe",
+                "HYPERFRAMES_BROWSER_PATH": "host-browser.exe",
+                "SHIYI_HYPERFRAMES_BROWSER_STRATEGY": "host",
+                "SHIYI_HYPERFRAMES_BROWSER_VERSION": "999.0.0.0",
+                "SHIYI_HYPERFRAMES_BROWSER_MINIMUM_MAJOR": "999",
             },
             motion,
             app_port=18765,
@@ -839,7 +1038,11 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertEqual("0", environment["SHIYI_MPT_ENABLED"])
         self.assertEqual(str(node), environment["SHIYI_NODE_EXECUTABLE"])
         self.assertEqual(str(cli), environment["SHIYI_HYPERFRAMES_CLI"])
-        self.assertEqual(str(browser), environment["HYPERFRAMES_BROWSER_PATH"])
+        self.assertEqual("h264_mf", environment["SHIYI_HYPERFRAMES_CODEC_STRATEGY"])
+        self.assertEqual(str(self.edge), environment["HYPERFRAMES_BROWSER_PATH"])
+        self.assertEqual(SYSTEM_EDGE_BROWSER_STRATEGY, environment["SHIYI_HYPERFRAMES_BROWSER_STRATEGY"])
+        self.assertEqual("151.0.4129.72", environment["SHIYI_HYPERFRAMES_BROWSER_VERSION"])
+        self.assertEqual(str(SYSTEM_EDGE_MINIMUM_MAJOR), environment["SHIYI_HYPERFRAMES_BROWSER_MINIMUM_MAJOR"])
         self.assertNotIn("host-npm-and-chrome", environment["PATH"])
         self.assertIn(
             str(Path("WindowsRoot") / "System32" / "WindowsPowerShell" / "v1.0"),
@@ -926,6 +1129,12 @@ class CombinedLauncherTests(unittest.TestCase):
         )
         payload = emit.call_args.args[0]
         self.assertEqual("ready", payload["motion_engine"]["health"])
+        self.assertEqual(SYSTEM_EDGE_BROWSER_STRATEGY, payload["motion_engine"]["browser_strategy"])
+        self.assertEqual("151.0.4129.72", payload["motion_engine"]["detected_edge_version"])
+        self.assertEqual(
+            {"hyperframes_strict_check": "passed", "h264_mf_encode_probe": "passed"},
+            payload["motion_engine"]["startup_canaries"],
+        )
         self.assertEqual("disabled", payload["production_engine"]["health"])
 
         def app_start_failure(*_args, **_kwargs):
@@ -944,11 +1153,41 @@ class CombinedLauncherTests(unittest.TestCase):
                 )
         self.assertEqual("WORKBENCH_START_FAILED", failed_start.exception.code)
 
+        interrupted_process = FakeProcess([None, None])
+        interrupted_launch = []
+        terminated = []
+
+        def interrupted_popen(command, **kwargs):
+            interrupted_launch.append((list(command), kwargs))
+            return interrupted_process
+
+        with (
+            patch("scripts.launch_combined.select_loopback_port", side_effect=[18765, 19080]),
+            patch("scripts.launch_combined._emit"),
+        ):
+            result = run_combined(
+                motion,
+                popen_factory=interrupted_popen,
+                health_waiter=lambda *_args, **_kwargs: self.fail("MPT must not be probed"),
+                workbench_health_waiter=lambda *_args, **_kwargs: None,
+                process_terminator=lambda process: terminated.append(process),
+                sleeper=lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt()),
+                motion_health_verified=True,
+            )
+        self.assertEqual(130, result)
+        self.assertEqual([interrupted_process, None], terminated)
+        interrupted_health = Path(
+            interrupted_launch[0][1]["env"]["SHIYI_MPT_HEALTH_FILE"]
+        )
+        self.assertEqual(
+            {"healthy": False, "schema_version": 1},
+            json.loads(interrupted_health.read_text(encoding="utf-8")),
+        )
+
     def test_motion_primary_revokes_mpt_health_if_optional_engine_crashes(self):
         node = self.project / "runtime/node/node.exe"
         cli = self.project / "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs"
-        browser = self.project / "runtime/browser/chrome-headless-shell.exe"
-        for path in (node, cli, browser):
+        for path in (node, cli):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"fixture")
         motion = LauncherConfig(
@@ -957,10 +1196,12 @@ class CombinedLauncherTests(unittest.TestCase):
                 "motion_runtime_required": True,
                 "node_executable": node,
                 "hyperframes_cli": cli,
-                "hyperframes_browser": browser,
+                "hyperframes_browser": self.edge,
                 "node_version": "22.13.1",
                 "hyperframes_version": "0.7.86",
-                "browser_version": "152.0.7928.2",
+                "browser_version": "151.0.4129.72",
+                "browser_strategy": SYSTEM_EDGE_BROWSER_STRATEGY,
+                "browser_minimum_major": SYSTEM_EDGE_MINIMUM_MAJOR,
             }
         )
         processes = [FakeProcess([None, 1]), FakeProcess([None, None, 0])]

@@ -533,7 +533,13 @@ class OrchestratorTests(unittest.TestCase):
             job = jobs.create(plan, production_input={"topic": "气味小就代表甲醛少吗？"})
             jobs.approve(job["id"])
             with self.assertRaises(Exception):
-                jobs.update_script(job["id"], DEFAULT_SCRIPT, review_script(DEFAULT_SCRIPT), {"estimated_seconds": 50})
+                jobs.update_script(
+                    job["id"],
+                    DEFAULT_SCRIPT,
+                    review_script(DEFAULT_SCRIPT),
+                    {"estimated_seconds": 50},
+                    "何sir",
+                )
 
 
 class ProductionTests(unittest.TestCase):

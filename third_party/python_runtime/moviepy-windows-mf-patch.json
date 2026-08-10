@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "patch_id": "shiyi-moviepy-windows-mf",
+  "patch_version": "1.0.0",
+  "component": {
+    "distribution_name": "moviepy",
+    "distribution_version": "2.2.1",
+    "module_reported_version": "2.1.2",
+    "module_version_boundary": "The frozen moviepy 2.2.1 wheel reports moviepy.__version__ as 2.1.2. Distribution metadata controls dependency identity; the module value is preserved and reported as an observed upstream inconsistency.",
+    "license": "MIT",
+    "upstream_wheel": {
+      "filename": "moviepy-2.2.1-py3-none-any.whl",
+      "sha256": "6B56803FEC2AC54B557404126AC1160E65448E03798FA282BD23E8FAB3795060",
+      "bytes": 129871,
+      "lock_source": "MoneyPrinterTurbo uv.lock"
+    }
+  },
+  "identity_files": {
+    "METADATA": {
+      "path": "moviepy-2.2.1.dist-info/METADATA",
+      "sha256": "BA08814030A33C196589CB232D87518B2BE874B342E8E5F6DFEFB464E52E5569",
+      "bytes": 6938,
+      "required_fields": [
+        "Name: moviepy",
+        "Version: 2.2.1",
+        "License: MIT License"
+      ]
+    },
+    "module_version": {
+      "path": "moviepy/version.py",
+      "sha256": "522B817115CFB57C4F5010DDA74643BD697453D0DBD6430D7D3DE801F871A8B8",
+      "bytes": 22,
+      "exact_value": "__version__ = \"2.1.2\""
+    },
+    "license": {
+      "path": "moviepy-2.2.1.dist-info/licenses/LICENCE.txt",
+      "sha256": "05ECC6144AF83D1B87B64F3E36F4367349AC4486AFBF29E57341B7C4745DD38A",
+      "bytes": 1071,
+      "spdx": "MIT"
+    }
+  },
+  "patcher": {
+    "path": "tools/apply_moviepy_windows_mf_patch.py",
+    "sha256": "6D307A0D90FDD2D62652704D015D1F4BC42AEE2CF23C115834B91606E464E0C4",
+    "cli": "python tools/apply_moviepy_windows_mf_patch.py --python-runtime <runtime/python> [--check|--calculate]",
+    "input_policy": "Accept only the exact frozen upstream writer plus RECORD pair or the exact patched writer plus RECORD pair after validating frozen METADATA, module version and MIT license identities.",
+    "write_policy": "Stage each changed payload in the destination directory, fsync it, and replace it atomically; restore the writer if the RECORD replacement fails. Unknown or mixed states are never written."
+  },
+  "modified_file_notice": "MIT modification notice: Shanghai Shiyi Brand Management Co., Ltd. modified this file via shiyi-moviepy-windows-mf v1.0.0 for the fixed Windows Media Foundation H.264 policy. This is not the unmodified upstream MoviePy file.",
+  "modified_files": [
+    {
+      "role": "writer",
+      "path": "moviepy/video/io/ffmpeg_writer.py",
+      "upstream_sha256": "347E9EE5403A0CBFFDDF6205D7DE9A8B38708BDC9853F22383CFE4987AFA62D3",
+      "upstream_bytes": 11407,
+      "patched_sha256": "DFE76CD8AED151B99881DD01FA2BC1E040D0788EC364A8C6EF14020F2009D8B9",
+      "patched_bytes": 12362,
+      "purposes": [
+        "embed an MIT modified-file notice and patch identity near the top of the source",
+        "omit MoviePy's unsupported -preset argument only when codec is h264_mf",
+        "append the fixed Media Foundation encoder policy after caller-supplied FFmpeg options",
+        "ignore MoviePy's generic bitrate parameter for h264_mf so it cannot silently alter the quality-mode policy"
+      ]
+    },
+    {
+      "role": "record",
+      "path": "moviepy-2.2.1.dist-info/RECORD",
+      "upstream_sha256": "F8D61AAAE58D557D0F67AF5016B5AD15D791A9D79E3B7121BC3CD9C296D78ED8",
+      "upstream_bytes": 7281,
+      "patched_sha256": "4D836329F0D7804F389AED64FB102A48A614821793F5D7C7E419D11EB7A574C5",
+      "patched_bytes": 7281,
+      "patched_writer_row": "moviepy/video/io/ffmpeg_writer.py,sha256=3-ds2K7RUbmYgd0B-ivB4EDQeI7DZKjG7xQCDyAJ2Lk,12362",
+      "purpose": "keep installed-distribution RECORD integrity consistent with the modified writer"
+    }
+  ],
+  "codec_contract": {
+    "strategy": "h264_mf",
+    "encoder": "h264_mf",
+    "rate_control": "quality",
+    "quality": 72,
+    "scenario": "archive",
+    "hw_encoding": 0,
+    "b_frames": 0,
+    "pixel_format": "yuv420p",
+    "fixed_args": [
+      "-c:v",
+      "h264_mf",
+      "-rate_control",
+      "quality",
+      "-quality",
+      "72",
+      "-scenario",
+      "archive",
+      "-hw_encoding",
+      "0",
+      "-bf",
+      "0",
+      "-pix_fmt",
+      "yuv420p"
+    ],
+    "preset_policy": "No -preset argument is emitted for codec=h264_mf; other MoviePy codecs preserve upstream behavior.",
+    "audio_policy": "Unchanged; callers may continue to request native FFmpeg AAC independently of this video-writer patch."
+  },
+  "formal_packaging_contract": {
+    "staging_steps": [
+      "copy and prune the frozen Python runtime into package staging",
+      "run the patcher against staged runtime/python",
+      "run the patcher again with --check",
+      "generate the Python distribution SBOM only after the patched writer and synchronized RECORD are final"
+    ],
+    "sbom_fields": [
+      "distribution_name=moviepy",
+      "distribution_version=2.2.1",
+      "module_reported_version=2.1.2",
+      "license=MIT",
+      "modified=true",
+      "patch_id=shiyi-moviepy-windows-mf",
+      "patch_version=1.0.0",
+      "patch_manifest_sha256=<calculated from the tracked manifest>",
+      "patcher_sha256=6D307A0D90FDD2D62652704D015D1F4BC42AEE2CF23C115834B91606E464E0C4",
+      "writer_sha256=DFE76CD8AED151B99881DD01FA2BC1E040D0788EC364A8C6EF14020F2009D8B9",
+      "record_sha256=4D836329F0D7804F389AED64FB102A48A614821793F5D7C7E419D11EB7A574C5",
+      "record_consistent=true"
+    ],
+    "runtime_canary": {
+      "operation": "MoviePy ColorClip with generated audio through write_videofile(codec='h264_mf', audio_codec='aac')",
+      "ffmpeg_source": "third_party/ffmpeg/runtime/win-x64",
+      "required_probe": {
+        "video_codec": "h264",
+        "pixel_format": "yuv420p",
+        "audio_codec": "aac"
+      }
+    },
+    "forbidden_delivery_state": "A runtime with an unknown or mixed writer/RECORD identity, a missing MIT license, a changed distribution identity, or an unverified patch is not a release input."
+  }
+}

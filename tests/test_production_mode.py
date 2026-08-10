@@ -9,7 +9,13 @@ from pathlib import Path
 from unittest import mock
 
 import app
-from core.motion_runtime_contract import HYPERFRAMES_RENDERER, HYPERFRAMES_VERSION
+from core.motion_runtime_contract import (
+    HYPERFRAMES_PATCHED_CLI_SHA256,
+    HYPERFRAMES_RENDERER,
+    HYPERFRAMES_VERSION,
+    SYSTEM_BROWSER_MINIMUM_MAJOR,
+    SYSTEM_BROWSER_STRATEGY,
+)
 from core.orchestrator import (
     UnprocessableError,
     is_legacy_footage_input,
@@ -312,9 +318,11 @@ class HyperFramesRuntimeContractTests(unittest.TestCase):
             root = Path(folder) / "contains-npm-runtime"
             node = root / "node.exe"
             cli = root / "node_modules" / "hyperframes" / "bin" / "hyperframes.mjs"
+            bundle = cli.parent.parent / "dist" / "cli.js"
             browser = root / "chrome.exe"
             cli.parent.mkdir(parents=True)
-            for path in (node, cli, browser):
+            bundle.parent.mkdir(parents=True)
+            for path in (node, cli, bundle, browser):
                 path.write_bytes(b"runtime")
             (cli.parent.parent / "package.json").write_text(
                 json.dumps({"name": "hyperframes", "version": HYPERFRAMES_VERSION}),
@@ -324,9 +332,18 @@ class HyperFramesRuntimeContractTests(unittest.TestCase):
                 "SHIYI_NODE_EXECUTABLE": str(node),
                 "SHIYI_HYPERFRAMES_CLI": str(cli),
                 "HYPERFRAMES_BROWSER_PATH": str(browser),
+                "SHIYI_HYPERFRAMES_BROWSER_STRATEGY": SYSTEM_BROWSER_STRATEGY,
+                "SHIYI_HYPERFRAMES_BROWSER_VERSION": "151.0.1000.1",
+                "SHIYI_HYPERFRAMES_BROWSER_MINIMUM_MAJOR": str(SYSTEM_BROWSER_MINIMUM_MAJOR),
                 "SHIYI_PACKAGED_RUNTIME": "1",
             }
-            with mock.patch.dict(os.environ, environment, clear=False):
+            with (
+                mock.patch.dict(os.environ, environment, clear=False),
+                mock.patch(
+                    "core.production._file_sha256",
+                    return_value=HYPERFRAMES_PATCHED_CLI_SHA256,
+                ),
+            ):
                 check, render, runtime = _hyperframes_commands("high")
         self.assertEqual(check, [str(node), str(cli), "check", "--strict"])
         self.assertEqual(render[:3], [str(node), str(cli), "render"])
@@ -344,6 +361,49 @@ class HyperFramesRuntimeContractTests(unittest.TestCase):
         self.assertEqual(runtime["runtime_source"], "packaged")
         self.assertEqual(runtime["version"], HYPERFRAMES_VERSION)
         self.assertEqual(runtime["renderer"], HYPERFRAMES_RENDERER)
+        self.assertEqual(runtime["codec_strategy"], "h264_mf")
+        self.assertEqual(runtime["patched_cli_sha256"], HYPERFRAMES_PATCHED_CLI_SHA256)
+        self.assertEqual(runtime["browser_strategy"], SYSTEM_BROWSER_STRATEGY)
+        self.assertEqual(runtime["browser_version"], "151.0.1000.1")
+        self.assertEqual(runtime["browser_minimum_major"], SYSTEM_BROWSER_MINIMUM_MAJOR)
+
+    def test_packaged_runtime_rejects_unverified_or_old_system_browser_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            node = root / "node.exe"
+            cli = root / "node_modules" / "hyperframes" / "bin" / "hyperframes.mjs"
+            bundle = cli.parent.parent / "dist" / "cli.js"
+            browser = root / "msedge.exe"
+            cli.parent.mkdir(parents=True)
+            bundle.parent.mkdir(parents=True)
+            for path in (node, cli, bundle, browser):
+                path.write_bytes(b"runtime")
+            (cli.parent.parent / "package.json").write_text(
+                json.dumps({"name": "hyperframes", "version": HYPERFRAMES_VERSION}),
+                encoding="utf-8",
+            )
+            base = {
+                "SHIYI_NODE_EXECUTABLE": str(node),
+                "SHIYI_HYPERFRAMES_CLI": str(cli),
+                "HYPERFRAMES_BROWSER_PATH": str(browser),
+                "SHIYI_HYPERFRAMES_BROWSER_MINIMUM_MAJOR": str(SYSTEM_BROWSER_MINIMUM_MAJOR),
+                "SHIYI_PACKAGED_RUNTIME": "1",
+            }
+            cases = (
+                ({**base, "SHIYI_HYPERFRAMES_BROWSER_VERSION": "151.0.1000.1"}, "浏览器策略"),
+                (
+                    {
+                        **base,
+                        "SHIYI_HYPERFRAMES_BROWSER_STRATEGY": SYSTEM_BROWSER_STRATEGY,
+                        "SHIYI_HYPERFRAMES_BROWSER_VERSION": "150.0.999.1",
+                    },
+                    "低于最低要求",
+                ),
+            )
+            for environment, message in cases:
+                with self.subTest(message=message), mock.patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(ValueError, message):
+                        _hyperframes_commands("standard")
 
     def test_hyperframes_environment_keeps_runtime_but_drops_provider_secrets(self):
         source = {
@@ -392,6 +452,9 @@ class HyperFramesRuntimeContractTests(unittest.TestCase):
                 "SHIYI_NODE_EXECUTABLE": str(node),
                 "SHIYI_HYPERFRAMES_CLI": str(cli),
                 "HYPERFRAMES_BROWSER_PATH": str(browser),
+                "SHIYI_HYPERFRAMES_BROWSER_STRATEGY": SYSTEM_BROWSER_STRATEGY,
+                "SHIYI_HYPERFRAMES_BROWSER_VERSION": "151.0.1000.1",
+                "SHIYI_HYPERFRAMES_BROWSER_MINIMUM_MAJOR": str(SYSTEM_BROWSER_MINIMUM_MAJOR),
                 "SHIYI_PACKAGED_RUNTIME": "1",
             }
             with mock.patch.dict(os.environ, environment, clear=False):

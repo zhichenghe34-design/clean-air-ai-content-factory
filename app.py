@@ -6,10 +6,13 @@ import json
 import mimetypes
 import os
 import secrets
+import shutil
 import socket
+import tempfile
 import threading
 import time
 import webbrowser
+import zipfile
 from collections import OrderedDict
 from datetime import datetime
 from http import HTTPStatus
@@ -45,6 +48,8 @@ from core.motion_runtime_contract import (
     HYPERFRAMES_RENDERER,
     HYPERFRAMES_VERSION,
     MOTION_ENGINE_NAME,
+    SYSTEM_BROWSER_MINIMUM_MAJOR,
+    SYSTEM_BROWSER_STRATEGY,
 )
 from core.production import (
     DEFAULT_INPUT,
@@ -72,7 +77,17 @@ from core.provider import (
     normalize_capability_review,
     sanitize_bootstrap_schema_diagnostic,
 )
-from core.review_policy import AGENT_TEST_REVIEW, HUMAN_STAGE_REVIEW
+from core.review_policy import (
+    AGENT_TEST_REVIEW,
+    CODEX_TEST_REVIEWER,
+    HUMAN_STAGE_REVIEW,
+    MECHANICAL_REVIEWER,
+    MECHANICAL_STAGE_REVIEW,
+    STAGE_REVIEW_MODES,
+    normalize_review_policy,
+)
+from tools.build_public_evidence import build_public_evidence
+from tools.verify_public_evidence import sha256 as public_evidence_sha256, verify_archive
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -91,7 +106,10 @@ del _launch_instance_token
 
 config_store = ConfigStore(RUNTIME_DIR)
 config_store.ensure_storage_layout()
-STAGE_REVIEW_MODE = (
+_explicit_review_mode = os.environ.get("SHIYI_STAGE_REVIEW_MODE", "").strip()
+if _explicit_review_mode and _explicit_review_mode not in STAGE_REVIEW_MODES:
+    raise RuntimeError("SHIYI_STAGE_REVIEW_MODE必须是human、agent_test或mechanical")
+STAGE_REVIEW_MODE = _explicit_review_mode or (
     AGENT_TEST_REVIEW
     if os.environ.get("SHIYI_AGENT_TEST_REVIEW", "").strip() == "1"
     else HUMAN_STAGE_REVIEW
@@ -107,10 +125,147 @@ CSRF_TOKEN = secrets.token_urlsafe(32)
 provider_session_state = {"verified_signature": None, "verified_at": None, "revision": 0}
 PRETASK_PROVIDER_LIMIT = 3
 pretask_provider_budgets: OrderedDict[str, BudgetLedger] = OrderedDict()
-agent_create_replays: dict[str, dict[str, str]] = {}
 correction_replays: OrderedDict[str, dict] = OrderedDict()
 topic_selection_bundles: OrderedDict[str, dict] = OrderedDict()
+public_evidence_export_locks: dict[str, threading.Lock] = {}
+public_evidence_export_locks_guard = threading.Lock()
 SELECTION_BUNDLE_TTL_SECONDS = 2 * 60 * 60
+
+
+def _public_evidence_export_lock(job_id: str) -> threading.Lock:
+    with public_evidence_export_locks_guard:
+        return public_evidence_export_locks.setdefault(job_id, threading.Lock())
+
+
+def _configured_public_evidence_ffprobe() -> Path:
+    configured = os.environ.get("FFPROBE_PATH", "").strip()
+    if not configured:
+        raise ConflictError("内置 FFprobe 尚未就绪，不能导出公开证据")
+    candidate = Path(configured).expanduser().resolve()
+    if not candidate.is_file():
+        raise ConflictError("内置 FFprobe 尚未就绪，不能导出公开证据")
+    if (APP_DIR / "PACKAGE-MANIFEST.json").is_file():
+        bundled = (APP_DIR / "runtime" / "ffmpeg" / "ffprobe.exe").resolve()
+        if candidate != bundled or not bundled.is_file():
+            raise ConflictError("公开证据只能使用便携包内固定 FFprobe 校验")
+    return candidate
+
+
+def prepare_public_evidence_export(job_id: str) -> dict[str, object]:
+    """Build or replay a verified current-run public evidence attachment."""
+
+    ffprobe = _configured_public_evidence_ffprobe()
+    lock = _public_evidence_export_lock(job_id)
+    with lock:
+        source = job_store.resolve_public_evidence_source(job_id)
+        run_id = str(source["run_id"])
+        source_manifest_sha256 = str(source["source_manifest_sha256"])
+        filename = (
+            f"shiyi-public-evidence-{job_id}-{run_id}-"
+            f"{source_manifest_sha256[:12]}.zip"
+        )
+        export_root = (RUNTIME_DIR / "exports" / job_id / run_id).resolve()
+        expected_exports = (RUNTIME_DIR / "exports").resolve()
+        try:
+            export_root.relative_to(expected_exports)
+        except ValueError as exc:
+            raise WorkflowError("公开证据导出目录无效") from exc
+        export_root.mkdir(parents=True, exist_ok=True)
+        archive_path = export_root / filename
+        metadata_path = export_root / f"{filename}.json"
+
+        def cached_result() -> dict[str, object] | None:
+            if not archive_path.is_file() or not metadata_path.is_file():
+                return None
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                errors, media, manifest = verify_archive(
+                    archive_path,
+                    ffprobe_path=ffprobe,
+                )
+            except Exception:
+                return None
+            archive_sha256 = public_evidence_sha256(archive_path)
+            public_manifest_sha256 = ""
+            try:
+                with zipfile.ZipFile(archive_path) as archive:
+                    public_manifest_sha256 = hashlib.sha256(
+                        archive.read("manifest.json")
+                    ).hexdigest()
+            except Exception:
+                return None
+            expected = {
+                "schema_version": 1,
+                "job_id": job_id,
+                "run_id": run_id,
+                "filename": filename,
+                "evidence_contract": media.get("evidence_contract"),
+                "source_manifest_sha256": source_manifest_sha256,
+                "public_manifest_sha256": public_manifest_sha256,
+                "archive_sha256": archive_sha256,
+                "archive_size": archive_path.stat().st_size,
+            }
+            if (
+                errors
+                or manifest.get("job_id") != job_id
+                or manifest.get("run_id") != run_id
+                or manifest.get("source_manifest_sha256") != source_manifest_sha256
+                or metadata != expected
+            ):
+                return None
+            return {**expected, "path": archive_path}
+
+        replay = cached_result()
+        if replay is not None:
+            replay["replayed"] = True
+            return replay
+
+        build_root = Path(tempfile.mkdtemp(prefix="shiyi-public-evidence-building-"))
+        try:
+            staged_folder = build_root / "public-evidence"
+            staged_archive = build_root / filename
+            result = build_public_evidence(
+                Path(source["source"]),
+                staged_folder,
+                staged_archive,
+                ffprobe_path=ffprobe,
+            )
+            errors, media, manifest = verify_archive(staged_archive, ffprobe_path=ffprobe)
+            refreshed = job_store.resolve_public_evidence_source(job_id)
+            if (
+                errors
+                or refreshed["run_id"] != run_id
+                or refreshed["source_manifest_sha256"] != source_manifest_sha256
+                or manifest.get("job_id") != job_id
+                or manifest.get("run_id") != run_id
+                or manifest.get("source_manifest_sha256") != source_manifest_sha256
+            ):
+                raise ConflictError("当前成功运行在导出期间变化或未通过严格证据校验")
+            metadata = {
+                "schema_version": 1,
+                "job_id": job_id,
+                "run_id": run_id,
+                "filename": filename,
+                "evidence_contract": media.get("evidence_contract"),
+                "source_manifest_sha256": source_manifest_sha256,
+                "public_manifest_sha256": str(result["public_manifest_sha256"]),
+                "archive_sha256": str(result["archive_sha256"]),
+                "archive_size": int(result["archive_size"]),
+            }
+            os.replace(staged_archive, archive_path)
+            metadata_temp = build_root / "metadata.json"
+            metadata_temp.write_text(
+                json.dumps(metadata, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="ascii",
+            )
+            os.replace(metadata_temp, metadata_path)
+            return {**metadata, "path": archive_path, "replayed": False}
+        except WorkflowError:
+            raise
+        except Exception as exc:
+            raise ConflictError("当前成功运行未通过公开证据严格校验，已拒绝导出") from exc
+        finally:
+            shutil.rmtree(build_root, ignore_errors=True)
 
 
 def _mpt_health_verified() -> bool:
@@ -272,6 +427,13 @@ def production_mode_summary(production_mode: str) -> dict:
             "enabled": enabled,
             "health": health,
             "runtime_source": runtime_source,
+            "browser_strategy": (
+                runtime.get("browser_strategy")
+                if runtime_source == "packaged"
+                else SYSTEM_BROWSER_STRATEGY
+            ),
+            "browser_version": runtime.get("browser_version") if runtime_source == "packaged" else None,
+            "browser_minimum_major": SYSTEM_BROWSER_MINIMUM_MAJOR,
         }
     if production_mode == "footage":
         _adapter, _options, summary = production_engine_binding(strict=False)
@@ -731,6 +893,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 })
             elif path == "/api/capability-packs":
                 self.json_response({"capability_packs": capability_registry.list()})
+            elif path.startswith("/api/jobs/") and path.endswith("/public-evidence.zip"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 4 or parts[3] != "public-evidence.zip":
+                    raise FileNotFoundError("接口不存在")
+                self.require_local_session()
+                self.serve_public_evidence(prepare_public_evidence_export(parts[2]))
             elif path.startswith("/api/jobs/") and "/review-artifacts/" in path:
                 parts = path.strip("/").split("/")
                 if len(parts) != 5:
@@ -810,9 +978,11 @@ class AppHandler(BaseHTTPRequestHandler):
                 if not isinstance(plan, dict):
                     raise UnprocessableError("缺少有效计划")
                 production_input, rules = self._prepare_production_input(body, include_defaults=False)
-                job = job_store.create(plan, production_input=production_input)
-                if rules:
-                    job = job_store.apply_learning_rules(job["id"], rules, "创建任务时应用服务端已验证记忆")
+                job = job_store.create(
+                    plan,
+                    production_input=production_input,
+                    trusted_learning_rules=rules or None,
+                )
                 self.json_response(job, HTTPStatus.CREATED)
             elif path == "/api/demo-job":
                 job, replayed = self._create_demo_job(body)
@@ -887,6 +1057,16 @@ class AppHandler(BaseHTTPRequestHandler):
                 job_id = path.split("/")[3]
                 job = job_store.get(job_id)
                 production_input = job.get("production_input") or {}
+                review_mode = normalize_review_policy(job.get("review_policy"))["stage_review_mode"]
+                editor = (
+                    CODEX_TEST_REVIEWER
+                    if review_mode == AGENT_TEST_REVIEW
+                    else (
+                        MECHANICAL_REVIEWER
+                        if review_mode == MECHANICAL_STAGE_REVIEW
+                        else str(body.get("editor", "")).strip()
+                    )
+                )
                 self.json_response(job_store.update_script(
                     job_id,
                     value,
@@ -897,6 +1077,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         production_input.get("learning_rules"),
                     ),
                     estimate,
+                    editor,
                 ))
             elif path.startswith("/api/learning/rules/"):
                 parts = path.strip("/").split("/")
@@ -1067,39 +1248,63 @@ class AppHandler(BaseHTTPRequestHandler):
         return normalized, rules
 
     def _create_demo_job(self, body: dict) -> tuple[dict, bool]:
-        production_input, rules = self._prepare_production_input(body, include_defaults=True)
-        assert production_input is not None
-        plan = local_fallback_plan(f"制作样片：{production_input['topic']}", [])
-        for step in plan["steps"]:
-            if step.get("capability") != "human_refinement":
-                step["tool_id"] = "trusted-local-production-adapter"
-                step["risk"] = "固定路径本地适配器，仍需人工批准"
-        plan["summary"] = "分阶段内容任务：研究、证据人工审定、脚本合规放行、配音与成片。"
-
         request_key = self.headers.get("Idempotency-Key", "").strip()
         if request_key and not IDEMPOTENCY_RE.fullmatch(request_key):
             error = WorkflowError("Idempotency-Key格式无效")
             error.status, error.code = 400, "invalid_idempotency_key"
             raise error
         fingerprint = hashlib.sha256(
-            json.dumps(production_input, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        with state_lock:
-            replay = agent_create_replays.get(request_key) if request_key else None
-            if replay:
-                if replay["fingerprint"] != fingerprint:
-                    error = WorkflowError("同一Idempotency-Key不能用于不同创建请求")
-                    error.status, error.code = 409, "idempotency_conflict"
-                    raise error
-                return job_store.get(replay["job_id"]), True
-            job = job_store.create(plan, production_input=production_input)
-            if rules:
-                job = job_store.apply_learning_rules(job["id"], rules, "创建任务时应用服务端已验证记忆")
-            if request_key:
-                agent_create_replays[request_key] = {"fingerprint": fingerprint, "job_id": job["id"]}
-                while len(agent_create_replays) > 128:
-                    agent_create_replays.pop(next(iter(agent_create_replays)))
-            return job, False
+        if request_key:
+            # Resolve the durable job binding before reading the volatile
+            # selection bundle.  A response can be lost immediately before a
+            # restart; the same request must still recover its original job
+            # after the in-memory bundle has disappeared.
+            replay = job_store.lookup_creation_replay(request_key, fingerprint)
+            if replay is not None:
+                return replay, True
+
+        production_input, rules = self._prepare_production_input(body, include_defaults=True)
+        assert production_input is not None
+        plan = local_fallback_plan(f"制作样片：{production_input['topic']}", [])
+        review_mode = job_store.review_policy["stage_review_mode"]
+        for step in plan["steps"]:
+            if review_mode == MECHANICAL_STAGE_REVIEW:
+                if step.get("capability") == "human_refinement":
+                    step["name"] = "反向机械复核"
+                    step["capability"] = "mechanical_review"
+                    step["tool_id"] = "reverse-mechanical-reviewer"
+                else:
+                    step["tool_id"] = "trusted-local-production-adapter"
+                step["requires_approval"] = False
+                step["risk"] = "受管无头流程；异常自动退回重试，公开发布仍需最终人工确认"
+            elif step.get("capability") != "human_refinement":
+                step["tool_id"] = "trusted-local-production-adapter"
+                step["risk"] = "固定路径本地适配器，仍需人工批准"
+        plan["summary"] = (
+            "全自动内部候选任务：研究、反向机械证据审核、脚本合规审核、配音与成片；"
+            "不中途等待人工，公开发布单独保留最终确认。"
+            if review_mode == MECHANICAL_STAGE_REVIEW
+            else "分阶段内容任务：研究、证据人工审定、脚本合规放行、配音与成片。"
+        )
+
+        if request_key:
+            job, replayed = job_store.create_idempotent(
+                plan,
+                production_input,
+                idempotency_key=request_key,
+                fingerprint=fingerprint,
+                trusted_learning_rules=rules or None,
+            )
+        else:
+            job = job_store.create(
+                plan,
+                production_input=production_input,
+                trusted_learning_rules=rules or None,
+            )
+            replayed = False
+        return job, replayed
 
     @staticmethod
     def _safe_topic_candidates(
@@ -1639,6 +1844,25 @@ class AppHandler(BaseHTTPRequestHandler):
         correction_kind = infer_correction_kind(str(body.get("message", "")), body.get("kind"))
         learning_payload = dict(body)
         learning_payload["kind"] = correction_kind
+        try:
+            policy = normalize_review_policy(
+                job.get("review_policy") if job is not None else job_store.review_policy
+            )
+        except ValueError as exc:
+            raise UnprocessableError("任务审查策略无效") from exc
+        # Correction history is an immutable audit trail.  Never trust a
+        # browser-supplied actor label: agent-test activity must not be
+        # attributed to a human, and formal browser activity uses a neutral
+        # server-owned label rather than an unverifiable personal identity.
+        learning_payload["actor"] = (
+            CODEX_TEST_REVIEWER
+            if policy["stage_review_mode"] == AGENT_TEST_REVIEW
+            else (
+                MECHANICAL_REVIEWER
+                if policy["stage_review_mode"] == MECHANICAL_STAGE_REVIEW
+                else "本地浏览器用户"
+            )
+        )
         if correction_kind == "capability":
             requested_scope = body.get("scope")
             if requested_scope is not None and requested_scope not in {"task", "project", "workspace"}:
@@ -1756,6 +1980,16 @@ class AppHandler(BaseHTTPRequestHandler):
             error.status, error.code = 403, "origin_rejected"
             raise error
 
+    def require_local_session(self) -> None:
+        """Require the HttpOnly loopback session without turning a GET into CSRF."""
+
+        cookies = SimpleCookie(self.headers.get("Cookie", ""))
+        session = cookies.get(SESSION_COOKIE)
+        if session is None or not secrets.compare_digest(session.value, SESSION_ID):
+            error = WorkflowError("本机会话无效，请刷新页面")
+            error.status, error.code = 403, "invalid_session"
+            raise error
+
     def read_json(self) -> dict:
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -1843,6 +2077,33 @@ class AppHandler(BaseHTTPRequestHandler):
         self.security_headers()
         self.end_headers()
         self.wfile.write(content)
+
+    def serve_public_evidence(self, export: dict[str, object]) -> None:
+        target = Path(export["path"])
+        filename = str(export["filename"])
+        if not target.is_file() or not filename.isascii():
+            raise FileNotFoundError("公开证据导出不存在")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(target.stat().st_size))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("ETag", f'"sha256-{export["archive_sha256"]}"')
+        self.send_header("X-Shiyi-Archive-SHA256", str(export["archive_sha256"]))
+        self.send_header("X-Shiyi-Public-Manifest-SHA256", str(export["public_manifest_sha256"]))
+        self.send_header("X-Shiyi-Source-Manifest-SHA256", str(export["source_manifest_sha256"]))
+        self.send_header("X-Shiyi-Run-ID", str(export["run_id"]))
+        self.send_header("X-Shiyi-Evidence-Contract", str(export["evidence_contract"]))
+        self.send_header("X-Shiyi-Export-Replayed", "1" if export.get("replayed") else "0")
+        self.security_headers()
+        self.end_headers()
+        try:
+            with target.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def security_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")

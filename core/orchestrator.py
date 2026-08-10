@@ -11,7 +11,7 @@ import urllib.parse
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from core.capability_pack import (
     EXECUTABLE_AUDIT_STATUSES,
@@ -24,10 +24,15 @@ from core.capability_pack import (
 from core.capability_registry import CapabilityPackRegistry, CapabilityPackRegistryError
 from core.review_policy import (
     HUMAN_STAGE_REVIEW,
+    MECHANICAL_REVIEWER,
+    MECHANICAL_STAGE_REVIEW,
     approval_identity,
+    BROWSER_SCRIPT_EDIT_LABELS,
     build_review_policy,
+    classify_script_edit_record,
     evidence_status_for_policy,
     normalize_review_policy,
+    script_edit_identity,
 )
 
 
@@ -80,6 +85,18 @@ PLAN_STEP_FIELDS = {"id", "name", "capability", "tool_id", "input", "output", "r
 EMPTY_RESEARCH_APPROVAL_NOTE = (
     "本次确认无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板"
 )
+MECHANICAL_RESEARCH_APPROVAL_NOTE = (
+    "反向机械审核逐项复核证据、适用边界和禁止外推项；仅批准严格证据绑定的内部候选"
+)
+MECHANICAL_COMPLIANCE_APPROVAL_NOTE = (
+    "反向机械审核确认本地合规规则通过、无阻断与警告；仅允许继续生成内部候选"
+)
+MECHANICAL_STRICT_FINDING_STATUSES = {
+    "proven_for_limited_use",
+    "supported_limited",
+    "passed",
+    "evidence_bound",
+}
 
 
 class WorkflowError(RuntimeError):
@@ -94,6 +111,10 @@ class WorkflowError(RuntimeError):
 class ConflictError(WorkflowError):
     status = 409
     code = "conflict"
+
+
+class IdempotencyConflictError(ConflictError):
+    code = "idempotency_conflict"
 
 
 class UnprocessableError(WorkflowError):
@@ -409,21 +430,44 @@ class JobStore:
         except ValueError as exc:
             raise WorkflowError("任务审查策略无效") from exc
         self.capability_registry = CapabilityPackRegistry(self.runtime_dir)
+        self._create_lock = threading.Lock()
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
         self._reconcile_strict_rejections()
         self._reconcile_content_rejections()
 
-    def create(self, plan: dict[str, Any], production_input: dict[str, Any] | None = None) -> dict[str, Any]:
+    def create(
+        self,
+        plan: dict[str, Any],
+        production_input: dict[str, Any] | None = None,
+        *,
+        creation_request: dict[str, str] | None = None,
+        trusted_learning_rules: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         safe_plan = validate_plan(plan)
         steps = safe_plan["steps"]
-        normalized_input = validate_topic_input(production_input) if production_input is not None else None
+        candidate_input = dict(production_input) if production_input is not None else None
+        if candidate_input is not None and trusted_learning_rules is not None:
+            candidate_input["learning_rules"] = trusted_learning_rules
+        normalized_input = (
+            validate_topic_input(
+                candidate_input,
+                allow_learning_rules=trusted_learning_rules is not None,
+            )
+            if candidate_input is not None
+            else None
+        )
         if normalized_input is not None:
             normalized_input = dict(normalized_input)
             normalized_input["capability_pack"] = self._trusted_capability_pack(
                 normalized_input["capability_pack"]
             )
         timestamp = now_iso()
+        safe_creation_request = (
+            self._validate_creation_request(creation_request)
+            if creation_request is not None
+            else None
+        )
         job_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
         job = {
             "schema_version": 2,
@@ -461,13 +505,60 @@ class JobStore:
             "budget": {"limit": 7, "attempted": 0, "succeeded": 0, "failed": 0, "events": []},
             "step_states": [{"id": step.get("id"), "status": "pending"} for step in steps],
         }
+        if safe_creation_request is not None:
+            job["creation_request"] = safe_creation_request
         folder = self.jobs_dir / job_id
         folder.mkdir(parents=True, exist_ok=False)
-        (folder / "draft").mkdir()
-        (folder / "runs").mkdir()
-        self._write(folder / "job.json", job)
-        self._event(folder, "job_created", {"status": "planned", "schema_version": 2})
+        try:
+            (folder / "draft").mkdir()
+            (folder / "runs").mkdir()
+            self._write(folder / "job.json", job)
+            self._event(folder, "job_created", {"status": "planned", "schema_version": 2})
+        except Exception:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
         return self._public(job)
+
+    def lookup_creation_replay(self, idempotency_key: str, fingerprint: str) -> dict[str, Any] | None:
+        """Resolve a persisted create replay before volatile selection state is read."""
+        request = self._validate_creation_request({
+            "idempotency_key": idempotency_key,
+            "fingerprint": fingerprint,
+        })
+        with self._create_lock:
+            disk_lock = self._acquire_creation_lock(request["idempotency_key"])
+            try:
+                return self._find_creation_replay(request)
+            finally:
+                self._release_creation_lock(disk_lock)
+
+    def create_idempotent(
+        self,
+        plan: dict[str, Any],
+        production_input: dict[str, Any],
+        *,
+        idempotency_key: str,
+        fingerprint: str,
+        trusted_learning_rules: list[dict[str, Any]] | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        request = self._validate_creation_request({
+            "idempotency_key": idempotency_key,
+            "fingerprint": fingerprint,
+        })
+        with self._create_lock:
+            disk_lock = self._acquire_creation_lock(request["idempotency_key"])
+            try:
+                replay = self._find_creation_replay(request)
+                if replay is not None:
+                    return replay, True
+                return self.create(
+                    plan,
+                    production_input=production_input,
+                    creation_request=request,
+                    trusted_learning_rules=trusted_learning_rules,
+                ), False
+            finally:
+                self._release_creation_lock(disk_lock)
 
     def list(self) -> list[dict[str, Any]]:
         jobs: list[dict[str, Any]] = []
@@ -594,7 +685,12 @@ class JobStore:
                     job["approvals"]["compliance"] = {"status": "pending"}
                     job.pop("automatic_research_gate", None)
                     if not self._apply_strict_rejection(job, folder, folder / "draft" / "research.json"):
-                        job["status"] = "awaiting_research_approval"
+                        if self._uses_mechanical_stage_review(job):
+                            self._apply_mechanical_research_review(
+                                job, folder, folder / "draft" / "research.json"
+                            )
+                        else:
+                            job["status"] = "awaiting_research_approval"
                 elif stage == "content":
                     runner.run_content_stage(staging, job["production_input"], job["approvals"]["research"])
                     self._publish_draft(staging, folder / "draft", ["research.json", "insight.json", "script_variants.json", "approved_script.json", "review.json"])
@@ -602,6 +698,8 @@ class JobStore:
                     job["approvals"]["compliance"] = {"status": "pending"}
                     job.pop("automatic_content_gate", None)
                     job["status"] = "blocked_compliance" if review.get("status") == "blocked" else "awaiting_compliance_approval"
+                    if self._uses_mechanical_stage_review(job):
+                        self._apply_mechanical_compliance_review(job, folder)
                 else:
                     render_result = runner.run_render_stage(staging, job["production_input"], job["approvals"])
                     if render_result_is_diagnostic(render_result):
@@ -660,6 +758,7 @@ class JobStore:
     def approve_research(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         job, folder = self._load_v2(job_id)
         self._ensure_capability_pack(job, folder)
+        self._require_interactive_stage_review(job)
         if job["status"] not in {"awaiting_research_approval", "awaiting_research_revision"}:
             raise ConflictError("当前任务不在研究审批阶段")
         research_path = folder / "draft" / "research.json"
@@ -737,6 +836,7 @@ class JobStore:
     def approve_compliance(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         job, folder = self._load_v2(job_id)
         self._ensure_capability_pack(job, folder)
+        self._require_interactive_stage_review(job)
         if job["status"] not in {"awaiting_compliance_approval", "awaiting_script_revision"}:
             raise ConflictError("当前任务不在合规审批阶段")
         draft = folder / "draft"
@@ -774,6 +874,192 @@ class JobStore:
             "artifact_sha256": review_digest,
         })
         return self._public(job)
+
+    @staticmethod
+    def _uses_mechanical_stage_review(job: dict[str, Any]) -> bool:
+        try:
+            return (
+                normalize_review_policy(job.get("review_policy"))["stage_review_mode"]
+                == MECHANICAL_STAGE_REVIEW
+            )
+        except ValueError as exc:
+            raise UnprocessableError("任务审查策略无效") from exc
+
+    def _require_interactive_stage_review(self, job: dict[str, Any]) -> None:
+        if self._uses_mechanical_stage_review(job):
+            raise ConflictError("机械审查由服务器在阶段完成时自动执行，浏览器不得代签")
+
+    @staticmethod
+    def _mechanical_finding_errors(finding: dict[str, Any]) -> list[str]:
+        errors: list[str] = []
+        finding_id = str(finding.get("finding_id", "")).strip() or "unknown"
+        if finding.get("script_eligible") is not True or finding.get("auto_review_status") != "eligible":
+            errors.append(f"{finding_id}: finding未进入严格可用集合")
+        if str(finding.get("strict_review_status", "")).strip().lower() not in MECHANICAL_STRICT_FINDING_STATUSES:
+            errors.append(f"{finding_id}: 缺少严格通过状态")
+        evidence = finding.get("evidence")
+        if not isinstance(evidence, list) or not any(
+            isinstance(row, dict)
+            and str(row.get("url", "")).strip()
+            and str(row.get("excerpt", row.get("quote", ""))).strip()
+            for row in evidence
+        ):
+            errors.append(f"{finding_id}: 缺少可回指网址与摘录")
+        if not isinstance(finding.get("limitations"), list) or not any(
+            str(value).strip() for value in finding.get("limitations", [])
+        ):
+            errors.append(f"{finding_id}: 缺少适用边界")
+        if not str(finding.get("allowed_use", "")).strip():
+            errors.append(f"{finding_id}: 缺少允许用法")
+        if not str(finding.get("prohibited_use", "")).strip():
+            errors.append(f"{finding_id}: 缺少禁止外推项")
+        return errors
+
+    def _apply_mechanical_research_review(
+        self,
+        job: dict[str, Any],
+        folder: Path,
+        research_path: Path,
+    ) -> bool:
+        """Approve only evidence-complete research without manufacturing a human action."""
+
+        research = json.loads(research_path.read_text(encoding="utf-8"))
+        findings = research.get("findings")
+        if not isinstance(findings, list):
+            raise UnprocessableError("研究finding结构无效")
+        eligible = [
+            item
+            for item in findings
+            if isinstance(item, dict) and item.get("auto_review_status") == "eligible"
+        ]
+        errors = [
+            error
+            for finding in eligible
+            for error in self._mechanical_finding_errors(finding)
+        ]
+        offline_empty = (
+            not findings and str(research.get("status", "")) in {"offline", "disabled"}
+        )
+        if not eligible and not offline_empty:
+            errors.append("研究没有可由机械审核批准的严格finding")
+        digest = file_sha256(research_path)
+        if errors:
+            job["automatic_research_gate"] = {
+                "engine": "reverse_mechanical_reviewer",
+                "decision": "rejected",
+                "evaluated_at": now_iso(),
+                "artifact_sha256": digest,
+                "reason": "; ".join(errors)[:2000],
+            }
+            job["approvals"]["research"] = {"status": "pending"}
+            job["approvals"]["compliance"] = {"status": "pending"}
+            job["status"] = "awaiting_research_revision"
+            self._event(folder, "research_auto_rejected", {
+                "artifact_sha256": digest,
+                "engine": "reverse_mechanical_reviewer",
+                "reason_count": len(errors),
+            })
+            return False
+
+        identity = approval_identity(MECHANICAL_STAGE_REVIEW, MECHANICAL_REVIEWER)
+        record = {
+            "status": "approved",
+            **identity,
+            "reviewed_at": now_iso(),
+            "artifact_sha256": digest,
+            "note": EMPTY_RESEARCH_APPROVAL_NOTE if offline_empty else MECHANICAL_RESEARCH_APPROVAL_NOTE,
+            "findings": [
+                {
+                    "finding_id": str(item["finding_id"]),
+                    "decision": "approved",
+                    "evidence_type": "paraphrase",
+                    "note": "机械审核仅允许在原证据边界内改写，不允许扩大结论",
+                }
+                for item in eligible
+            ],
+        }
+        if offline_empty:
+            record["empty_finding_confirmation"] = {
+                "research_status": str(research.get("status")),
+                "content_scope": "local_safe_template_without_industry_fact_claims",
+            }
+        job["approvals"]["research"] = record
+        job["approvals"]["compliance"] = {"status": "pending"}
+        job.pop("automatic_research_gate", None)
+        job["status"] = "research_approved"
+        self._event(folder, "research_reviewed", {
+            "decision": "approved",
+            "reviewer": MECHANICAL_REVIEWER,
+            "review_mode": "mechanical",
+            "artifact_sha256": digest,
+        })
+        return True
+
+    def _apply_mechanical_compliance_review(
+        self, job: dict[str, Any], folder: Path
+    ) -> bool:
+        """Advance only a warning-free, evidence-bound generated script."""
+
+        draft = folder / "draft"
+        review_path = draft / "review.json"
+        script_path = draft / "approved_script.json"
+        review = json.loads(review_path.read_text(encoding="utf-8"))
+        approved_script = json.loads(script_path.read_text(encoding="utf-8"))
+        errors: list[str] = []
+        if review.get("status") != "passed" or review.get("blocked") is not False:
+            errors.append("本地合规审查未明确通过")
+        warnings = review.get("warnings")
+        if not isinstance(warnings, list) or warnings:
+            errors.append("本地合规审查仍含警告")
+        if not str(approved_script.get("script", "")).strip():
+            errors.append("批准稿正文为空")
+        edit_mode, edit_errors = classify_script_edit_record(
+            approved_script, allow_legacy_human=False
+        )
+        errors.extend(edit_errors)
+        if edit_mode not in {None, MECHANICAL_STAGE_REVIEW}:
+            errors.append("批准稿包含非机械流程的显式改稿身份")
+
+        review_digest = file_sha256(review_path)
+        script_digest = file_sha256(script_path)
+        if errors:
+            job["automatic_content_gate"] = {
+                "engine": "reverse_mechanical_reviewer",
+                "decision": "rejected",
+                "evaluated_at": now_iso(),
+                "artifact_sha256": script_digest,
+                "review_sha256": review_digest,
+                "reason": "; ".join(errors)[:2000],
+            }
+            job["approvals"]["compliance"] = {"status": "pending"}
+            # Return to content generation so the unattended controller can
+            # request a new isolated candidate under its retry/budget limits.
+            job["status"] = "research_approved"
+            self._event(folder, "content_auto_rejected", {
+                "artifact_sha256": script_digest,
+                "engine": "reverse_mechanical_reviewer",
+                "reason_count": len(errors),
+            })
+            return False
+
+        identity = approval_identity(MECHANICAL_STAGE_REVIEW, MECHANICAL_REVIEWER)
+        job["approvals"]["compliance"] = {
+            "status": "approved",
+            **identity,
+            "reviewed_at": now_iso(),
+            "artifact_sha256": review_digest,
+            "script_sha256": script_digest,
+            "note": MECHANICAL_COMPLIANCE_APPROVAL_NOTE,
+        }
+        job.pop("automatic_content_gate", None)
+        job["status"] = "compliance_approved"
+        self._event(folder, "compliance_reviewed", {
+            "decision": "approved",
+            "reviewer": MECHANICAL_REVIEWER,
+            "review_mode": "mechanical",
+            "artifact_sha256": review_digest,
+        })
+        return True
 
     def invalidate_pending_content(self, job_id: str, reason: str) -> dict[str, Any]:
         """Reject an unapproved generated script without manufacturing a human decision."""
@@ -971,7 +1257,14 @@ class JobStore:
                 lock_path.unlink()
             lock.release()
 
-    def update_script(self, job_id: str, script: str, review: dict[str, Any], estimate: dict[str, Any]) -> dict[str, Any]:
+    def update_script(
+        self,
+        job_id: str,
+        script: str,
+        review: dict[str, Any],
+        estimate: dict[str, Any],
+        editor: str,
+    ) -> dict[str, Any]:
         job, folder = self._load_v2(job_id)
         self._ensure_capability_pack(job, folder)
         if job["status"] not in {"awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision", "compliance_approved", "complete", "failed"}:
@@ -979,11 +1272,21 @@ class JobStore:
         draft = folder / "draft"
         if not (draft / "research.json").is_file():
             raise ConflictError("尚未完成研究和内容阶段")
+        try:
+            policy = normalize_review_policy(job.get("review_policy"))
+            if policy["stage_review_mode"] == MECHANICAL_STAGE_REVIEW:
+                raise ConflictError("机械审查任务禁止浏览器改稿；脚本必须由受管无头流程生成")
+            editor_identity = script_edit_identity(
+                policy["stage_review_mode"], str(editor)
+            )
+        except ConflictError:
+            raise
+        except ValueError as exc:
+            raise UnprocessableError(str(exc)) from exc
         payload = {
-            "id": "human-edited",
-            "hook_type": "人工精修",
+            **BROWSER_SCRIPT_EDIT_LABELS,
             "script": str(script).strip(),
-            "selected_by": "human_editor",
+            "editor_identity": editor_identity,
             "edited_at": now_iso(),
             "duration_estimate": estimate,
         }
@@ -1103,6 +1406,61 @@ class JobStore:
         if target.parent != root or not target.is_file():
             raise FileNotFoundError("产物不存在")
         return target
+
+    def resolve_public_evidence_source(self, job_id: str) -> dict[str, Any]:
+        """Resolve only the server-owned current successful run for export."""
+
+        job, folder = self._load_raw(job_id)
+        if job.get("schema_version") != 2 or job.get("id") != job_id:
+            raise FileNotFoundError("旧任务或无效任务不能导出公开证据")
+        selected = job.get("current_run_id")
+        if not isinstance(selected, str) or not selected or any(
+            char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            for char in selected
+        ):
+            raise FileNotFoundError("尚无当前成功运行可供导出")
+        run = next(
+            (
+                item
+                for item in job.get("runs", [])
+                if isinstance(item, dict)
+                and item.get("run_id") == selected
+                and item.get("status") == "complete"
+                and item.get("stage") in {"render", "report_rebuild"}
+            ),
+            None,
+        )
+        if run is None:
+            raise FileNotFoundError("当前运行尚未成功发布，不能导出公开证据")
+        root = (folder / "runs" / selected / "artifacts").resolve()
+        expected_parent = (folder / "runs" / selected).resolve()
+        if root.parent != expected_parent or not root.is_dir():
+            raise FileNotFoundError("当前成功运行产物不存在")
+        manifest_path = root / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError("当前成功运行缺少清单")
+        manifest_sha256 = file_sha256(manifest_path)
+        if run.get("manifest_sha256") != manifest_sha256:
+            raise ConflictError("当前成功运行清单与发布记录不一致，已拒绝导出")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ConflictError("当前成功运行清单无法验证，已拒绝导出") from exc
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("schema_version") != 2
+            or manifest.get("job_id") != job_id
+            or manifest.get("run_id") != selected
+            or manifest.get("status") != "complete"
+            or manifest.get("stage") not in {"render", "report_rebuild"}
+        ):
+            raise ConflictError("当前成功运行清单身份无效，已拒绝导出")
+        return {
+            "job_id": job_id,
+            "run_id": selected,
+            "source": root,
+            "source_manifest_sha256": manifest_sha256,
+        }
 
     def resolve_review_artifact(self, job_id: str, name: str) -> Path:
         if name not in REVIEW_ARTIFACTS:
@@ -1419,13 +1777,24 @@ class JobStore:
 
     def _sync_steps(self, job: dict[str, Any]) -> None:
         status = job.get("status")
+        try:
+            mechanical = (
+                normalize_review_policy(job.get("review_policy"))["stage_review_mode"]
+                == MECHANICAL_STAGE_REVIEW
+            )
+        except ValueError:
+            mechanical = False
         for index, state in enumerate(job.get("step_states", [])):
             if status in {"complete"}:
                 state["status"] = "complete"
             elif status in {"awaiting_research_approval", "awaiting_research_revision"}:
-                state["status"] = "complete" if index == 0 else ("waiting_human" if index == 2 else "pending")
+                state["status"] = "complete" if index == 0 else (
+                    "pending" if mechanical else ("waiting_human" if index == 2 else "pending")
+                )
             elif status in {"awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision", "compliance_approved"}:
-                state["status"] = "complete" if index < 2 else ("waiting_human" if index in {2, 5} else "pending")
+                state["status"] = "complete" if index < 2 else (
+                    "pending" if mechanical else ("waiting_human" if index in {2, 5} else "pending")
+                )
             elif status in RUNNING_STATES:
                 state["status"] = "running"
             elif status == "failed" and state.get("status") == "running":
@@ -1458,6 +1827,98 @@ class JobStore:
             raise ConflictError("旧任务为只读历史格式，请创建v2任务")
         return job, folder
 
+    @staticmethod
+    def _validate_creation_request(value: dict[str, str]) -> dict[str, str]:
+        if not isinstance(value, dict) or set(value) != {"idempotency_key", "fingerprint"}:
+            raise WorkflowError("任务创建幂等记录格式无效")
+        key = value.get("idempotency_key")
+        fingerprint = value.get("fingerprint")
+        if not isinstance(key, str) or not IDEMPOTENCY_RE.fullmatch(key):
+            raise WorkflowError("任务创建幂等键无效")
+        if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+            raise WorkflowError("任务创建请求指纹无效")
+        return {"idempotency_key": key, "fingerprint": fingerprint}
+
+    def _find_creation_replay(self, request: dict[str, str]) -> dict[str, Any] | None:
+        matches: list[dict[str, Any]] = []
+        for path in sorted(self.jobs_dir.glob("*/job.json")):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise WorkflowError("任务创建幂等索引包含不可读任务") from exc
+            creation_request = job.get("creation_request")
+            if creation_request is None:
+                continue
+            saved = self._validate_creation_request(creation_request)
+            if saved["idempotency_key"] == request["idempotency_key"]:
+                matches.append(job)
+        if len(matches) > 1:
+            raise WorkflowError("任务创建幂等键对应多个任务，已停止自动恢复")
+        if not matches:
+            return None
+        job = matches[0]
+        saved = self._validate_creation_request(job["creation_request"])
+        if saved["fingerprint"] != request["fingerprint"]:
+            raise IdempotencyConflictError("同一Idempotency-Key不能用于不同创建请求")
+        return self._public(job)
+
+    def _acquire_creation_lock(self, idempotency_key: str) -> BinaryIO:
+        """Acquire a process-owned OS lock for the durable creation index.
+
+        The lock file intentionally persists.  Process exit releases the byte-range
+        lock, so stale JSON never needs to be unlinked and cannot race with a new
+        owner that has already acquired the same path.
+        """
+        path = self.jobs_dir / ".create.lock"
+        handle = path.open("a+b")
+        try:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.close()
+            raise ConflictError("另一个任务创建请求正在处理") from exc
+        try:
+            payload = json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "request_sha256": hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest(),
+                    "owner_token": uuid.uuid4().hex,
+                    "created_at": now_iso(),
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            handle.seek(0)
+            handle.truncate()
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+            return handle
+        except Exception:
+            self._release_creation_lock(handle)
+            raise
+
+    @staticmethod
+    def _release_creation_lock(handle: BinaryIO) -> None:
+        try:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
     def _public(self, job: dict[str, Any]) -> dict[str, Any]:
         result = json.loads(json.dumps(job, ensure_ascii=False))
         if result.get("schema_version") != 2:
@@ -1467,6 +1928,7 @@ class JobStore:
             result["legacy_read_only"] = True
         for run in result.get("runs", []):
             run.pop("idempotency_key", None)
+        result.pop("creation_request", None)
         return result
 
     def _job_lock(self, job_id: str) -> threading.Lock:

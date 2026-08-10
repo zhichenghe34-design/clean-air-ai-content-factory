@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from core.review_policy import approval_validation_line
+from core.review_policy import approval_validation_line, script_edit_validation_line
 
 from tools.verify_public_evidence import (
     CANONICAL,
@@ -33,6 +33,10 @@ from tools.verify_public_evidence import (
 
 EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 MAINLAND_PHONE_PATTERN = SECRET_PATTERNS["mainland phone"]
+
+
+class PublicEvidenceBuildError(RuntimeError):
+    pass
 
 
 def sanitize_research_text(text: str) -> tuple[str, int, int]:
@@ -68,25 +72,28 @@ def public_sanitization_validation_line(redacted_email_count: int, redacted_phon
     )
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Build an exact, sanitized v2 public evidence package.")
-    parser.add_argument("source", type=Path, help="Successful runs/<run_id>/artifacts directory")
-    parser.add_argument("output", type=Path, help="Destination folder; must not already exist")
-    parser.add_argument("--zip", dest="zip_path", type=Path)
-    args = parser.parse_args()
-    source = args.source.resolve()
-    output = args.output.resolve()
-    zip_path = (args.zip_path or output.with_suffix(".zip")).resolve()
+def build_public_evidence(
+    source: Path,
+    output: Path,
+    zip_path: Path | None = None,
+    *,
+    ffprobe_path: Path | str | None = None,
+) -> dict[str, object]:
+    """Build and verify one exact successful-run public evidence package."""
+
+    source = Path(source).resolve()
+    output = Path(output).resolve()
+    zip_path = Path(zip_path or output.with_suffix(".zip")).resolve()
     if output.exists() or zip_path.exists():
-        raise SystemExit("输出目录或 ZIP 已存在；为避免覆盖证据，请使用新路径")
+        raise PublicEvidenceBuildError("输出目录或 ZIP 已存在；为避免覆盖证据，请使用新路径")
 
     source_manifest_path = source / "manifest.json"
     if not source_manifest_path.is_file():
-        raise SystemExit("源目录没有 manifest.json")
+        raise PublicEvidenceBuildError("源目录没有 manifest.json")
     source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
     source_stage = source_manifest.get("stage")
     if source_manifest.get("schema_version") != 2 or source_stage not in {"render", "report_rebuild"} or source_manifest.get("status") != "complete":
-        raise SystemExit("源目录不是成功发布的 v2 render/report_rebuild 运行")
+        raise PublicEvidenceBuildError("源目录不是成功发布的 v2 render/report_rebuild 运行")
     source_files = {item.name for item in source.iterdir() if item.is_file()}
     source_manifest_entries = {
         str(item.get("name"))
@@ -95,19 +102,28 @@ def main() -> int:
     }
     evidence_contract, contract_errors = _engine_contract(source_files, source_manifest_entries)
     if contract_errors:
-        raise SystemExit("源运行的生产引擎证据不完整：" + "; ".join(contract_errors))
+        raise PublicEvidenceBuildError("源运行的生产引擎证据不完整：" + "; ".join(contract_errors))
     needed = set(CANONICAL) | {"approvals.json"}
     needed.update(evidence_artifacts_for_contract(evidence_contract))
     missing = sorted(name for name in needed if not (source / name).is_file())
     if missing:
-        raise SystemExit(f"源运行缺少产物：{', '.join(missing)}")
+        raise PublicEvidenceBuildError(f"源运行缺少产物：{', '.join(missing)}")
     source_approvals = json.loads((source / "approvals.json").read_text(encoding="utf-8"))
     approval_line, approval_errors = approval_validation_line(
         source_approvals,
         allow_legacy_human=evidence_contract == "legacy_v2",
     )
     if approval_errors:
-        raise SystemExit("源运行审批身份无效：" + "; ".join(approval_errors))
+        raise PublicEvidenceBuildError("源运行审批身份无效：" + "; ".join(approval_errors))
+    source_approved_script = json.loads(
+        (source / "approved_script.json").read_text(encoding="utf-8")
+    )
+    edit_line, edit_errors = script_edit_validation_line(
+        source_approved_script,
+        allow_legacy_human=evidence_contract == "legacy_v2",
+    )
+    if edit_errors:
+        raise PublicEvidenceBuildError("源运行改稿身份无效：" + "; ".join(edit_errors))
 
     temp_parent = output.parent
     temp_parent.mkdir(parents=True, exist_ok=True)
@@ -135,7 +151,7 @@ def main() -> int:
         if source_findings:
             raise RuntimeError("公开前扫描失败：" + "; ".join(source_findings))
 
-        media = probe_video(temporary / "final.mp4")
+        media = probe_video(temporary / "final.mp4", ffprobe_path=ffprobe_path)
         approved_script = json.loads((temporary / "approved_script.json").read_text(encoding="utf-8"))
         subtitle_errors = validate_srt(
             temporary / "captions.srt",
@@ -155,6 +171,7 @@ def main() -> int:
             if evidence_contract == "motion_v0.3"
             else ""
         )
+        edit_contract_text = f"- {edit_line}\n" if edit_line else ""
         validation = (
             "# 公开证据验证说明\n\n"
             f"- Job ID：`{source_manifest.get('job_id')}`\n"
@@ -166,6 +183,7 @@ def main() -> int:
             f"- {subtitle_contract_text}\n"
             f"{motion_contract_text}"
             f"- {approval_line}\n"
+            f"{edit_contract_text}"
             f"- {public_sanitization_validation_line(redacted_email_count, redacted_phone_count)}\n"
             "- 脱敏：包内不含 Key、Cookie、Authorization、本机绝对路径、原始配置、邮箱或手机号。\n"
             "- 清单：公开包加入本说明，并对公开副本重新计算逐文件大小与 SHA-256。\n"
@@ -175,7 +193,13 @@ def main() -> int:
         manifest = dict(source_manifest)
         manifest["public_package"] = True
         manifest["source_manifest_sha256"] = sha256(source_manifest_path)
-        manifest["packaged_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        # A public package is a deterministic projection of an immutable run.
+        # Reusing the source completion time avoids changing bytes on replay.
+        manifest["packaged_at"] = str(
+            source_manifest.get("finished_at")
+            or source_manifest.get("started_at")
+            or datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(timespec="seconds")
+        )
         manifest["artifacts"] = []
         public_files = REQUIRED | evidence_artifacts_for_contract(evidence_contract)
         for name in sorted(public_files - {"manifest.json"}):
@@ -189,7 +213,7 @@ def main() -> int:
             })
         (temporary / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-        errors, _ = verify(temporary)
+        errors, _ = verify(temporary, ffprobe_path=ffprobe_path)
         if errors:
             raise RuntimeError("公开包终验失败：" + "; ".join(errors))
         temporary.replace(output)
@@ -200,12 +224,36 @@ def main() -> int:
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = 0o100644 << 16
                 archive.writestr(info, data)
-        print(json.dumps({"status": "PUBLIC_EVIDENCE_BUILT", "folder": output.name, "zip": zip_path.name, "files": len(public_files), "evidence_contract": evidence_contract}, ensure_ascii=False))
-        return 0
+        result = {
+            "status": "PUBLIC_EVIDENCE_BUILT",
+            "folder": output.name,
+            "zip": zip_path.name,
+            "files": len(public_files),
+            "evidence_contract": evidence_contract,
+            "source_manifest_sha256": sha256(source_manifest_path),
+            "public_manifest_sha256": sha256(output / "manifest.json"),
+            "archive_sha256": sha256(zip_path),
+            "archive_size": zip_path.stat().st_size,
+        }
+        return result
     except Exception:
         if temporary.exists():
             shutil.rmtree(temporary)
         raise
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build an exact, sanitized v2 public evidence package.")
+    parser.add_argument("source", type=Path, help="Successful runs/<run_id>/artifacts directory")
+    parser.add_argument("output", type=Path, help="Destination folder; must not already exist")
+    parser.add_argument("--zip", dest="zip_path", type=Path)
+    args = parser.parse_args()
+    try:
+        result = build_public_evidence(args.source, args.output, args.zip_path)
+    except PublicEvidenceBuildError as exc:
+        parser.exit(1, f"ERROR: {exc}\n")
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":

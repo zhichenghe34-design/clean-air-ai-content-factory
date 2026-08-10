@@ -12,12 +12,20 @@ from core.motion_director import build_motion_plan, derive_motion_segments, vali
 from core.review_policy import (
     AGENT_TEST_IDENTITY,
     AGENT_TEST_REVIEW,
+    AGENT_TEST_SCRIPT_EDIT_IDENTITY,
+    BROWSER_SCRIPT_EDIT_LABELS,
     CODEX_TEST_REVIEWER,
     HUMAN_IDENTITY,
     HUMAN_STAGE_REVIEW,
+    HUMAN_SCRIPT_EDIT_IDENTITY,
+    MECHANICAL_IDENTITY,
+    MECHANICAL_REVIEWER,
+    MECHANICAL_STAGE_REVIEW,
     approval_identity,
     approval_validation_line,
     classify_approval_record,
+    classify_script_edit_record,
+    script_edit_validation_line,
 )
 from tools.build_public_evidence import (
     public_sanitization_validation_line,
@@ -30,6 +38,7 @@ from tools.verify_public_evidence import (
     MOTION_ENGINE_IDENTITY,
     MOTION_EVIDENCE_ARTIFACTS,
     _engine_contract,
+    _validate_script_edit_contract,
     _validate_motion_evidence,
     _validate_mpt_evidence,
     _validate_mpt_review_contract,
@@ -101,6 +110,32 @@ class PublicEvidenceContractTests(unittest.TestCase):
                     "evidence_status": "test_only_pending_human_acceptance",
                 },
                 [AGENT_TEST_REVIEW, AGENT_TEST_REVIEW],
+            ),
+            [],
+        )
+
+    def test_public_evidence_accepts_mechanical_internal_candidate_contract(self):
+        approvals = {
+            "research": self._approval(MECHANICAL_REVIEWER, MECHANICAL_IDENTITY),
+            "compliance": self._approval(MECHANICAL_REVIEWER, MECHANICAL_IDENTITY),
+        }
+        for gate in approvals.values():
+            mode, errors = classify_approval_record(gate, allow_legacy_human=False)
+            self.assertEqual((mode, errors), (MECHANICAL_STAGE_REVIEW, []))
+        line, errors = approval_validation_line(approvals, allow_legacy_human=False)
+        self.assertEqual(errors, [])
+        self.assertIn("human_approval_claimed=false", line)
+        self.assertIn("内部候选", line)
+        self.assertEqual(
+            _validate_mpt_review_contract(
+                {
+                    "review_policy": {
+                        "stage_review_mode": MECHANICAL_STAGE_REVIEW,
+                        "final_human_acceptance_required": True,
+                    },
+                    "evidence_status": "mechanically_reviewed_internal_candidate_pending_human_release",
+                },
+                [MECHANICAL_STAGE_REVIEW, MECHANICAL_STAGE_REVIEW],
             ),
             [],
         )
@@ -226,6 +261,65 @@ class PublicEvidenceContractTests(unittest.TestCase):
         mode, errors = classify_approval_record(legacy, allow_legacy_human=False)
         self.assertIsNone(mode)
         self.assertTrue(any("缺少结构化审查身份" in error for error in errors))
+
+    def test_script_edit_identity_is_bound_to_review_policy_without_human_impersonation(self):
+        agent_record = {
+            **BROWSER_SCRIPT_EDIT_LABELS,
+            "script": "代理测试通过浏览器修改的脚本。",
+            "edited_at": "2026-08-10T12:00:00+08:00",
+            "editor_identity": {
+                "editor": CODEX_TEST_REVIEWER,
+                **AGENT_TEST_SCRIPT_EDIT_IDENTITY,
+            },
+        }
+        self.assertEqual(
+            classify_script_edit_record(agent_record, allow_legacy_human=False),
+            (AGENT_TEST_REVIEW, []),
+        )
+        line, errors = script_edit_validation_line(
+            agent_record, allow_legacy_human=False
+        )
+        self.assertEqual(errors, [])
+        self.assertIn("human_edit_claimed=false", line)
+        self.assertIn("未冒充人工精修", line)
+        agent_manifest = {
+            "review_policy": {
+                "stage_review_mode": AGENT_TEST_REVIEW,
+                "final_human_acceptance_required": True,
+            }
+        }
+        self.assertEqual(
+            _validate_script_edit_contract(agent_manifest, agent_record, "motion_v0.3"),
+            [],
+        )
+
+        human_record = {
+            **BROWSER_SCRIPT_EDIT_LABELS,
+            "script": "用户通过浏览器修改的脚本。",
+            "edited_at": "2026-08-10T12:00:00+08:00",
+            "editor_identity": {"editor": "何sir", **HUMAN_SCRIPT_EDIT_IDENTITY},
+        }
+        self.assertTrue(
+            _validate_script_edit_contract(agent_manifest, human_record, "motion_v0.3")
+        )
+
+        contradictory_current_record = {
+            "id": "human-edited",
+            "hook_type": "人工精修",
+            "selected_by": "human_editor",
+            "script": "实际由代理改写却标成人工的旧记录。",
+            "edited_at": "2026-08-10T12:00:00+08:00",
+        }
+        current_errors = _validate_script_edit_contract(
+            agent_manifest, contradictory_current_record, "motion_v0.3"
+        )
+        self.assertTrue(any("缺少结构化编辑身份" in error for error in current_errors))
+        self.assertEqual(
+            classify_script_edit_record(
+                contradictory_current_record, allow_legacy_human=True
+            ),
+            (HUMAN_STAGE_REVIEW, []),
+        )
 
     def test_public_evidence_sanitizes_email_and_strict_mainland_phone(self):
         phone = "".join(("138", "0013", "8000"))
@@ -436,7 +530,12 @@ class PublicEvidenceContractTests(unittest.TestCase):
             report = {
                 "status": "complete",
                 "production_mode": "motion",
-                "production_engine": dict(MOTION_ENGINE_IDENTITY),
+                "production_engine": {
+                    **MOTION_ENGINE_IDENTITY,
+                    "browser_strategy": "trusted_system_edge",
+                    "browser_version": "151.0.1000.1",
+                    "browser_minimum_major": 151,
+                },
                 "render": {
                     "mode": "animated_hyperframes",
                     "production_mode": "motion",
@@ -444,6 +543,13 @@ class PublicEvidenceContractTests(unittest.TestCase):
                     "runtime_source": "packaged",
                     "runtime_version": MOTION_ENGINE_IDENTITY["version"],
                     "renderer": MOTION_ENGINE_IDENTITY["renderer"],
+                    "codec_strategy": MOTION_ENGINE_IDENTITY["codec_strategy"],
+                    "patch_id": MOTION_ENGINE_IDENTITY["patch_id"],
+                    "patch_version": MOTION_ENGINE_IDENTITY["patch_version"],
+                    "patched_cli_sha256": MOTION_ENGINE_IDENTITY["patched_cli_sha256"],
+                    "browser_strategy": "trusted_system_edge",
+                    "browser_version": "151.0.1000.1",
+                    "browser_minimum_major": 151,
                     "video_codec": "h264",
                     "audio_codec": "aac",
                     "width": 1080,
@@ -563,7 +669,15 @@ class PublicEvidenceContractTests(unittest.TestCase):
             self.assertTrue(any("正式便携包" in error for error in runtime_errors))
             report["render"]["runtime_source"] = "packaged"
 
-            report["production_engine"] = {**MOTION_ENGINE_IDENTITY, "version": "latest"}
+            report["render"]["browser_version"] = "150.0.999.1"
+            browser_errors = _validate_motion_evidence(folder, report, approved_script)
+            self.assertTrue(any("受信系统Edge" in error for error in browser_errors))
+            report["render"]["browser_version"] = "151.0.1000.1"
+
+            report["production_engine"] = {
+                **report["production_engine"],
+                "version": "latest",
+            }
             self.assertTrue(_validate_motion_evidence(folder, report, approved_script))
 
 

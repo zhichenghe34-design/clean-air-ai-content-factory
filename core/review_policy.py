@@ -6,8 +6,10 @@ from typing import Any, Mapping
 
 HUMAN_STAGE_REVIEW = "human"
 AGENT_TEST_REVIEW = "agent_test"
-STAGE_REVIEW_MODES = {HUMAN_STAGE_REVIEW, AGENT_TEST_REVIEW}
+MECHANICAL_STAGE_REVIEW = "mechanical"
+STAGE_REVIEW_MODES = {HUMAN_STAGE_REVIEW, AGENT_TEST_REVIEW, MECHANICAL_STAGE_REVIEW}
 CODEX_TEST_REVIEWER = "Codex 测试代理"
+MECHANICAL_REVIEWER = "反向机械审核器"
 
 HUMAN_IDENTITY = {
     "actor_type": "human",
@@ -25,7 +27,51 @@ AGENT_TEST_IDENTITY = {
     "human_approval_claimed": False,
     "test_only": True,
 }
+MECHANICAL_IDENTITY = {
+    "actor_type": "mechanical_reviewer",
+    "review_mode": "mechanical",
+    "interaction_mode": "headless",
+    "authority": "internal_generation_only",
+    "human_approval_claimed": False,
+    "test_only": False,
+}
 IDENTITY_FIELDS = tuple(HUMAN_IDENTITY)
+
+HUMAN_SCRIPT_EDIT_IDENTITY = {
+    "actor_type": "human",
+    "edit_mode": "formal",
+    "interaction_mode": "browser_operated",
+    "authority": "script_revision",
+    "human_edit_claimed": True,
+    "test_only": False,
+}
+AGENT_TEST_SCRIPT_EDIT_IDENTITY = {
+    "actor_type": "agent",
+    "edit_mode": "test",
+    "interaction_mode": "browser_operated",
+    "authority": "test_progress_only",
+    "human_edit_claimed": False,
+    "test_only": True,
+}
+MECHANICAL_SCRIPT_EDIT_IDENTITY = {
+    "actor_type": "mechanical_reviewer",
+    "edit_mode": "mechanical",
+    "interaction_mode": "headless",
+    "authority": "internal_generation_only",
+    "human_edit_claimed": False,
+    "test_only": False,
+}
+SCRIPT_EDIT_IDENTITY_FIELDS = tuple(HUMAN_SCRIPT_EDIT_IDENTITY)
+BROWSER_SCRIPT_EDIT_LABELS = {
+    "id": "browser-edited",
+    "hook_type": "浏览器改稿",
+    "selected_by": "browser_editor",
+}
+LEGACY_HUMAN_SCRIPT_EDIT_LABELS = {
+    "id": "human-edited",
+    "hook_type": "人工精修",
+    "selected_by": "human_editor",
+}
 
 _AUTOMATION_REVIEWER_MARKERS = frozenset(
     {
@@ -147,7 +193,7 @@ def build_review_policy(stage_review_mode: str = HUMAN_STAGE_REVIEW) -> dict[str
         raise ValueError("stage_review_mode无效")
     return {
         "stage_review_mode": mode,
-        "final_human_acceptance_required": mode == AGENT_TEST_REVIEW,
+        "final_human_acceptance_required": mode != HUMAN_STAGE_REVIEW,
     }
 
 
@@ -170,12 +216,114 @@ def approval_identity(stage_review_mode: str, reviewer: str) -> dict[str, Any]:
         if supplied != CODEX_TEST_REVIEWER:
             raise ValueError("代理测试审查人必须由服务器固定为Codex测试代理")
         return {"reviewer": CODEX_TEST_REVIEWER, **AGENT_TEST_IDENTITY}
+    if mode == MECHANICAL_STAGE_REVIEW:
+        if supplied != MECHANICAL_REVIEWER:
+            raise ValueError("机械审查人必须由服务器固定为反向机械审核器")
+        return {"reviewer": MECHANICAL_REVIEWER, **MECHANICAL_IDENTITY}
     if not 2 <= len(supplied) <= 80:
         raise ValueError("审批人名称必须在2到80字之间")
     automation_errors = _automation_reviewer_error(supplied)
     if automation_errors:
         raise ValueError(automation_errors[0])
     return {"reviewer": supplied, **HUMAN_IDENTITY}
+
+
+def script_edit_identity(stage_review_mode: str, editor: str) -> dict[str, Any]:
+    """Return a truthful identity for an explicit browser script revision.
+
+    Script editing is not a stage approval.  The name validation is shared with
+    approvals, while the authority and human-claim fields remain specific to
+    editing so an agent test cannot be described as "人工精修".
+    """
+
+    mode = build_review_policy(stage_review_mode)["stage_review_mode"]
+    validated = approval_identity(mode, editor)
+    if mode == AGENT_TEST_REVIEW:
+        return {"editor": CODEX_TEST_REVIEWER, **AGENT_TEST_SCRIPT_EDIT_IDENTITY}
+    if mode == MECHANICAL_STAGE_REVIEW:
+        return {"editor": MECHANICAL_REVIEWER, **MECHANICAL_SCRIPT_EDIT_IDENTITY}
+    return {"editor": validated["reviewer"], **HUMAN_SCRIPT_EDIT_IDENTITY}
+
+
+def _is_explicit_script_edit(record: Mapping[str, Any]) -> bool:
+    return (
+        "edited_at" in record
+        or "editor_identity" in record
+        or record.get("id") in {BROWSER_SCRIPT_EDIT_LABELS["id"], LEGACY_HUMAN_SCRIPT_EDIT_LABELS["id"]}
+        or record.get("selected_by") in {
+            BROWSER_SCRIPT_EDIT_LABELS["selected_by"],
+            LEGACY_HUMAN_SCRIPT_EDIT_LABELS["selected_by"],
+            "agent_test_editor",
+            "mechanical_editor",
+        }
+    )
+
+
+def classify_script_edit_record(
+    record: Any, *, allow_legacy_human: bool
+) -> tuple[str | None, list[str]]:
+    """Classify an explicit script edit, or return ``None`` for generated scripts."""
+
+    if not isinstance(record, Mapping):
+        return None, ["批准稿结构无效"]
+    if not _is_explicit_script_edit(record):
+        return None, []
+
+    labels = {field: record.get(field) for field in BROWSER_SCRIPT_EDIT_LABELS}
+    raw_identity = record.get("editor_identity")
+    if not isinstance(raw_identity, Mapping):
+        if allow_legacy_human and labels == LEGACY_HUMAN_SCRIPT_EDIT_LABELS:
+            return HUMAN_STAGE_REVIEW, []
+        return None, ["浏览器改稿缺少结构化编辑身份"]
+    if labels != BROWSER_SCRIPT_EDIT_LABELS:
+        return None, ["浏览器改稿标签与结构化编辑身份不一致"]
+    if set(raw_identity) != {"editor", *SCRIPT_EDIT_IDENTITY_FIELDS}:
+        return None, ["结构化编辑身份字段不完整或包含未知字段"]
+
+    editor = str(raw_identity.get("editor", "")).strip()
+    actual = {field: raw_identity.get(field) for field in SCRIPT_EDIT_IDENTITY_FIELDS}
+    if actual == HUMAN_SCRIPT_EDIT_IDENTITY:
+        if not 2 <= len(editor) <= 80:
+            return None, ["编辑者名称必须在2到80字之间"]
+        automation_errors = _automation_reviewer_error(editor)
+        if automation_errors:
+            return None, automation_errors
+        return HUMAN_STAGE_REVIEW, []
+    if actual == AGENT_TEST_SCRIPT_EDIT_IDENTITY and editor == CODEX_TEST_REVIEWER:
+        return AGENT_TEST_REVIEW, []
+    if actual == MECHANICAL_SCRIPT_EDIT_IDENTITY and editor == MECHANICAL_REVIEWER:
+        return MECHANICAL_STAGE_REVIEW, []
+    return None, ["编辑身份字段组合不一致"]
+
+
+def script_edit_validation_line(
+    record: Any, *, allow_legacy_human: bool
+) -> tuple[str, list[str]]:
+    mode, errors = classify_script_edit_record(
+        record, allow_legacy_human=allow_legacy_human
+    )
+    if errors or mode is None:
+        return "", errors
+    if mode == AGENT_TEST_REVIEW:
+        return (
+            "改稿：当前批准稿由 Codex 测试代理通过本地浏览器修改；"
+            "记录明确为 test_only、human_edit_claimed=false，未冒充人工精修。",
+            [],
+        )
+    if mode == MECHANICAL_STAGE_REVIEW:
+        return (
+            "改稿：当前批准稿由反向机械审核器在本地无头流程中修改；"
+            "记录明确为 human_edit_claimed=false，只能作为内部生成候选。",
+            [],
+        )
+    if isinstance(record, Mapping) and isinstance(record.get("editor_identity"), Mapping):
+        editor = str(record["editor_identity"].get("editor", "")).strip()
+        return (
+            f"改稿：当前批准稿由 {editor} 通过本地浏览器修改；"
+            "该记录只说明脚本编辑，不替代合规审批。",
+            [],
+        )
+    return "改稿：历史批准稿记录为人工精修；该冻结合同不含结构化编辑身份。", []
 
 
 def classify_approval_record(record: Any, *, allow_legacy_human: bool) -> tuple[str | None, list[str]]:
@@ -202,6 +350,8 @@ def classify_approval_record(record: Any, *, allow_legacy_human: bool) -> tuple[
         return HUMAN_STAGE_REVIEW, []
     if actual == AGENT_TEST_IDENTITY and reviewer == CODEX_TEST_REVIEWER:
         return AGENT_TEST_REVIEW, []
+    if actual == MECHANICAL_IDENTITY and reviewer == MECHANICAL_REVIEWER:
+        return MECHANICAL_STAGE_REVIEW, []
     return None, ["审查身份字段组合不一致"]
 
 
@@ -226,6 +376,12 @@ def approval_validation_line(approvals: Mapping[str, Any], *, allow_legacy_human
             "记录明确为 test_only，未冒充用户本人签署；用户最终成片验收另行记录。",
             [],
         )
+    if modes == [MECHANICAL_STAGE_REVIEW, MECHANICAL_STAGE_REVIEW]:
+        return (
+            "机械审查：研究 finding 与最终脚本两道门禁均由本地反向机械审核器无头执行；"
+            "记录明确为 human_approval_claimed=false，产物仅为待人工发布确认的内部候选。",
+            [],
+        )
     return (
         "审查：研究与合规门禁采用混合审查身份，具体记录见 approvals.json；"
         "不得统一声称均由用户本人签署。",
@@ -235,8 +391,8 @@ def approval_validation_line(approvals: Mapping[str, Any], *, allow_legacy_human
 
 def evidence_status_for_policy(policy: Any) -> str:
     mode = normalize_review_policy(policy)["stage_review_mode"]
-    return (
-        "test_only_pending_human_acceptance"
-        if mode == AGENT_TEST_REVIEW
-        else "human_stage_reviews_complete"
-    )
+    if mode == AGENT_TEST_REVIEW:
+        return "test_only_pending_human_acceptance"
+    if mode == MECHANICAL_STAGE_REVIEW:
+        return "mechanically_reviewed_internal_candidate_pending_human_release"
+    return "human_stage_reviews_complete"

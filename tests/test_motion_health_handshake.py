@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+from core.motion_runtime_contract import SYSTEM_BROWSER_MINIMUM_MAJOR, SYSTEM_BROWSER_STRATEGY
 
 
 class MotionHealthHandshakeTests(unittest.TestCase):
@@ -22,15 +23,23 @@ class MotionHealthHandshakeTests(unittest.TestCase):
         self.assertEqual("unavailable", summary["health"])
 
         with tempfile.TemporaryDirectory() as directory:
-            browser = Path(directory) / "chrome-headless-shell.exe"
+            browser = Path(directory) / "msedge.exe"
             browser.write_bytes(b"fixture")
-            runtime = {"runtime_source": "packaged", "browser": browser}
+            runtime = {
+                "runtime_source": "packaged",
+                "browser": browser,
+                "browser_strategy": SYSTEM_BROWSER_STRATEGY,
+                "browser_version": "151.0.1000.1",
+                "browser_minimum_major": SYSTEM_BROWSER_MINIMUM_MAJOR,
+            }
             with patch.object(app, "_resolve_hyperframes_runtime", return_value=runtime), patch.dict(
                 os.environ, {}, clear=True
             ):
                 unverified = app.production_mode_summary("motion")
             self.assertFalse(unverified["enabled"])
             self.assertEqual("configured_unverified", unverified["health"])
+            self.assertEqual(SYSTEM_BROWSER_STRATEGY, unverified["browser_strategy"])
+            self.assertEqual("151.0.1000.1", unverified["browser_version"])
 
             with patch.object(app, "_resolve_hyperframes_runtime", return_value=runtime), patch.dict(
                 os.environ, {"SHIYI_MOTION_HEALTH_VERIFIED": "1"}, clear=True
@@ -38,6 +47,7 @@ class MotionHealthHandshakeTests(unittest.TestCase):
                 verified = app.production_mode_summary("motion")
             self.assertTrue(verified["enabled"])
             self.assertEqual("ready", verified["health"])
+            self.assertEqual(SYSTEM_BROWSER_MINIMUM_MAJOR, verified["browser_minimum_major"])
 
     def test_mpt_health_file_revokes_stale_process_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

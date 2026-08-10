@@ -55,8 +55,6 @@ class ApiV2Tests(unittest.TestCase):
         app.topic_selection_bundles = app.OrderedDict()
         self.old_correction_replays = app.correction_replays
         app.correction_replays = app.OrderedDict()
-        self.old_agent_create_replays = dict(app.agent_create_replays)
-        app.agent_create_replays.clear()
         app.clear_provider_connection_verified()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), app.AppHandler)
         self.port = self.server.server_address[1]
@@ -79,8 +77,6 @@ class ApiV2Tests(unittest.TestCase):
         app.pretask_provider_budgets = self.old_pretask_provider_budgets
         app.topic_selection_bundles = self.old_topic_selection_bundles
         app.correction_replays = self.old_correction_replays
-        app.agent_create_replays.clear()
-        app.agent_create_replays.update(self.old_agent_create_replays)
         with app.state_lock:
             app.provider_session_state.update(self.old_provider_session_state)
         self.temp.cleanup()
@@ -120,6 +116,45 @@ class ApiV2Tests(unittest.TestCase):
         status, _, body = self.request("POST", "/api/demo-job", b"{}", headers)
         self.assertEqual(status, 422)
         self.assertEqual(json.loads(body)["error"]["code"], "unprocessable")
+
+    def test_public_evidence_attachment_requires_local_session_and_returns_hash_metadata(self):
+        archive = Path(self.temp.name) / "exports" / "evidence.zip"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(b"zip-fixture")
+        export = {
+            "path": archive,
+            "filename": "shiyi-public-evidence-job-run-abc123.zip",
+            "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "public_manifest_sha256": "b" * 64,
+            "source_manifest_sha256": "c" * 64,
+            "run_id": "run-12345678",
+            "evidence_contract": "motion_v0.3",
+            "replayed": False,
+        }
+        with mock.patch.object(app, "prepare_public_evidence_export", return_value=export) as prepare:
+            status, _, body = self.request("GET", "/api/jobs/job/public-evidence.zip")
+            self.assertEqual(status, 403)
+            self.assertEqual(json.loads(body)["error"]["code"], "invalid_session")
+            prepare.assert_not_called()
+
+            status, headers, body = self.request(
+                "GET",
+                "/api/jobs/job/public-evidence.zip",
+                headers={"Cookie": self.cookie},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(body, "zip-fixture")
+        self.assertEqual(headers["content-type"], "application/zip")
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertEqual(
+            headers["content-disposition"],
+            'attachment; filename="shiyi-public-evidence-job-run-abc123.zip"',
+        )
+        self.assertEqual(headers["x-shiyi-archive-sha256"], export["archive_sha256"])
+        self.assertEqual(headers["x-shiyi-public-manifest-sha256"], "b" * 64)
+        self.assertEqual(headers["x-shiyi-source-manifest-sha256"], "c" * 64)
+        self.assertEqual(headers["x-content-type-options"], "nosniff")
+        prepare.assert_called_once_with("job")
 
     def test_invalid_input_returns_json_without_disconnect(self):
         for invalid in (False, 0, "", None, []):
@@ -342,16 +377,18 @@ class ApiV2Tests(unittest.TestCase):
         topics = json.loads(body)
         bundle_id = topics["selection_bundle_id"]
         candidate = topics["candidates"][0]
+        create_request = {
+            "selection_bundle_id": bundle_id,
+            "candidate_id": candidate["id"],
+            "production_options": {"target_duration_seconds": 52, "voice_engine": "voxcpm2"},
+        }
+        create_headers = self.secure_headers(**{"Idempotency-Key": "selection-create-0001"})
 
         status, _, body = self.request(
             "POST",
             "/api/demo-job",
-            {
-                "selection_bundle_id": bundle_id,
-                "candidate_id": candidate["id"],
-                "production_options": {"target_duration_seconds": 52, "voice_engine": "voxcpm2"},
-            },
-            self.secure_headers(**{"Idempotency-Key": "selection-create-0001"}),
+            create_request,
+            create_headers,
         )
         self.assertEqual(status, 201)
         job = json.loads(body)
@@ -359,6 +396,26 @@ class ApiV2Tests(unittest.TestCase):
         self.assertEqual(job["production_input"]["candidate_id"], candidate["id"])
         self.assertEqual(job["production_input"]["selection_bundle_id"], bundle_id)
         self.assertEqual(job["capability_pack"]["sha256"], topics["capability_pack"]["sha256"])
+        self.assertNotIn("creation_request", job)
+
+        # Simulate an application restart after the durable job write but
+        # before the browser received the response.  Both volatile replay
+        # caches and the selection bundle are gone; the same request must
+        # still recover the original job from its persisted binding.
+        app.topic_selection_bundles.clear()
+        app.job_store = JobStore(Path(self.temp.name))
+        status, _, body = self.request("POST", "/api/demo-job", create_request, create_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["id"], job["id"])
+        self.assertEqual(len(app.job_store.list()), 1)
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {**create_request, "candidate_id": "topic-forged"},
+            create_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["error"]["code"], "idempotency_conflict")
 
         status, _, body = self.request(
             "POST",
@@ -389,6 +446,85 @@ class ApiV2Tests(unittest.TestCase):
         self.assertTrue(headers["content-type"].startswith("application/json"))
         self.assertIn("error", json.loads(body))
 
+    def test_create_binds_server_learning_rules_in_initial_durable_write(self):
+        goal = "为社区咖啡店制作一条新品介绍短视频"
+        pack = local_capability_pack(goal)
+        seed_body = {
+            "production_input": {
+                "topic": "新品介绍先说清楚适合什么顾客",
+                "audience": "到店顾客",
+                "capability_pack": pack,
+            }
+        }
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            seed_body,
+            self.secure_headers(**{"Idempotency-Key": "atomic-rule-seed-0001"}),
+        )
+        self.assertEqual(status, 201)
+        seed_job = json.loads(body)
+        status, _, body = self.request(
+            "POST",
+            "/api/agent/corrections",
+            {
+                "job_id": seed_job["id"],
+                "message": "新品介绍必须先说明适用人群，避免绝对化表达",
+                "scope": "project",
+                "mode": "defer",
+            },
+            self.secure_headers(**{"Idempotency-Key": "atomic-rule-record-0001"}),
+        )
+        self.assertEqual(status, 201)
+        rule = json.loads(body)["rules"][0]
+
+        create_body = {
+            "production_input": {
+                "topic": "新品上市前先回答顾客最关心的问题",
+                "audience": "到店顾客",
+                "capability_pack": pack,
+            }
+        }
+        create_headers = self.secure_headers(
+            **{"Idempotency-Key": "atomic-rule-create-0001"}
+        )
+        with mock.patch.object(
+            JobStore,
+            "apply_learning_rules",
+            side_effect=AssertionError("learning rules must be bound before create is durable"),
+        ):
+            status, _, body = self.request(
+                "POST", "/api/demo-job", create_body, create_headers
+            )
+        self.assertEqual(status, 201)
+        created = json.loads(body)
+        self.assertEqual(created["learning_rule_ids"], [rule["rule_id"]])
+        self.assertEqual(
+            created["production_input"]["learning_rules"],
+            [
+                {
+                    "rule_id": rule["rule_id"],
+                    "scope": rule["scope"],
+                    "instruction": rule["instruction"],
+                    "pack_id": rule["pack_id"],
+                    "source_event_ids": rule["source_event_ids"],
+                }
+            ],
+        )
+
+        # Lose every volatile cache after the first durable write.  Replay must
+        # recover the same fully-bound job without a post-create repair step.
+        app.topic_selection_bundles.clear()
+        app.job_store = JobStore(Path(self.temp.name))
+        status, _, body = self.request(
+            "POST", "/api/demo-job", create_body, create_headers
+        )
+        self.assertEqual(status, 200)
+        replay = json.loads(body)
+        self.assertEqual(replay["id"], created["id"])
+        self.assertEqual(replay["learning_rule_ids"], [rule["rule_id"]])
+        self.assertEqual(len(app.job_store.list()), 2)
+
     def test_valid_create_and_execution_authorization(self):
         create_headers = self.secure_headers(**{"Idempotency-Key": "create-replay-0001"})
         create_body = {"production_input": {"topic": "室内空气检测报告为什么要看检测条件？", "audience": "新房家庭"}}
@@ -405,6 +541,33 @@ class ApiV2Tests(unittest.TestCase):
         )
         self.assertEqual(conflict_status, 409)
         self.assertEqual(json.loads(conflict_body)["error"]["code"], "idempotency_conflict")
+
+    def test_mechanical_job_plan_has_no_intermediate_human_gate(self):
+        app.job_store = JobStore(Path(self.temp.name), stage_review_mode="mechanical")
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {
+                "production_input": {
+                    "topic": "室内空气检测报告为什么要看检测条件？",
+                    "audience": "新房家庭",
+                }
+            },
+            self.secure_headers(**{"Idempotency-Key": "mechanical-plan-create-0001"}),
+        )
+        self.assertEqual(status, 201)
+        job = json.loads(body)
+        self.assertEqual(job["review_policy"]["stage_review_mode"], "mechanical")
+        self.assertIn("不中途等待人工", job["plan"]["summary"])
+        self.assertFalse(any(step["requires_approval"] for step in job["plan"]["steps"]))
+        mechanical_steps = [
+            step for step in job["plan"]["steps"]
+            if step["capability"] == "mechanical_review"
+        ]
+        self.assertEqual(len(mechanical_steps), 1)
+        self.assertEqual(
+            mechanical_steps[0]["tool_id"], "reverse-mechanical-reviewer"
+        )
 
         plan = local_fallback_plan("生成测试视频", [])
         status, _, body = self.request("POST", "/api/jobs", {"plan": plan, "production_input": {"topic": "气味小就代表甲醛少吗？", "audience": "家庭"}}, self.secure_headers())
@@ -448,6 +611,7 @@ class ApiV2Tests(unittest.TestCase):
         )
         self.assertEqual(status, 201)
         learned = json.loads(body)
+        self.assertEqual(learned["correction"]["actor"], "本地浏览器用户")
         self.assertTrue(learned["applied_to_current"])
         self.assertFalse(learned["queued_for_next_stage"])
         self.assertEqual(learned["job"]["status"], "planned")
@@ -491,6 +655,43 @@ class ApiV2Tests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["rule"]["status"], "disabled")
+
+    def test_agent_test_correction_actor_is_server_bound_and_never_claims_a_human(self):
+        app.job_store = JobStore(Path(self.temp.name), stage_review_mode="agent_test")
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {
+                "production_input": {
+                    "topic": "室内空气检测报告为什么要看检测条件？",
+                    "audience": "新房家庭",
+                }
+            },
+            self.secure_headers(**{"Idempotency-Key": "agent-correction-create-0001"}),
+        )
+        self.assertEqual(status, 201)
+        job = json.loads(body)
+
+        status, _, body = self.request(
+            "POST",
+            "/api/agent/corrections",
+            {
+                "job_id": job["id"],
+                "message": "检测条件必须写清楚，不能把代理操作记成人工意见",
+                "actor": "伪造的人类审核员",
+                "mode": "defer",
+            },
+            self.secure_headers(**{"Idempotency-Key": "agent-correction-record-0001"}),
+        )
+        self.assertEqual(status, 201)
+        correction = json.loads(body)["correction"]
+        self.assertEqual(correction["actor"], "Codex 测试代理")
+        persisted = [
+            json.loads(line)
+            for line in (Path(self.temp.name) / "corrections.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(persisted[-1]["actor"], "Codex 测试代理")
 
     def test_queued_explicit_kind_survives_restart_and_safe_boundary(self):
         for correction_kind in ("evidence", "capability"):

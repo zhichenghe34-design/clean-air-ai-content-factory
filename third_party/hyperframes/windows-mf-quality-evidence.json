@@ -1,0 +1,1304 @@
+{
+  "schema_version": 2,
+  "evidence_id": "hyperframes-h264-mf-quality-20260810-v2",
+  "evaluated_on": "2026-08-10",
+  "generator": {
+    "path": "tools/generate_hyperframes_mf_quality_evidence.py",
+    "bytes": 46190,
+    "sha256": "4FFD1D5B6185FB8D2B8EF4175409BB4EAA31ACE84C82B269D05EAAB0AC40FB59",
+    "python": "3.12.13",
+    "input_dependencies": [
+      "Python standard library",
+      "this exact generator script"
+    ]
+  },
+  "runtime": {
+    "ffmpeg_lock": {
+      "path": "third_party/ffmpeg/upstream-lock.json",
+      "bytes": 14442,
+      "sha256": "CC3BA8E7FC376108A2E277F9B387EBA8232D154E479776C8028CFD938E766C37",
+      "ffmpeg_version": "8.0.git",
+      "ffmpeg_commit": "d3ad8a7fee6a647c6362e4a105d949282d50a98f",
+      "license": "LGPL-2.1-or-later"
+    },
+    "runtime_files": [
+      {
+        "path": "avcodec-63.dll",
+        "bytes": 14030848,
+        "sha256": "6C4C5A12A84C940BCF12CA729F26F1629A97BA94B8159E6349ECBF176E7A2987"
+      },
+      {
+        "path": "avfilter-12.dll",
+        "bytes": 4350976,
+        "sha256": "797CFB6FB27DA31CA88F9A59508440CD98CB47290BBBDE54F7C1089077751132"
+      },
+      {
+        "path": "avformat-63.dll",
+        "bytes": 2473472,
+        "sha256": "244505AAFB3B37AE192B15B03FE871965FBE981082379E0C33BC43F3A7611758"
+      },
+      {
+        "path": "avutil-61.dll",
+        "bytes": 1143808,
+        "sha256": "37D6FEC1955060F1FE867A86BDCA968DCFDDAE76E0456C79DD63633E7BEFA2AE"
+      },
+      {
+        "path": "ffmpeg.exe",
+        "bytes": 592384,
+        "sha256": "53CC924AFEFFBE48BD94E569D0081B2EEF64EBAEA18B7966F7686947B0EBC1DC"
+      },
+      {
+        "path": "ffprobe.exe",
+        "bytes": 335872,
+        "sha256": "12324DCCEE8985B2D7F83F59C6BE0617046DF44DD8F25723BB1EECC20ABE7A4A"
+      },
+      {
+        "path": "swresample-7.dll",
+        "bytes": 231424,
+        "sha256": "F7C0DF579F8464534020F4DCA1D870B5BA359C260BBC2450A272C159B16D8772"
+      },
+      {
+        "path": "swscale-10.dll",
+        "bytes": 1282560,
+        "sha256": "C8AD8C480404C68BB7E82A9EEEF35D139FBD65AB632AEB4CE1ADEFEEE8F3281A"
+      },
+      {
+        "path": "zlib1.dll",
+        "bytes": 226816,
+        "sha256": "AB4485B6302F4DEBABA78D70552445CD0A931610C664E7FF1C9639001D9062E3"
+      }
+    ],
+    "version_evidence": {
+      "command_tokens": [
+        "{ffmpeg}",
+        "-version"
+      ],
+      "exit_code": 0,
+      "raw_stdout": "ffmpeg version 8.0.git Copyright (c) 2000-2026 the FFmpeg developers\nbuilt with Unknown compiler\nconfiguration: --prefix=/d/syi_ffmpeg_lgpl_d3ad8a7/prefix --toolchain=msvc --arch=x86_64 --target-os=win64 --enable-shared --disable-static --disable-debug --disable-doc --disable-ffplay --disable-autodetect --disable-network --disable-avdevice --enable-w32threads --enable-zlib --enable-ffmpeg --enable-ffprobe --enable-mediafoundation --enable-d3d11va --enable-encoder=h264_mf --enable-encoder=aac --extra-cflags='-ID:/syi_ffmpeg_lgpl_d3ad8a7/zlib-prefix/include' --extra-ldflags='-libpath:D:/syi_ffmpeg_lgpl_d3ad8a7/zlib-prefix/lib'\nlibavutil      61.  5.100 / 61.  5.100\nlibavcodec     63.  7.100 / 63.  7.100\nlibavformat    63.  5.101 / 63.  5.101\nlibavfilter    12.  3.101 / 12.  3.101\nlibswscale     10.  2.100 / 10.  2.100\nlibswresample   7.  2.100 /  7.  2.100\n\nExiting with exit code 0\n",
+      "stdout_sha256": "74D851989AD4AF1B009509DEBACA24E6B0C7CD69A9B7E66C2AAE001669CC6A16",
+      "raw_stderr": "",
+      "stderr_sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+    },
+    "h264_mf_encoder_help_evidence": {
+      "command_tokens": [
+        "{ffmpeg}",
+        "-hide_banner",
+        "-h",
+        "encoder=h264_mf"
+      ],
+      "exit_code": 0,
+      "raw_stdout": "Encoder h264_mf [H264 via MediaFoundation]:\n    General capabilities: dr1 delay hybrid \n    Threading capabilities: none\n    Supported pixel formats: nv12 yuv420p d3d11\nh264_mf AVOptions:\n  -rate_control      <int>        E..V....... Select rate control mode (from -1 to INT_MAX) (default default)\n     default         -1           E..V....... Default mode\n     cbr             0            E..V....... CBR mode\n     pc_vbr          1            E..V....... Peak constrained VBR mode\n     u_vbr           2            E..V....... Unconstrained VBR mode\n     quality         3            E..V....... Quality mode\n     ld_vbr          4            E..V....... Low delay VBR mode\n     g_vbr           5            E..V....... Global VBR mode\n     gld_vbr         6            E..V....... Global low delay VBR mode\n  -scenario          <int>        E..V....... Select usage scenario (from -1 to INT_MAX) (default default)\n     default         -1           E..V....... Default scenario\n     display_remoting 1            E..V....... Display remoting\n     video_conference 2            E..V....... Video conference\n     archive         3            E..V....... Archive\n     live_streaming  4            E..V....... Live streaming\n     camera_record   5            E..V....... Camera record\n     display_remoting_with_feature_map 6            E..V....... Display remoting with feature map\n  -quality           <int>        E..V....... Quality (from -1 to 100) (default -1)\n  -hw_encoding       <boolean>    E..V....... Force hardware encoding (default false)\n\n\nExiting with exit code 0\n",
+      "stdout_sha256": "F78214D9820CBBF80E6E271E3B7C89DBD1E27520EA4CDFC285B118733735C5CC",
+      "raw_stderr": "",
+      "stderr_sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+    }
+  },
+  "environment": {
+    "os": {
+      "platform_version": "10.0.26200",
+      "architecture": "AMD64",
+      "product_name": "Windows 10 Home China",
+      "display_version": "25H2",
+      "current_build": "26200",
+      "update_build_revision": 8894
+    },
+    "media_foundation_software_encoder_registration": {
+      "clsid": "{6CA50344-051A-4DED-9779-A43305165E35}",
+      "inproc_server": "C:\\Windows\\System32\\mfh264enc.dll",
+      "bytes": 737280,
+      "sha256": "DD9B8EF0473F48E67E38F76156DA2EE169A6AAB522E8FEFA1B63923ABC893B1B",
+      "file_version": "10.0.26100.8737 (WinBuild.160101.0800)",
+      "product_version": "10.0.26100.8737",
+      "file_description": "Media Foundation H264 Encoder",
+      "company_name": "Microsoft Corporation",
+      "original_filename": "mfH264Enc.dll",
+      "signature_status": "Valid",
+      "signer_subject": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+      "attestation_scope": "The encode command fixes -hw_encoding 0. FFmpeg does not expose the selected MFT CLSID in its log, so this freezes the registered Microsoft software H.264 encoder implementation, not a direct per-process CLSID trace."
+    }
+  },
+  "font_audit": {
+    "files": [
+      {
+        "path": "docs/fonts/NotoSansSC-Regular.ttf",
+        "bytes": 10595932,
+        "sha256": "198D40E70EE7CC1342EA436D2DFDF76E5AC13A9765DCD5F2A3A7655CF07F72F9"
+      },
+      {
+        "path": "docs/fonts/NotoSansSC-Bold.ttf",
+        "bytes": 10585456,
+        "sha256": "37BA4C2D255E3491D96988E5702DA52FE2F5665F375E8FEECAFA0102350CBFF2"
+      },
+      {
+        "path": "docs/fonts/OFL.txt",
+        "bytes": 4387,
+        "sha256": "8FADD1364F7FFAB3F77F2A9BBCDB3237EC1259E6D2141E2B9BF6894D1F2D97E9"
+      },
+      {
+        "path": "docs/fonts/SOURCE.md",
+        "bytes": 2032,
+        "sha256": "B7F679277D7F635FE61088976D8138B0EFA67273A23840282A5D2B941230EDDD"
+      }
+    ],
+    "used_by_input_generator": false,
+    "reason": "The fixed canary uses an embedded 5x7 bitmap alphabet, avoiding OS/font rasterizer drift. Tracked Noto Sans SC and its license/source records are hashed here to document that they were audited but are not hidden inputs."
+  },
+  "source": {
+    "description": "Two-second formal 1080x1920 vertical deterministic motion-design canary with integer-only gradient animation, native-raster one-pixel lines and checkerboard, moving geometry, color ramp, and an embedded bitmap label.",
+    "width": 1080,
+    "height": 1920,
+    "pixel_format": "rgb24",
+    "fps": 30,
+    "duration_seconds": 2.0,
+    "frame_count": 60,
+    "transport": "generated_in_memory_and_streamed_via_pipe_0",
+    "bytes": 373248000,
+    "sha256": "D0D85B971154BB9CDF0974ABC951CC6139324BB4F3BABB1FC01D4BFE9DED8838",
+    "frame_sha256": [
+      "A45B2FE948184A226ED02CFF3B7F87DFDB80137D3DE73FF4863648EE53E0D478",
+      "F812C2CBBCA5A391EB57B9B073683750BF405EEC30F601658E8E14707DD18012",
+      "79BA9172B817BD258503DDFF9290B58028208C112ADA40A823E6E3543493B8A3",
+      "697ECF8370127A51C0ED8661FB85598C8EA81B61DA9229E092D871ABB2CA3F5F",
+      "E55F91C4B081F7316584D8496DF762099A8CAE45C04C6BB28D826C79C90FA829",
+      "D2F693FF4F6AFD50FC863DB6BC1B5851E308C83B479249034C39A672841048F1",
+      "76E520ABFA9B98971967A5C84BFC142C26E5A6771307501B609040A32AA2C496",
+      "8B03567A21057E38EFA814A7F6B31B51B662ACDCADAD1EF569D55D9AAB88E943",
+      "292FE31DDCA987BF5ECFB455F4378663E8402C645114CA739CC3C253C31E6AF6",
+      "42129B81D3D2A7CB22D0A0561300C734CC72001605EE6B2362E018264C97472D",
+      "94B5844E747FE846FAAC8E1F6E7C75F138B7438D8F382830717615981BA310D2",
+      "C3545B3FD3A5EB326CBA77F9CBB308CD5F065FA077706668F71AFF5AD7B73BE7",
+      "4BB2BFEAB359BA14F59F3AEA43A8121C230B7AFB96985A9629BBBE64AF537CC3",
+      "6A391C200095FF36240CF95AD4ACF2117C839E4FDAE8D30F16DC370B68BE8EAE",
+      "190B2EEA8D04DF56F534FC55CA566248E608F52BC127CDB991B8883454BF17CE",
+      "4B03AA164742D41F2AC5B089ED50ADE0ADAF18CD68E152EE35AFE8D914C08646",
+      "7516E7AA9DEFA86F82A70F9B386B0F6AC6091F95A4BAA902FA291DA5D07673EF",
+      "CB850C1F068B6703148FA227ADCCE578C6DE64C9052BE2C73723FD14D157977C",
+      "3F6394F8DF5BAE7D8ADDAD118D1B53CE650B336E238875114320C5B8A148511B",
+      "C6DE3B11699FD0AEA93D8DE9AD1AB2AEEB910486009DA01F2F7683438D1457B8",
+      "733D02FF085DC51512ACCD1A288F34210B2F89B75C2F74EEC166A4A9C7D3E3E4",
+      "68FD8071FD29F6995ED6055B0882B6CC7B9FD33A5C7319F4CE02F7CFA168C8D1",
+      "6293B368EB4672853B2C533B8BE70139D14EF2305E031A8B265B75E8C5895DE9",
+      "FBEC580AC76ADA14A0C9FA428C8F4CA4F9418FA77891F8A66C2E29A85F54701E",
+      "75EE16E9D4CDE25DA610FAEC26CAB9F8802A7CE7D303C583722DA3E2DB370C16",
+      "E41088806EE72BA88B3FD31D64D70D2536818F2BC26FB2279EDE805FFC34934C",
+      "F98333A437DD3C3B7D73B150CC29EE1C62CC4062D78B09C6EC8DB3617C6D778F",
+      "80959328C7290D9D4BD785CB88F7A6E40493AA6A3CB5E4549DA651942095633B",
+      "2B942BCBA6911BD17667AC30BD86B2CA359ECE20ADD59C24A69790F30CD6D54B",
+      "A936E0FEE41A80CA7A75CB93C657186C93F22EF6D273E28B572CB2B93EEAC001",
+      "76113E8AA7D05C0C7B53196DE786CA45CC11FA83738E2223E806F4D66EF6FD4A",
+      "B6DC18185B24DA02A52E9332264927605FFF5C424243878AD813DF9F3DE918E1",
+      "4AD0FA26A2212F19C98EECD714A08EC099C247A19BCFC900BD28BA54F7B102D7",
+      "BB3BE716697DCFE1DD3D65A3D0D846C56547F3A98AFBEA0427B817C91BFD1AE0",
+      "9B1D7322C44A0E330D23A3A9AA4A52B59922A74FD35C229CC327AE63AFCEE8DA",
+      "6F3E0218BAEC96BE9178F73973C19CCC280D8E5577D21C15E091E8C44970F599",
+      "9EE9624872660B3453B2F6A4C9C8D682FB17D429F4FE64D3B937C49543A709FA",
+      "64DBC19580C182A4BE94337E18C3DA2D23CF867FD6AC357E14F6168F8CCFF231",
+      "C2F447AC2BC916BBBDC4EEA85FF78EA9D044B3CA393B78A5A7FB747F558A996B",
+      "5A5F15944F5F7E1BA86DA35BACA232A0C3BBC80C7C313097786294DD9F71BC96",
+      "A39E2BB2D1D52227B3CF76E6FB516E1EE15924FC835341198B5D5FB83EAF8FCD",
+      "F513B379AE0C2E717FC568A24D27FFB3E3314773C202CB8D2BC60239E6E70BF3",
+      "4F68FD7D7B69D3F952F4FC8575C4B7CC0C7C8F6F1AEF6D547A5A3542D36927CE",
+      "A267F56F82BB438B3F57D424EB43116A072A7E32B63331A362EE0E93E32F39C8",
+      "C213D0B84D726D24238B3D953DBF9E7E50E56501B1AABFAE4E6B3EE9B59EA80F",
+      "CA1E0F26398A400544EF8450BB07A91292F0445F794C7E96DD609C80B84E2780",
+      "1940837070415790A9C82D6C8CFED985190F0A6B5B396658C6CDF7DAD046DB83",
+      "959460B744FBF93D55F74E1682EA8AB8ED29A673A3C8F37BFA3F6A805B5C3035",
+      "D6808FABE7B65E1E76FF8CC68C35F2D1EBF13899E13E5FA0E58EB7A279D44A09",
+      "7249FF88FA54F07587B16E469A3F648C1ABFCC53B8AEBF0D4C78ED5983C4C9D9",
+      "840A7A0A43F88E2161F93DD485DF70835226BCDCDCF2E16BBF96A6544667EDFD",
+      "01711CC2EAA57A69CDEC7677DEC876239C4BD712EE239FF9EDF491B9D7D35688",
+      "25AD9B638CDAAA01CFBFC9E25D022F28D174F2985D5FE8B340487E29DF380954",
+      "CDC79371DD9747172DE430AC00F1CFB82E2AD62810F9F00A77998F3E5E03702C",
+      "C5CE4E74C27F1AFB520BC204AE146B836625151AA04C479B052BFE0993611B37",
+      "545826C4CA22848293EFE152B6AB80FFE0D7FE6C2B7D8956C5B243F0FBF6A012",
+      "B4F2918975074C6CF2F445C35812E5B00F405050763170FA5C280EE6CC0544C5",
+      "E091C836FB8B13A86713FB1874EF3A7646A219E6223B52A524B8CA530E1AF0EF",
+      "60248FD321A90050DA4CD0C99559A6875BBAB32779D12510A5F144B8CFA9199D",
+      "A740AD38B6BC27C2C37DAE0F67FD29AFA242423EF9229D435739097F7D8766B4"
+    ]
+  },
+  "fixed_command_contract": {
+    "encoder": "h264_mf",
+    "rate_control": "quality",
+    "scenario": "archive",
+    "hw_encoding": 0,
+    "gop": 30,
+    "keyint_min": 30,
+    "force_key_frames": "expr:eq(mod(n,30),0)",
+    "closed_gop": true,
+    "b_frames": 0,
+    "pixel_format": "yuv420p",
+    "profile_override": null,
+    "preset_argument": null
+  },
+  "candidates": [
+    {
+      "tier": "draft",
+      "selected_tier": "draft",
+      "quality": 60,
+      "output": {
+        "path": "q60-draft.mp4",
+        "bytes": 2175789,
+        "sha256": "3A2F9E770FF9601F500296B4A0DEE289DADB855AC35EC210D08250690AC5E828"
+      },
+      "repeatability": {
+        "status": "byte_identical_on_same_runtime_and_os_identity",
+        "repeat_sha256": "3A2F9E770FF9601F500296B4A0DEE289DADB855AC35EC210D08250690AC5E828",
+        "repeat_bytes": 2175789,
+        "command_tokens": [
+          "{ffmpeg}",
+          "-hide_banner",
+          "-loglevel",
+          "info",
+          "-nostdin",
+          "-y",
+          "-f",
+          "rawvideo",
+          "-pixel_format",
+          "rgb24",
+          "-video_size",
+          "1080x1920",
+          "-framerate",
+          "30",
+          "-i",
+          "pipe:0",
+          "-an",
+          "-frames:v",
+          "60",
+          "-c:v",
+          "h264_mf",
+          "-rate_control",
+          "quality",
+          "-quality",
+          "60",
+          "-scenario",
+          "archive",
+          "-hw_encoding",
+          "0",
+          "-g",
+          "30",
+          "-keyint_min",
+          "30",
+          "-force_key_frames",
+          "expr:eq(mod(n,30),0)",
+          "-flags",
+          "+cgop",
+          "-bf",
+          "0",
+          "-pix_fmt",
+          "yuv420p",
+          "-r",
+          "30",
+          "-map_metadata",
+          "-1",
+          "-movflags",
+          "+faststart",
+          "repeat-q60-draft.mp4"
+        ],
+        "stderr_path": "repeat-q60.stderr.txt",
+        "stderr_sha256": "A8D5203448964A3445E667034CEC67E8C4A194485448266EC7F86344525B3D64"
+      },
+      "encode": {
+        "command_tokens": [
+          "{ffmpeg}",
+          "-hide_banner",
+          "-loglevel",
+          "info",
+          "-nostdin",
+          "-y",
+          "-f",
+          "rawvideo",
+          "-pixel_format",
+          "rgb24",
+          "-video_size",
+          "1080x1920",
+          "-framerate",
+          "30",
+          "-i",
+          "pipe:0",
+          "-an",
+          "-frames:v",
+          "60",
+          "-c:v",
+          "h264_mf",
+          "-rate_control",
+          "quality",
+          "-quality",
+          "60",
+          "-scenario",
+          "archive",
+          "-hw_encoding",
+          "0",
+          "-g",
+          "30",
+          "-keyint_min",
+          "30",
+          "-force_key_frames",
+          "expr:eq(mod(n,30),0)",
+          "-flags",
+          "+cgop",
+          "-bf",
+          "0",
+          "-pix_fmt",
+          "yuv420p",
+          "-r",
+          "30",
+          "-map_metadata",
+          "-1",
+          "-movflags",
+          "+faststart",
+          "q60-draft.mp4"
+        ],
+        "exit_code": 0,
+        "raw_stderr": "Input #0, rawvideo, from 'pipe:0':\r\n  Duration: N/A, start: 0.000000, bitrate: 1492992 kb/s\r\n  Stream #0:0: Video: rawvideo (RGB[24] / 0x18424752), rgb24, 1080x1920, 1492992 kb/s, 30 tbr, 30 tbn\r\nStream mapping:\r\n  Stream #0:0 -> #0:0 (rawvideo (native) -> h264 (h264_mf))\r\n[h264_mf @ 0000020663575940] MFT name: 'H264 Encoder MFT'\r\nOutput #0, mp4, to 'q60-draft.mp4':\r\n  Metadata:\r\n    encoder         : Lavf63.5.101\r\n  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1080x1920, q=2-31, 200 kb/s, 30 fps, 15360 tbn\r\n    Metadata:\r\n      encoder         : Lavc63.7.100 h264_mf\r\n[mp4 @ 0000020663571840] Starting second pass: moving the moov atom to the beginning of the file\r\n[out#0/mp4 @ 000002066353E100] video:2124KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.051180%\r\nframe=   60 fps=0.0 q=-0.0 Lsize=    2125KiB time=00:00:02.00 bitrate=8703.2kbits/s speed=5.67x elapsed=0:00:00.35    \r\n",
+        "stderr_sha256": "A3F4DDBD7DDE02609CDC15C3927B47E0EFB6F05C34DD39BB7F44998FCB370BC2",
+        "stderr_path": "encode-q60.stderr.txt"
+      },
+      "probe": {
+        "command_tokens": [
+          "{ffprobe}",
+          "-v",
+          "error",
+          "-select_streams",
+          "v:0",
+          "-show_entries",
+          "stream=index,codec_name,codec_long_name,profile,pix_fmt,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,bit_rate:format=duration,size,bit_rate,format_name,format_long_name",
+          "-of",
+          "json",
+          "q60-draft.mp4"
+        ],
+        "exit_code": 0,
+        "raw_stdout": "{\n    \"programs\": [\n\n    ],\n    \"stream_groups\": [\n\n    ],\n    \"streams\": [\n        {\n            \"index\": 0,\n            \"codec_name\": \"h264\",\n            \"codec_long_name\": \"H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10\",\n            \"profile\": \"Constrained Baseline\",\n            \"width\": 1080,\n            \"height\": 1920,\n            \"pix_fmt\": \"yuv420p\",\n            \"r_frame_rate\": \"30/1\",\n            \"avg_frame_rate\": \"30/1\",\n            \"duration\": \"2.000000\",\n            \"bit_rate\": \"8698704\",\n            \"nb_frames\": \"60\"\n        }\n    ],\n    \"format\": {\n        \"format_name\": \"mov,mp4,m4a,3gp,3g2,mj2\",\n        \"format_long_name\": \"QuickTime / MOV\",\n        \"duration\": \"2.000000\",\n        \"size\": \"2175789\",\n        \"bit_rate\": \"8703156\"\n    }\n}\n",
+        "stdout_sha256": "295BA5976AE57DA8B976A9CE30B3369ED1F4BB2F942DD42E44EF9B7693E1F207",
+        "raw_json": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_long_name": "H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10",
+              "profile": "Constrained Baseline",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p",
+              "r_frame_rate": "30/1",
+              "avg_frame_rate": "30/1",
+              "duration": "2.000000",
+              "bit_rate": "8698704",
+              "nb_frames": "60"
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "format_long_name": "QuickTime / MOV",
+            "duration": "2.000000",
+            "size": "2175789",
+            "bit_rate": "8703156"
+          }
+        },
+        "artifact_path": "probe-q60.json"
+      },
+      "keyframes": {
+        "command_tokens": [
+          "{ffprobe}",
+          "-v",
+          "error",
+          "-select_streams",
+          "v:0",
+          "-skip_frame",
+          "nokey",
+          "-show_frames",
+          "-show_entries",
+          "frame=key_frame,pict_type,pts,pts_time,best_effort_timestamp,best_effort_timestamp_time,pkt_dts,pkt_dts_time",
+          "-of",
+          "json",
+          "q60-draft.mp4"
+        ],
+        "exit_code": 0,
+        "raw_stdout": "{\n    \"frames\": [\n        {\n            \"key_frame\": 1,\n            \"pts\": 0,\n            \"pts_time\": \"0.000000\",\n            \"pkt_dts\": 0,\n            \"pkt_dts_time\": \"0.000000\",\n            \"best_effort_timestamp\": 0,\n            \"best_effort_timestamp_time\": \"0.000000\",\n            \"pict_type\": \"I\",\n            \"side_data_list\": [\n                {\n                    \"side_data_type\": \"H.26[45] User Data Unregistered SEI message\"\n                },\n                {\n                    \"side_data_type\": \"H.26[45] User Data Unregistered SEI message\"\n                }\n            ]\n        },\n        {\n            \"key_frame\": 1,\n            \"pts\": 15360,\n            \"pts_time\": \"1.000000\",\n            \"pkt_dts\": 15360,\n            \"pkt_dts_time\": \"1.000000\",\n            \"best_effort_timestamp\": 15360,\n            \"best_effort_timestamp_time\": \"1.000000\",\n            \"pict_type\": \"I\"\n        }\n    ]\n}\n",
+        "stdout_sha256": "D83AEC185B211B09A401B5B1F4AD198532DBD5B5F0E72F5788997D4B6CA4756E",
+        "raw_json": {
+          "frames": [
+            {
+              "key_frame": 1,
+              "pts": 0,
+              "pts_time": "0.000000",
+              "pkt_dts": 0,
+              "pkt_dts_time": "0.000000",
+              "best_effort_timestamp": 0,
+              "best_effort_timestamp_time": "0.000000",
+              "pict_type": "I",
+              "side_data_list": [
+                {
+                  "side_data_type": "H.26[45] User Data Unregistered SEI message"
+                },
+                {
+                  "side_data_type": "H.26[45] User Data Unregistered SEI message"
+                }
+              ]
+            },
+            {
+              "key_frame": 1,
+              "pts": 15360,
+              "pts_time": "1.000000",
+              "pkt_dts": 15360,
+              "pkt_dts_time": "1.000000",
+              "best_effort_timestamp": 15360,
+              "best_effort_timestamp_time": "1.000000",
+              "pict_type": "I"
+            }
+          ]
+        },
+        "count": 2,
+        "artifact_path": "keyframes-q60.json"
+      },
+      "psnr": {
+        "command_tokens": [
+          "{ffmpeg}",
+          "-hide_banner",
+          "-loglevel",
+          "info",
+          "-nostdin",
+          "-y",
+          "-i",
+          "q60-draft.mp4",
+          "-f",
+          "rawvideo",
+          "-pixel_format",
+          "rgb24",
+          "-video_size",
+          "1080x1920",
+          "-framerate",
+          "30",
+          "-i",
+          "pipe:0",
+          "-lavfi",
+          "[0:v]setpts=PTS-STARTPTS,format=yuv420p[dist];[1:v]setpts=PTS-STARTPTS,format=yuv420p[ref];[dist][ref]psnr=stats_file=psnr-q60.stats.txt",
+          "-frames:v",
+          "60",
+          "-f",
+          "null",
+          "{null_device}"
+        ],
+        "exit_code": 0,
+        "raw_stderr": "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'q60-draft.mp4':\r\n  Metadata:\r\n    major_brand     : isom\r\n    minor_version   : 512\r\n    compatible_brands: isomiso2avc1mp41\r\n    encoder         : Lavf63.5.101\r\n  Duration: 00:00:02.00, start: 0.000000, bitrate: 8703 kb/s\r\n  Stream #0:0[0x1](und): Video: h264 (Constrained Baseline) (avc1 / 0x31637661), yuv420p(progressive), 1080x1920, 8698 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\r\n    Metadata:\r\n      handler_name    : VideoHandler\r\n      encoder         : Lavc63.7.100 h264_mf\r\nInput #1, rawvideo, from 'pipe:0':\r\n  Duration: N/A, start: 0.000000, bitrate: 1492992 kb/s\r\n  Stream #1:0: Video: rawvideo (RGB[24] / 0x18424752), rgb24, 1080x1920, 1492992 kb/s, 30 tbr, 30 tbn\r\nStream mapping:\r\n  Stream #0:0 (h264) -> setpts:default\r\n  Stream #1:0 (rawvideo) -> setpts:default\r\n  psnr:default -> Stream #0:0 (wrapped_avframe)\r\n[Parsed_psnr_4 @ 00000222EBED7280] not matching timebases found between first input: 1/15360 and second input 1/30, results may be incorrect!\r\nOutput #0, null, to 'nul':\r\n  Metadata:\r\n    encoder         : Lavf63.5.101\r\n  Stream #0:0: Video: wrapped_avframe, yuv420p(progressive), 1080x1920, q=2-31, 200 kb/s, 30 fps, 30 tbn\r\n    Metadata:\r\n      encoder         : Lavc63.7.100 wrapped_avframe\r\n[Parsed_psnr_4 @ 00000222EBED7280] PSNR y:43.836196 u:45.626198 v:44.439089 average:44.188416 min:42.588304 max:45.324034\r\n[out#0/null @ 00000222EBF11140] video:25KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown\r\nframe=   60 fps=0.0 q=-0.0 Lsize=N/A time=00:00:02.00 bitrate=N/A speed=9.14x elapsed=0:00:00.21    \r\n",
+        "stderr_sha256": "A1EDB3275A6B32867E2FEE96998C36049AFA74AF2825DAE49E0F21E97F2C8E68",
+        "summary": {
+          "y": 43.836196,
+          "u": 45.626198,
+          "v": 44.439089,
+          "average": 44.188416,
+          "minimum": 42.588304,
+          "maximum": 45.324034
+        },
+        "raw_stats": "n:1 mse_avg:1.91 mse_y:1.96 mse_u:1.65 mse_v:1.95 psnr_avg:45.32 psnr_y:45.20 psnr_u:45.96 psnr_v:45.23 \nn:2 mse_avg:2.16 mse_y:2.20 mse_u:1.75 mse_v:2.40 psnr_avg:44.79 psnr_y:44.71 psnr_u:45.70 psnr_v:44.33 \nn:3 mse_avg:2.15 mse_y:2.21 mse_u:1.80 mse_v:2.29 psnr_avg:44.80 psnr_y:44.69 psnr_u:45.59 psnr_v:44.52 \nn:4 mse_avg:3.33 mse_y:3.96 mse_u:1.78 mse_v:2.36 psnr_avg:42.91 psnr_y:42.16 psnr_u:45.64 psnr_v:44.41 \nn:5 mse_avg:2.22 mse_y:2.31 mse_u:1.73 mse_v:2.35 psnr_avg:44.67 psnr_y:44.50 psnr_u:45.74 psnr_v:44.42 \nn:6 mse_avg:2.23 mse_y:2.30 mse_u:1.75 mse_v:2.42 psnr_avg:44.65 psnr_y:44.52 psnr_u:45.71 psnr_v:44.29 \nn:7 mse_avg:2.31 mse_y:2.42 mse_u:1.75 mse_v:2.43 psnr_avg:44.50 psnr_y:44.30 psnr_u:45.69 psnr_v:44.28 \nn:8 mse_avg:2.34 mse_y:2.45 mse_u:1.82 mse_v:2.41 psnr_avg:44.45 psnr_y:44.24 psnr_u:45.53 psnr_v:44.31 \nn:9 mse_avg:2.59 mse_y:2.85 mse_u:1.77 mse_v:2.34 psnr_avg:44.00 psnr_y:43.58 psnr_u:45.64 psnr_v:44.44 \nn:10 mse_avg:2.23 mse_y:2.29 mse_u:1.79 mse_v:2.43 psnr_avg:44.64 psnr_y:44.52 psnr_u:45.60 psnr_v:44.28 \nn:11 mse_avg:3.38 mse_y:4.02 mse_u:1.86 mse_v:2.35 psnr_avg:42.84 psnr_y:42.09 psnr_u:45.44 psnr_v:44.42 \nn:12 mse_avg:2.37 mse_y:2.50 mse_u:1.92 mse_v:2.28 psnr_avg:44.39 psnr_y:44.16 psnr_u:45.29 psnr_v:44.55 \nn:13 mse_avg:2.33 mse_y:2.40 mse_u:1.97 mse_v:2.41 psnr_avg:44.45 psnr_y:44.32 psnr_u:45.18 psnr_v:44.32 \nn:14 mse_avg:2.42 mse_y:2.44 mse_u:2.36 mse_v:2.38 psnr_avg:44.30 psnr_y:44.26 psnr_u:44.41 psnr_v:44.37 \nn:15 mse_avg:2.43 mse_y:2.50 mse_u:2.15 mse_v:2.44 psnr_avg:44.27 psnr_y:44.15 psnr_u:44.80 psnr_v:44.26 \nn:16 mse_avg:2.36 mse_y:2.45 mse_u:1.84 mse_v:2.53 psnr_avg:44.40 psnr_y:44.24 psnr_u:45.48 psnr_v:44.10 \nn:17 mse_avg:2.36 mse_y:2.48 mse_u:1.78 mse_v:2.45 psnr_avg:44.40 psnr_y:44.18 psnr_u:45.62 psnr_v:44.25 \nn:18 mse_avg:2.35 mse_y:2.46 mse_u:1.76 mse_v:2.46 psnr_avg:44.43 psnr_y:44.22 psnr_u:45.67 psnr_v:44.22 \nn:19 mse_avg:2.42 mse_y:2.57 mse_u:1.78 mse_v:2.47 psnr_avg:44.29 psnr_y:44.04 psnr_u:45.62 psnr_v:44.20 \nn:20 mse_avg:3.10 mse_y:3.62 mse_u:1.74 mse_v:2.38 psnr_avg:43.21 psnr_y:42.54 psnr_u:45.74 psnr_v:44.37 \nn:21 mse_avg:2.38 mse_y:2.51 mse_u:1.75 mse_v:2.50 psnr_avg:44.37 psnr_y:44.14 psnr_u:45.71 psnr_v:44.15 \nn:22 mse_avg:2.41 mse_y:2.54 mse_u:1.73 mse_v:2.58 psnr_avg:44.31 psnr_y:44.08 psnr_u:45.74 psnr_v:44.02 \nn:23 mse_avg:2.47 mse_y:2.63 mse_u:1.75 mse_v:2.52 psnr_avg:44.21 psnr_y:43.93 psnr_u:45.69 psnr_v:44.12 \nn:24 mse_avg:2.64 mse_y:2.89 mse_u:1.80 mse_v:2.51 psnr_avg:43.91 psnr_y:43.53 psnr_u:45.58 psnr_v:44.13 \nn:25 mse_avg:2.61 mse_y:2.86 mse_u:1.85 mse_v:2.37 psnr_avg:43.96 psnr_y:43.56 psnr_u:45.46 psnr_v:44.38 \nn:26 mse_avg:2.37 mse_y:2.53 mse_u:1.80 mse_v:2.33 psnr_avg:44.38 psnr_y:44.10 psnr_u:45.58 psnr_v:44.46 \nn:27 mse_avg:2.59 mse_y:2.79 mse_u:2.15 mse_v:2.23 psnr_avg:44.00 psnr_y:43.68 psnr_u:44.81 psnr_v:44.64 \nn:28 mse_avg:2.36 mse_y:2.51 mse_u:1.87 mse_v:2.26 psnr_avg:44.40 psnr_y:44.14 psnr_u:45.42 psnr_v:44.58 \nn:29 mse_avg:2.35 mse_y:2.51 mse_u:1.71 mse_v:2.38 psnr_avg:44.41 psnr_y:44.14 psnr_u:45.79 psnr_v:44.36 \nn:30 mse_avg:2.34 mse_y:2.51 mse_u:1.65 mse_v:2.37 psnr_avg:44.44 psnr_y:44.14 psnr_u:45.95 psnr_v:44.38 \nn:31 mse_avg:2.10 mse_y:2.40 mse_u:1.24 mse_v:1.76 psnr_avg:44.91 psnr_y:44.33 psnr_u:47.18 psnr_v:45.67 \nn:32 mse_avg:2.37 mse_y:2.70 mse_u:1.43 mse_v:1.99 psnr_avg:44.39 psnr_y:43.82 psnr_u:46.58 psnr_v:45.14 \nn:33 mse_avg:2.27 mse_y:2.58 mse_u:1.36 mse_v:1.94 psnr_avg:44.57 psnr_y:44.02 psnr_u:46.80 psnr_v:45.25 \nn:34 mse_avg:2.34 mse_y:2.63 mse_u:1.43 mse_v:2.08 psnr_avg:44.44 psnr_y:43.92 psnr_u:46.58 psnr_v:44.96 \nn:35 mse_avg:2.39 mse_y:2.68 mse_u:1.51 mse_v:2.10 psnr_avg:44.35 psnr_y:43.86 psnr_u:46.34 psnr_v:44.91 \nn:36 mse_avg:3.25 mse_y:3.96 mse_u:1.56 mse_v:2.05 psnr_avg:43.02 psnr_y:42.15 psnr_u:46.19 psnr_v:45.00 \nn:37 mse_avg:2.25 mse_y:2.43 mse_u:1.60 mse_v:2.20 psnr_avg:44.61 psnr_y:44.28 psnr_u:46.08 psnr_v:44.72 \nn:38 mse_avg:2.27 mse_y:2.41 mse_u:1.69 mse_v:2.28 psnr_avg:44.57 psnr_y:44.30 psnr_u:45.86 psnr_v:44.55 \nn:39 mse_avg:2.48 mse_y:2.72 mse_u:1.72 mse_v:2.24 psnr_avg:44.19 psnr_y:43.78 psnr_u:45.77 psnr_v:44.62 \nn:40 mse_avg:2.65 mse_y:2.89 mse_u:2.03 mse_v:2.29 psnr_avg:43.91 psnr_y:43.52 psnr_u:45.05 psnr_v:44.54 \nn:41 mse_avg:2.59 mse_y:2.88 mse_u:1.82 mse_v:2.21 psnr_avg:44.00 psnr_y:43.54 psnr_u:45.54 psnr_v:44.69 \nn:42 mse_avg:2.48 mse_y:2.70 mse_u:1.75 mse_v:2.34 psnr_avg:44.18 psnr_y:43.82 psnr_u:45.71 psnr_v:44.44 \nn:43 mse_avg:3.58 mse_y:4.38 mse_u:1.73 mse_v:2.25 psnr_avg:42.59 psnr_y:41.72 psnr_u:45.74 psnr_v:44.60 \nn:44 mse_avg:2.52 mse_y:2.77 mse_u:1.74 mse_v:2.28 psnr_avg:44.12 psnr_y:43.70 psnr_u:45.73 psnr_v:44.54 \nn:45 mse_avg:2.47 mse_y:2.71 mse_u:1.66 mse_v:2.32 psnr_avg:44.20 psnr_y:43.79 psnr_u:45.92 psnr_v:44.48 \nn:46 mse_avg:2.46 mse_y:2.67 mse_u:1.70 mse_v:2.40 psnr_avg:44.22 psnr_y:43.86 psnr_u:45.84 psnr_v:44.33 \nn:47 mse_avg:2.36 mse_y:2.51 mse_u:1.69 mse_v:2.43 psnr_avg:44.40 psnr_y:44.13 psnr_u:45.85 psnr_v:44.28 \nn:48 mse_avg:2.29 mse_y:2.40 mse_u:1.74 mse_v:2.41 psnr_avg:44.54 psnr_y:44.33 psnr_u:45.73 psnr_v:44.32 \nn:49 mse_avg:2.29 mse_y:2.41 mse_u:1.80 mse_v:2.35 psnr_avg:44.52 psnr_y:44.32 psnr_u:45.59 psnr_v:44.43 \nn:50 mse_avg:2.39 mse_y:2.52 mse_u:1.86 mse_v:2.41 psnr_avg:44.34 psnr_y:44.12 psnr_u:45.43 psnr_v:44.30 \nn:51 mse_avg:2.37 mse_y:2.52 mse_u:1.84 mse_v:2.30 psnr_avg:44.38 psnr_y:44.11 psnr_u:45.47 psnr_v:44.51 \nn:52 mse_avg:3.37 mse_y:3.99 mse_u:1.95 mse_v:2.31 psnr_avg:42.85 psnr_y:42.12 psnr_u:45.23 psnr_v:44.50 \nn:53 mse_avg:2.42 mse_y:2.48 mse_u:2.21 mse_v:2.41 psnr_avg:44.29 psnr_y:44.19 psnr_u:44.69 psnr_v:44.31 \nn:54 mse_avg:2.42 mse_y:2.49 mse_u:2.02 mse_v:2.50 psnr_avg:44.30 psnr_y:44.16 psnr_u:45.07 psnr_v:44.14 \nn:55 mse_avg:2.43 mse_y:2.56 mse_u:1.87 mse_v:2.48 psnr_avg:44.27 psnr_y:44.05 psnr_u:45.41 psnr_v:44.19 \nn:56 mse_avg:2.52 mse_y:2.69 mse_u:1.87 mse_v:2.50 psnr_avg:44.12 psnr_y:43.84 psnr_u:45.41 psnr_v:44.15 \nn:57 mse_avg:2.36 mse_y:2.47 mse_u:1.78 mse_v:2.49 psnr_avg:44.40 psnr_y:44.20 psnr_u:45.63 psnr_v:44.17 \nn:58 mse_avg:2.27 mse_y:2.32 mse_u:1.79 mse_v:2.54 psnr_avg:44.57 psnr_y:44.47 psnr_u:45.61 psnr_v:44.09 \nn:59 mse_avg:2.99 mse_y:3.40 mse_u:1.80 mse_v:2.52 psnr_avg:43.38 psnr_y:42.81 psnr_u:45.57 psnr_v:44.12 \nn:60 mse_avg:2.29 mse_y:2.37 mse_u:1.79 mse_v:2.44 psnr_avg:44.54 psnr_y:44.38 psnr_u:45.60 psnr_v:44.26 \n",
+        "stats_sha256": "FD88E2CBBD7A7467B25747CF617525267CE4F28526CCB3E439D59FC7F9511D3D",
+        "stats_frame_count": 60,
+        "stats_artifact_path": "psnr-q60.stats.txt",
+        "stderr_artifact_path": "psnr-q60.stderr.txt"
+      }
+    },
+    {
+      "tier": "standard",
+      "selected_tier": "standard",
+      "quality": 72,
+      "output": {
+        "path": "q72-standard.mp4",
+        "bytes": 2736706,
+        "sha256": "980BF7BB60A3186E9CD2DDF1E307E024B84B324C2AE0855E7272ADE27D827280"
+      },
+      "repeatability": {
+        "status": "byte_identical_on_same_runtime_and_os_identity",
+        "repeat_sha256": "980BF7BB60A3186E9CD2DDF1E307E024B84B324C2AE0855E7272ADE27D827280",
+        "repeat_bytes": 2736706,
+        "command_tokens": [
+          "{ffmpeg}",
+          "-hide_banner",
+          "-loglevel",
+          "info",
+          "-nostdin",
+          "-y",
+          "-f",
+          "rawvideo",
+          "-pixel_format",
+          "rgb24",
+          "-video_size",
+          "1080x1920",
+          "-framerate",
+          "30",
+          "-i",
+          "pipe:0",
+          "-an",
+          "-frames:v",
+          "60",
+          "-c:v",
+          "h264_mf",
+          "-rate_control",
+          "quality",
+          "-quality",
+          "72",
+          "-scenario",
+          "archive",
+          "-hw_encoding",
+          "0",
+          "-g",
+          "30",
+          "-keyint_min",
+          "30",
+          "-force_key_frames",
+          "expr:eq(mod(n,30),0)",
+          "-flags",
+          "+cgop",
+          "-bf",
+          "0",
+          "-pix_fmt",
+          "yuv420p",
+          "-r",
+          "30",
+          "-map_metadata",
+          "-1",
+          "-movflags",
+          "+faststart",
+          "repeat-q72-standard.mp4"
+        ],
+        "stderr_path": "repeat-q72.stderr.txt",
+        "stderr_sha256": "1C302EC913FE9FF271C329802B2351995965908B249636BDEA8178D7FAFC2782"
+      },
+      "encode": {
+        "command_tokens": [
+          "{ffmpeg}",
+          "-hide_banner",
+          "-loglevel",
+          "info",
+          "-nostdin",
+          "-y",
+          "-f",
+          "rawvideo",
+          "-pixel_format",
+          "rgb24",
+          "-video_size",
+          "1080x1920",
+          "-framerate",
+          "30",
+          "-i",
+          "pipe:0",
+          "-an",
+          "-frames:v",
+          "60",
+          "-c:v",
+          "h264_mf",
+          "-rate_control",
+          "quality",
+          "-quality",
+          "72",
+          "-scenario",
+          "archive",
+          "-hw_encoding",
+          "0",
+          "-g",
+          "30",
+          "-keyint_min",
+          "30",
+          "-force_key_frames",
+          "expr:eq(mod(n,30),0)",
+          "-flags",
+          "+cgop",
+          "-bf",
+          "0",
+          "-pix_fmt",
+          "yuv420p",
+          "-r",
+          "30",
+          "-map_metadata",
+          "-1",
+          "-movflags",
+          "+faststart",
+          "q72-standard.mp4"
+        ],
+        "exit_code": 0,
+        "raw_stderr": "Input #0, rawvideo, from 'pipe:0':\r\n  Duration: N/A, start: 0.000000, bitrate: 1492992 kb/s\r\n  Stream #0:0: Video: rawvideo (RGB[24] / 0x18424752), rgb24, 1080x1920, 1492992 kb/s, 30 tbr, 30 tbn\r\nStream mapping:\r\n  Stream #0:0 -> #0:0 (rawvideo (native) -> h264 (h264_mf))\r\n[h264_mf @ 000001CFC6D5B3C0] MFT name: 'H264 Encoder MFT'\r\nOutput #0, mp4, to 'q72-standard.mp4':\r\n  Metadata:\r\n    encoder         : Lavf63.5.101\r\n  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1080x1920, q=2-31, 200 kb/s, 30 fps, 15360 tbn\r\n    Metadata:\r\n      encoder         : Lavc63.7.100 h264_mf\r\n[mp4 @ 000001CFC6D57FC0] Starting second pass: moving the moov atom to the beginning of the file\r\n[out#0/mp4 @ 000001CFC6D6D800] video:2671KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.040686%\r\nframe=   60 fps=0.0 q=-0.0 Lsize=    2673KiB time=00:00:02.00 bitrate=10946.8kbits/s speed=5.81x elapsed=0:00:00.34    \r\n",
+        "stderr_sha256": "C26729C4BD349E729BAF4A314C31ACCF6E379454379CF08FBD74C30D3A96A578",
+        "stderr_path": "encode-q72.stderr.txt"
+      },
+      "probe": {
+        "command_tokens": [
+          "{ffprobe}",
+          "-v",
+          "error",
+          "-select_streams",
+          "v:0",
+          "-show_entries",
+          "stream=index,codec_name,codec_long_name,profile,pix_fmt,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,bit_rate:format=duration,size,bit_rate,format_name,format_long_name",
+          "-of",
+          "json",
+          "q72-standard.mp4"
+        ],
+        "exit_code": 0,
+        "raw_stdout": "{\n    \"programs\": [\n\n    ],\n    \"stream_groups\": [\n\n    ],\n    \"streams\": [\n        {\n            \"index\": 0,\n            \"codec_name\": \"h264\",\n            \"codec_long_name\": \"H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10\",\n            \"profile\": \"Constrained Baseline\",\n            \"width\": 1080,\n            \"height\": 1920,\n            \"pix_fmt\": \"yuv420p\",\n            \"r_frame_rate\": \"30/1\",\n            \"avg_frame_rate\": \"30/1\",\n            \"duration\": \"2.000000\",\n            \"bit_rate\": \"10942372\",\n            \"nb_frames\": \"60\"\n        }\n    ],\n    \"format\": {\n        \"format_name\": \"mov,mp4,m4a,3gp,3g2,mj2\",\n        \"format_long_name\": \"QuickTime / MOV\",\n        \"duration\": \"2.000000\",\n        \"size\": \"2736706\",\n        \"bit_rate\": \"10946824\"\n    }\n}\n",
+        "stdout_sha256": "C297A9D76F20CA46CF664C570DD7EAB25115AFEF5971694D432B1E0C0818E953",
+        "raw_json": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_long_name": "H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10",
+              "profile": "Constrained Baseline",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p",
+              "r_frame_rate": "30/1",
+              "avg_frame_rate": "30/1",
+              "duration": "2.000000",
+              "bit_rate": "10942372",
+              "nb_frames": "60"
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "format_long_name": "QuickTime / MOV",
+            "duration": "2.000000",
+            "size": "2736706",
+            "bit_rate": "10946824"
+          }
+        },
+        "artifact_path": "probe-q72.json"
+      },
+      "keyframes": {
+        "command_tokens": [
+          "{ffprobe}",
+          "-v",
+          "error",
+          "-select_streams",
+          "v:0",
+          "-skip_frame",
+          "nokey",
+          "-show_frames",
+          "-show_entries",
+          "frame=key_frame,pict_type,pts,pts_time,best_effort_timestamp,best_effort_timestamp_time,pkt_dts,pkt_dts_time",
+          "-of",
+          "json",
+          "q72-standard.mp4"
+        ],
+        "exit_code": 0,
+        "raw_stdout": "{\n    \"frames\": [\n        {\n            \"key_frame\": 1,\n            \"pts\": 0,\n            \"pts_time\": \"0.000000\",\n            \"pkt_dts\": 0,\n            \"pkt_dts_time\": \"0.000000\",\n            \"best_effort_timestamp\": 0,\n            \"best_effort_timestamp_time\": \"0.000000\",\n            \"pict_type\": \"I\",\n            \"side_data_list\": [\n                {\n                    \"side_data_type\": \"H.26[45] User Data Unregistered SEI message\"\n                },\n                {\n                    \"side_data_type\": \"H.26[45] User Data Unregistered SEI message\"\n                }\n            ]\n        },\n        {\n            \"key_frame\": 1,\n            \"pts\": 15360,\n            \"pts_time\": \"1.000000\",\n            \"pkt_dts\": 15360,\n            \"pkt_dts_time\": \"1.000000\",\n            \"best_effort_timestamp\": 15360,\n            \"best_effort_timestamp_time\": \"1.000000\",\n            \"pict_type\": \"I\"\n        }\n    ]\n}\n",
+        "stdout_sha256": "D83AEC185B211B09A401B5B1F4AD198532DBD5B5F0E72F5788997D4B6CA4756E",
+        "raw_json": {
+          "frames": [
+            {
+              "key_frame": 1,
+              "pts": 0,
+              "pts_time": "0.000000",
+              "pkt_dts": 0,
+              "pkt_dts_time": "0.000000",
+              "best_effort_timestamp": 0,
+              "best_effort_timestamp_time": "0.000000",
+              "pict_type": "I",
+              "side_data_list": [
+                {
+                  "side_data_type": "H.26[45] User Data Unregistered SEI message"
+                },
+                {
+                  "side_data_type": "H.26[45] User Data Unregistered SEI message"
+                }
+              ]
+            },
+            {
+              "key_frame": 1,
+              "pts": 15360,
+              "pts_time": "1.000000",
+              "pkt_dts": 15360,
+              "pkt_dts_time": "1.000000",
+              "best_effort_timestamp": 15360,
+              "best_effort_timestamp_time": "1.000000",
+              "pict_type": "I"
+            }
+          ]
+        },
+        "count": 2,
+        "artifact_path": "keyframes-q72.json"
+      },
+      "psnr": {
+        "command_tokens": [
+          "{ffmpeg}",
+          "-hide_banner",
+          "-loglevel",
+          "info",
+          "-nostdin",
+          "-y",
+          "-i",
+          "q72-standard.mp4",
+          "-f",
+          "rawvideo",
+          "-pixel_format",
+          "rgb24",
+          "-video_size",
+          "1080x1920",
+          "-framerate",
+          "30",
+          "-i",
+          "pipe:0",
+          "-lavfi",
+          "[0:v]setpts=PTS-STARTPTS,format=yuv420p[dist];[1:v]setpts=PTS-STARTPTS,format=yuv420p[ref];[dist][ref]psnr=stats_file=psnr-q72.stats.txt",
+          "-frames:v",
+          "60",
+          "-f",
+          "null",
+          "{null_device}"
+        ],
+        "exit_code": 0,
+        "raw_stderr": "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'q72-standard.mp4':\r\n  Metadata:\r\n    major_brand     : isom\r\n    minor_version   : 512\r\n    compatible_brands: isomiso2avc1mp41\r\n    encoder         : Lavf63.5.101\r\n  Duration: 00:00:02.00, start: 0.000000, bitrate: 10946 kb/s\r\n  Stream #0:0[0x1](und): Video: h264 (Constrained Baseline) (avc1 / 0x31637661), yuv420p(progressive), 1080x1920, 10942 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\r\n    Metadata:\r\n      handler_name    : VideoHandler\r\n      encoder         : Lavc63.7.100 h264_mf\r\nInput #1, rawvideo, from 'pipe:0':\r\n  Duration: N/A, start: 0.000000, bitrate: 1492992 kb/s\r\n  Stream #1:0: Video: rawvideo (RGB[24] / 0x18424752), rgb24, 1080x1920, 1492992 kb/s, 30 tbr, 30 tbn\r\nStream mapping:\r\n  Stream #0:0 (h264) -> setpts:default\r\n  Stream #1:0 (rawvideo) -> setpts:default\r\n  psnr:default -> Stream #0:0 (wrapped_avframe)\r\n[Parsed_psnr_4 @ 000001DC7DBD4F40] not matching timebases found between first input: 1/15360 and second input 1/30, results may be incorrect!\r\nOutput #0, null, to 'nul':\r\n  Metadata:\r\n    encoder         : Lavf63.5.101\r\n  Stream #0:0: Video: wrapped_avframe, yuv420p(progressive), 1080x1920, q=2-31, 200 kb/s, 30 fps, 30 tbn\r\n    Metadata:\r\n      encoder         : Lavc63.7.100 wrapped_avframe\r\n[Parsed_psnr_4 @ 000001DC7DBD4F40] PSNR y:45.637109 u:47.377283 v:46.427003 average:46.012185 min:43.646160 max:47.279190\r\n[out#0/null @ 000001DC7DBD3300] video:25KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown\r\nframe=   60 fps=0.0 q=-0.0 Lsize=N/A time=00:00:02.00 bitrate=N/A speed=9.86x elapsed=0:00:00.20    \r\n",
+        "stderr_sha256": "4CE547533C855C23EEC4B4076AD5ECDCC1AE3E3B2A235119F6ED608FFDE3D3FA",
+        "summary": {
+          "y": 45.637109,
+          "u": 47.377283,
+          "v": 46.427003,
+          "average": 46.012185,
+          "minimum": 43.64616,
+          "maximum": 47.27919
+        },
+        "raw_stats": "n:1 mse_avg:1.43 mse_y:1.57 mse_u:1.07 mse_v:1.20 psnr_avg:46.59 psnr_y:46.16 psnr_u:47.86 psnr_v:47.34 \nn:2 mse_avg:1.22 mse_y:1.16 mse_u:1.23 mse_v:1.42 psnr_avg:47.28 psnr_y:47.48 psnr_u:47.23 psnr_v:46.62 \nn:3 mse_avg:1.43 mse_y:1.49 mse_u:1.20 mse_v:1.41 psnr_avg:46.59 psnr_y:46.40 psnr_u:47.35 psnr_v:46.65 \nn:4 mse_avg:2.81 mse_y:3.56 mse_u:1.20 mse_v:1.40 psnr_avg:43.65 psnr_y:42.61 psnr_u:47.35 psnr_v:46.67 \nn:5 mse_avg:1.52 mse_y:1.63 mse_u:1.15 mse_v:1.47 psnr_avg:46.30 psnr_y:46.01 psnr_u:47.52 psnr_v:46.47 \nn:6 mse_avg:1.58 mse_y:1.69 mse_u:1.16 mse_v:1.53 psnr_avg:46.15 psnr_y:45.84 psnr_u:47.49 psnr_v:46.29 \nn:7 mse_avg:1.62 mse_y:1.76 mse_u:1.17 mse_v:1.52 psnr_avg:46.04 psnr_y:45.68 psnr_u:47.46 psnr_v:46.31 \nn:8 mse_avg:1.88 mse_y:2.14 mse_u:1.19 mse_v:1.53 psnr_avg:45.38 psnr_y:44.82 psnr_u:47.37 psnr_v:46.28 \nn:9 mse_avg:1.92 mse_y:2.20 mse_u:1.22 mse_v:1.48 psnr_avg:45.31 psnr_y:44.71 psnr_u:47.27 psnr_v:46.42 \nn:10 mse_avg:1.61 mse_y:1.73 mse_u:1.22 mse_v:1.52 psnr_avg:46.06 psnr_y:45.74 psnr_u:47.27 psnr_v:46.31 \nn:11 mse_avg:2.52 mse_y:3.09 mse_u:1.25 mse_v:1.48 psnr_avg:44.12 psnr_y:43.23 psnr_u:47.14 psnr_v:46.42 \nn:12 mse_avg:1.74 mse_y:1.94 mse_u:1.27 mse_v:1.44 psnr_avg:45.72 psnr_y:45.26 psnr_u:47.08 psnr_v:46.55 \nn:13 mse_avg:1.64 mse_y:1.75 mse_u:1.36 mse_v:1.52 psnr_avg:45.97 psnr_y:45.70 psnr_u:46.80 psnr_v:46.32 \nn:14 mse_avg:1.74 mse_y:1.85 mse_u:1.47 mse_v:1.57 psnr_avg:45.73 psnr_y:45.46 psnr_u:46.46 psnr_v:46.18 \nn:15 mse_avg:1.36 mse_y:1.34 mse_u:1.29 mse_v:1.51 psnr_avg:46.79 psnr_y:46.86 psnr_u:47.01 psnr_v:46.33 \nn:16 mse_avg:1.69 mse_y:1.84 mse_u:1.22 mse_v:1.58 psnr_avg:45.84 psnr_y:45.48 psnr_u:47.26 psnr_v:46.15 \nn:17 mse_avg:1.30 mse_y:1.26 mse_u:1.21 mse_v:1.56 psnr_avg:46.98 psnr_y:47.12 psnr_u:47.31 psnr_v:46.21 \nn:18 mse_avg:1.49 mse_y:1.54 mse_u:1.22 mse_v:1.56 psnr_avg:46.40 psnr_y:46.25 psnr_u:47.28 psnr_v:46.20 \nn:19 mse_avg:1.57 mse_y:1.68 mse_u:1.17 mse_v:1.54 psnr_avg:46.17 psnr_y:45.88 psnr_u:47.44 psnr_v:46.24 \nn:20 mse_avg:2.55 mse_y:3.15 mse_u:1.18 mse_v:1.48 psnr_avg:44.07 psnr_y:43.14 psnr_u:47.42 psnr_v:46.42 \nn:21 mse_avg:1.59 mse_y:1.70 mse_u:1.18 mse_v:1.55 psnr_avg:46.12 psnr_y:45.83 psnr_u:47.41 psnr_v:46.21 \nn:22 mse_avg:1.64 mse_y:1.77 mse_u:1.18 mse_v:1.59 psnr_avg:45.97 psnr_y:45.64 psnr_u:47.43 psnr_v:46.12 \nn:23 mse_avg:1.66 mse_y:1.81 mse_u:1.17 mse_v:1.55 psnr_avg:45.93 psnr_y:45.56 psnr_u:47.43 psnr_v:46.23 \nn:24 mse_avg:1.83 mse_y:2.05 mse_u:1.24 mse_v:1.54 psnr_avg:45.51 psnr_y:45.02 psnr_u:47.21 psnr_v:46.24 \nn:25 mse_avg:1.82 mse_y:2.03 mse_u:1.25 mse_v:1.53 psnr_avg:45.54 psnr_y:45.06 psnr_u:47.16 psnr_v:46.28 \nn:26 mse_avg:1.60 mse_y:1.72 mse_u:1.23 mse_v:1.48 psnr_avg:46.10 psnr_y:45.78 psnr_u:47.22 psnr_v:46.44 \nn:27 mse_avg:2.00 mse_y:2.31 mse_u:1.32 mse_v:1.40 psnr_avg:45.13 psnr_y:44.49 psnr_u:46.93 psnr_v:46.67 \nn:28 mse_avg:1.65 mse_y:1.82 mse_u:1.20 mse_v:1.39 psnr_avg:45.96 psnr_y:45.52 psnr_u:47.33 psnr_v:46.70 \nn:29 mse_avg:1.32 mse_y:1.33 mse_u:1.18 mse_v:1.44 psnr_avg:46.91 psnr_y:46.89 psnr_u:47.43 psnr_v:46.54 \nn:30 mse_avg:1.39 mse_y:1.42 mse_u:1.15 mse_v:1.51 psnr_avg:46.70 psnr_y:46.60 psnr_u:47.52 psnr_v:46.34 \nn:31 mse_avg:1.36 mse_y:1.53 mse_u:0.88 mse_v:1.14 psnr_avg:46.80 psnr_y:46.28 psnr_u:48.67 psnr_v:47.55 \nn:32 mse_avg:1.25 mse_y:1.30 mse_u:0.98 mse_v:1.32 psnr_avg:47.15 psnr_y:46.98 psnr_u:48.21 psnr_v:46.93 \nn:33 mse_avg:1.45 mse_y:1.64 mse_u:0.91 mse_v:1.24 psnr_avg:46.52 psnr_y:45.99 psnr_u:48.55 psnr_v:47.20 \nn:34 mse_avg:1.52 mse_y:1.70 mse_u:0.95 mse_v:1.33 psnr_avg:46.32 psnr_y:45.82 psnr_u:48.34 psnr_v:46.88 \nn:35 mse_avg:1.57 mse_y:1.80 mse_u:0.98 mse_v:1.25 psnr_avg:46.18 psnr_y:45.59 psnr_u:48.23 psnr_v:47.16 \nn:36 mse_avg:2.18 mse_y:2.70 mse_u:1.03 mse_v:1.28 psnr_avg:44.74 psnr_y:43.82 psnr_u:48.02 psnr_v:47.05 \nn:37 mse_avg:1.48 mse_y:1.59 mse_u:1.12 mse_v:1.39 psnr_avg:46.44 psnr_y:46.13 psnr_u:47.65 psnr_v:46.70 \nn:38 mse_avg:1.51 mse_y:1.60 mse_u:1.13 mse_v:1.52 psnr_avg:46.34 psnr_y:46.09 psnr_u:47.60 psnr_v:46.33 \nn:39 mse_avg:1.58 mse_y:1.70 mse_u:1.20 mse_v:1.48 psnr_avg:46.14 psnr_y:45.83 psnr_u:47.33 psnr_v:46.42 \nn:40 mse_avg:1.78 mse_y:1.99 mse_u:1.29 mse_v:1.45 psnr_avg:45.62 psnr_y:45.14 psnr_u:47.01 psnr_v:46.51 \nn:41 mse_avg:1.68 mse_y:1.87 mse_u:1.19 mse_v:1.44 psnr_avg:45.87 psnr_y:45.42 psnr_u:47.37 psnr_v:46.56 \nn:42 mse_avg:1.58 mse_y:1.70 mse_u:1.20 mse_v:1.47 psnr_avg:46.14 psnr_y:45.82 psnr_u:47.34 psnr_v:46.46 \nn:43 mse_avg:2.25 mse_y:2.74 mse_u:1.15 mse_v:1.41 psnr_avg:44.60 psnr_y:43.75 psnr_u:47.52 psnr_v:46.65 \nn:44 mse_avg:1.42 mse_y:1.46 mse_u:1.18 mse_v:1.47 psnr_avg:46.62 psnr_y:46.48 psnr_u:47.42 psnr_v:46.47 \nn:45 mse_avg:1.28 mse_y:1.27 mse_u:1.12 mse_v:1.50 psnr_avg:47.05 psnr_y:47.10 psnr_u:47.64 psnr_v:46.38 \nn:46 mse_avg:1.32 mse_y:1.31 mse_u:1.14 mse_v:1.55 psnr_avg:46.92 psnr_y:46.97 psnr_u:47.54 psnr_v:46.22 \nn:47 mse_avg:1.34 mse_y:1.34 mse_u:1.14 mse_v:1.57 psnr_avg:46.86 psnr_y:46.87 psnr_u:47.58 psnr_v:46.17 \nn:48 mse_avg:1.37 mse_y:1.36 mse_u:1.19 mse_v:1.59 psnr_avg:46.77 psnr_y:46.80 psnr_u:47.36 psnr_v:46.12 \nn:49 mse_avg:1.28 mse_y:1.24 mse_u:1.20 mse_v:1.54 psnr_avg:47.04 psnr_y:47.19 psnr_u:47.33 psnr_v:46.24 \nn:50 mse_avg:1.36 mse_y:1.33 mse_u:1.25 mse_v:1.57 psnr_avg:46.79 psnr_y:46.88 psnr_u:47.17 psnr_v:46.16 \nn:51 mse_avg:1.36 mse_y:1.35 mse_u:1.26 mse_v:1.50 psnr_avg:46.79 psnr_y:46.83 psnr_u:47.12 psnr_v:46.37 \nn:52 mse_avg:2.56 mse_y:3.14 mse_u:1.29 mse_v:1.51 psnr_avg:44.05 psnr_y:43.16 psnr_u:47.02 psnr_v:46.35 \nn:53 mse_avg:1.33 mse_y:1.28 mse_u:1.35 mse_v:1.49 psnr_avg:46.90 psnr_y:47.05 psnr_u:46.83 psnr_v:46.39 \nn:54 mse_avg:1.37 mse_y:1.32 mse_u:1.34 mse_v:1.62 psnr_avg:46.75 psnr_y:46.92 psnr_u:46.85 psnr_v:46.05 \nn:55 mse_avg:1.37 mse_y:1.34 mse_u:1.25 mse_v:1.57 psnr_avg:46.78 psnr_y:46.85 psnr_u:47.18 psnr_v:46.16 \nn:56 mse_avg:1.63 mse_y:1.72 mse_u:1.26 mse_v:1.63 psnr_avg:46.02 psnr_y:45.79 psnr_u:47.14 psnr_v:46.00 \nn:57 mse_avg:1.33 mse_y:1.31 mse_u:1.20 mse_v:1.58 psnr_avg:46.88 psnr_y:46.97 psnr_u:47.33 psnr_v:46.16 \nn:58 mse_avg:1.37 mse_y:1.35 mse_u:1.20 mse_v:1.61 psnr_avg:46.78 psnr_y:46.84 psnr_u:47.33 psnr_v:46.07 \nn:59 mse_avg:2.29 mse_y:2.74 mse_u:1.23 mse_v:1.58 psnr_avg:44.52 psnr_y:43.76 psnr_u:47.23 psnr_v:46.13 \nn:60 mse_avg:1.44 mse_y:1.48 mse_u:1.21 mse_v:1.52 psnr_avg:46.54 psnr_y:46.43 psnr_u:47.32 psnr_v:46.30 \n",
+        "stats_sha256": "8878D483F1731DB71DB3A739D7ED06A0A4E2F686FD772824CADE64EA2A3F17C3",
+        "stats_frame_count": 60,
+        "stats_artifact_path": "psnr-q72.stats.txt",
+        "stderr_artifact_path": "psnr-q72.stderr.txt"
+      }
+    },
+    {
+      "tier": "high",
+      "selected_tier": "high",
+      "quality": 80,
+      "output": {
+        "path": "q80-high.mp4",
+        "bytes": 3167795,
+        "sha256": "20FC3DC197B24E12724EA5E66BE9E050A0F0479EB9DCC162111B4D1F23CD5A0E"
+      },
+      "repeatability": {
+        "status": "byte_identical_on_same_runtime_and_os_identity",
+        "repeat_sha256": "20FC3DC197B24E12724EA5E66BE9E050A0F0479EB9DCC162111B4D1F23CD5A0E",
+        "repeat_bytes": 3167795,
+        "command_tokens": [
+          "{ffmpeg}",
+          "-hide_banner",
+          "-loglevel",
+          "info",
+          "-nostdin",
+          "-y",
+          "-f",
+          "rawvideo",
+          "-pixel_format",
+          "rgb24",
+          "-video_size",
+          "1080x1920",
+          "-framerate",
+          "30",
+          "-i",
+          "pipe:0",
+          "-an",
+          "-frames:v",
+          "60",
+          "-c:v",
+          "h264_mf",
+          "-rate_control",
+          "quality",
+          "-quality",
+          "80",
+          "-scenario",
+          "archive",
+          "-hw_encoding",
+          "0",
+          "-g",
+          "30",
+          "-keyint_min",
+          "30",
+          "-force_key_frames",
+          "expr:eq(mod(n,30),0)",
+          "-flags",
+          "+cgop",
+          "-bf",
+          "0",
+          "-pix_fmt",
+          "yuv420p",
+          "-r",
+          "30",
+          "-map_metadata",
+          "-1",
+          "-movflags",
+          "+faststart",
+          "repeat-q80-high.mp4"
+        ],
+        "stderr_path": "repeat-q80.stderr.txt",
+        "stderr_sha256": "B0C96CA8FAB8B78745F2DC7D33E20630A92D19453D1AD6662973BD166958E263"
+      },
+      "encode": {
+        "command_tokens": [
+          "{ffmpeg}",
+          "-hide_banner",
+          "-loglevel",
+          "info",
+          "-nostdin",
+          "-y",
+          "-f",
+          "rawvideo",
+          "-pixel_format",
+          "rgb24",
+          "-video_size",
+          "1080x1920",
+          "-framerate",
+          "30",
+          "-i",
+          "pipe:0",
+          "-an",
+          "-frames:v",
+          "60",
+          "-c:v",
+          "h264_mf",
+          "-rate_control",
+          "quality",
+          "-quality",
+          "80",
+          "-scenario",
+          "archive",
+          "-hw_encoding",
+          "0",
+          "-g",
+          "30",
+          "-keyint_min",
+          "30",
+          "-force_key_frames",
+          "expr:eq(mod(n,30),0)",
+          "-flags",
+          "+cgop",
+          "-bf",
+          "0",
+          "-pix_fmt",
+          "yuv420p",
+          "-r",
+          "30",
+          "-map_metadata",
+          "-1",
+          "-movflags",
+          "+faststart",
+          "q80-high.mp4"
+        ],
+        "exit_code": 0,
+        "raw_stderr": "Input #0, rawvideo, from 'pipe:0':\r\n  Duration: N/A, start: 0.000000, bitrate: 1492992 kb/s\r\n  Stream #0:0: Video: rawvideo (RGB[24] / 0x18424752), rgb24, 1080x1920, 1492992 kb/s, 30 tbr, 30 tbn\r\nStream mapping:\r\n  Stream #0:0 -> #0:0 (rawvideo (native) -> h264 (h264_mf))\r\n[h264_mf @ 0000022681E3F080] MFT name: 'H264 Encoder MFT'\r\nOutput #0, mp4, to 'q80-high.mp4':\r\n  Metadata:\r\n    encoder         : Lavf63.5.101\r\n  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1080x1920, q=2-31, 200 kb/s, 30 fps, 15360 tbn\r\n    Metadata:\r\n      encoder         : Lavc63.7.100 h264_mf\r\n[mp4 @ 0000022681E3B0C0] Starting second pass: moving the moov atom to the beginning of the file\r\n[out#0/mp4 @ 0000022681E0FC40] video:3092KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.035274%\r\nframe=   60 fps=0.0 q=-0.0 Lsize=    3094KiB time=00:00:02.00 bitrate=12671.2kbits/s speed=5.76x elapsed=0:00:00.34    \r\n",
+        "stderr_sha256": "BE6CF4F8EF49CE43D2C4D0AF4AF96F557661559DCF49D4BB9B7BCBD2555D1F49",
+        "stderr_path": "encode-q80.stderr.txt"
+      },
+      "probe": {
+        "command_tokens": [
+          "{ffprobe}",
+          "-v",
+          "error",
+          "-select_streams",
+          "v:0",
+          "-show_entries",
+          "stream=index,codec_name,codec_long_name,profile,pix_fmt,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,bit_rate:format=duration,size,bit_rate,format_name,format_long_name",
+          "-of",
+          "json",
+          "q80-high.mp4"
+        ],
+        "exit_code": 0,
+        "raw_stdout": "{\n    \"programs\": [\n\n    ],\n    \"stream_groups\": [\n\n    ],\n    \"streams\": [\n        {\n            \"index\": 0,\n            \"codec_name\": \"h264\",\n            \"codec_long_name\": \"H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10\",\n            \"profile\": \"Constrained Baseline\",\n            \"width\": 1080,\n            \"height\": 1920,\n            \"pix_fmt\": \"yuv420p\",\n            \"r_frame_rate\": \"30/1\",\n            \"avg_frame_rate\": \"30/1\",\n            \"duration\": \"2.000000\",\n            \"bit_rate\": \"12666712\",\n            \"nb_frames\": \"60\"\n        }\n    ],\n    \"format\": {\n        \"format_name\": \"mov,mp4,m4a,3gp,3g2,mj2\",\n        \"format_long_name\": \"QuickTime / MOV\",\n        \"duration\": \"2.000000\",\n        \"size\": \"3167795\",\n        \"bit_rate\": \"12671180\"\n    }\n}\n",
+        "stdout_sha256": "2E31431639A6284F9663732EF844D4DFEAF828CA03DB301B533552E9FC658114",
+        "raw_json": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_long_name": "H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10",
+              "profile": "Constrained Baseline",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p",
+              "r_frame_rate": "30/1",
+              "avg_frame_rate": "30/1",
+              "duration": "2.000000",
+              "bit_rate": "12666712",
+              "nb_frames": "60"
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "format_long_name": "QuickTime / MOV",
+            "duration": "2.000000",
+            "size": "3167795",
+            "bit_rate": "12671180"
+          }
+        },
+        "artifact_path": "probe-q80.json"
+      },
+      "keyframes": {
+        "command_tokens": [
+          "{ffprobe}",
+          "-v",
+          "error",
+          "-select_streams",
+          "v:0",
+          "-skip_frame",
+          "nokey",
+          "-show_frames",
+          "-show_entries",
+          "frame=key_frame,pict_type,pts,pts_time,best_effort_timestamp,best_effort_timestamp_time,pkt_dts,pkt_dts_time",
+          "-of",
+          "json",
+          "q80-high.mp4"
+        ],
+        "exit_code": 0,
+        "raw_stdout": "{\n    \"frames\": [\n        {\n            \"key_frame\": 1,\n            \"pts\": 0,\n            \"pts_time\": \"0.000000\",\n            \"pkt_dts\": 0,\n            \"pkt_dts_time\": \"0.000000\",\n            \"best_effort_timestamp\": 0,\n            \"best_effort_timestamp_time\": \"0.000000\",\n            \"pict_type\": \"I\",\n            \"side_data_list\": [\n                {\n                    \"side_data_type\": \"H.26[45] User Data Unregistered SEI message\"\n                },\n                {\n                    \"side_data_type\": \"H.26[45] User Data Unregistered SEI message\"\n                }\n            ]\n        },\n        {\n            \"key_frame\": 1,\n            \"pts\": 15360,\n            \"pts_time\": \"1.000000\",\n            \"pkt_dts\": 15360,\n            \"pkt_dts_time\": \"1.000000\",\n            \"best_effort_timestamp\": 15360,\n            \"best_effort_timestamp_time\": \"1.000000\",\n            \"pict_type\": \"I\"\n        }\n    ]\n}\n",
+        "stdout_sha256": "D83AEC185B211B09A401B5B1F4AD198532DBD5B5F0E72F5788997D4B6CA4756E",
+        "raw_json": {
+          "frames": [
+            {
+              "key_frame": 1,
+              "pts": 0,
+              "pts_time": "0.000000",
+              "pkt_dts": 0,
+              "pkt_dts_time": "0.000000",
+              "best_effort_timestamp": 0,
+              "best_effort_timestamp_time": "0.000000",
+              "pict_type": "I",
+              "side_data_list": [
+                {
+                  "side_data_type": "H.26[45] User Data Unregistered SEI message"
+                },
+                {
+                  "side_data_type": "H.26[45] User Data Unregistered SEI message"
+                }
+              ]
+            },
+            {
+              "key_frame": 1,
+              "pts": 15360,
+              "pts_time": "1.000000",
+              "pkt_dts": 15360,
+              "pkt_dts_time": "1.000000",
+              "best_effort_timestamp": 15360,
+              "best_effort_timestamp_time": "1.000000",
+              "pict_type": "I"
+            }
+          ]
+        },
+        "count": 2,
+        "artifact_path": "keyframes-q80.json"
+      },
+      "psnr": {
+        "command_tokens": [
+          "{ffmpeg}",
+          "-hide_banner",
+          "-loglevel",
+          "info",
+          "-nostdin",
+          "-y",
+          "-i",
+          "q80-high.mp4",
+          "-f",
+          "rawvideo",
+          "-pixel_format",
+          "rgb24",
+          "-video_size",
+          "1080x1920",
+          "-framerate",
+          "30",
+          "-i",
+          "pipe:0",
+          "-lavfi",
+          "[0:v]setpts=PTS-STARTPTS,format=yuv420p[dist];[1:v]setpts=PTS-STARTPTS,format=yuv420p[ref];[dist][ref]psnr=stats_file=psnr-q80.stats.txt",
+          "-frames:v",
+          "60",
+          "-f",
+          "null",
+          "{null_device}"
+        ],
+        "exit_code": 0,
+        "raw_stderr": "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'q80-high.mp4':\r\n  Metadata:\r\n    major_brand     : isom\r\n    minor_version   : 512\r\n    compatible_brands: isomiso2avc1mp41\r\n    encoder         : Lavf63.5.101\r\n  Duration: 00:00:02.00, start: 0.000000, bitrate: 12671 kb/s\r\n  Stream #0:0[0x1](und): Video: h264 (Constrained Baseline) (avc1 / 0x31637661), yuv420p(progressive), 1080x1920, 12666 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\r\n    Metadata:\r\n      handler_name    : VideoHandler\r\n      encoder         : Lavc63.7.100 h264_mf\r\nInput #1, rawvideo, from 'pipe:0':\r\n  Duration: N/A, start: 0.000000, bitrate: 1492992 kb/s\r\n  Stream #1:0: Video: rawvideo (RGB[24] / 0x18424752), rgb24, 1080x1920, 1492992 kb/s, 30 tbr, 30 tbn\r\nStream mapping:\r\n  Stream #0:0 (h264) -> setpts:default\r\n  Stream #1:0 (rawvideo) -> setpts:default\r\n  psnr:default -> Stream #0:0 (wrapped_avframe)\r\n[Parsed_psnr_4 @ 00000280DE156300] not matching timebases found between first input: 1/15360 and second input 1/30, results may be incorrect!\r\nOutput #0, null, to 'nul':\r\n  Metadata:\r\n    encoder         : Lavf63.5.101\r\n  Stream #0:0: Video: wrapped_avframe, yuv420p(progressive), 1080x1920, q=2-31, 200 kb/s, 30 fps, 30 tbn\r\n    Metadata:\r\n      encoder         : Lavc63.7.100 wrapped_avframe\r\n[Parsed_psnr_4 @ 00000280DE156300] PSNR y:47.610691 u:48.565353 v:47.840476 average:47.794672 min:44.953749 max:49.268804\r\n[out#0/null @ 00000280DE171140] video:25KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown\r\nframe=   60 fps=0.0 q=-0.0 Lsize=N/A time=00:00:02.00 bitrate=N/A speed=9.27x elapsed=0:00:00.21    \r\n",
+        "stderr_sha256": "8B00AFCF80F5B692E0CCDE5AEF23883853FF85E8061CB59ACE5A966B0BC1A620",
+        "summary": {
+          "y": 47.610691,
+          "u": 48.565353,
+          "v": 47.840476,
+          "average": 47.794672,
+          "minimum": 44.953749,
+          "maximum": 49.268804
+        },
+        "raw_stats": "n:1 mse_avg:0.77 mse_y:0.75 mse_u:0.77 mse_v:0.85 psnr_avg:49.27 psnr_y:49.39 psnr_u:49.26 psnr_v:48.82 \nn:2 mse_avg:0.84 mse_y:0.78 mse_u:0.91 mse_v:1.00 psnr_avg:48.88 psnr_y:49.19 psnr_u:48.56 psnr_v:48.13 \nn:3 mse_avg:0.90 mse_y:0.88 mse_u:0.87 mse_v:0.99 psnr_avg:48.61 psnr_y:48.69 psnr_u:48.73 psnr_v:48.18 \nn:4 mse_avg:2.08 mse_y:2.65 mse_u:0.89 mse_v:1.00 psnr_avg:44.95 psnr_y:43.91 psnr_u:48.64 psnr_v:48.14 \nn:5 mse_avg:0.89 mse_y:0.85 mse_u:0.87 mse_v:1.05 psnr_avg:48.64 psnr_y:48.82 psnr_u:48.75 psnr_v:47.90 \nn:6 mse_avg:0.89 mse_y:0.83 mse_u:0.90 mse_v:1.13 psnr_avg:48.62 psnr_y:48.92 psnr_u:48.58 psnr_v:47.61 \nn:7 mse_avg:0.91 mse_y:0.86 mse_u:0.90 mse_v:1.10 psnr_avg:48.56 psnr_y:48.78 psnr_u:48.61 psnr_v:47.73 \nn:8 mse_avg:1.17 mse_y:1.26 mse_u:0.87 mse_v:1.07 psnr_avg:47.46 psnr_y:47.12 psnr_u:48.71 psnr_v:47.82 \nn:9 mse_avg:1.19 mse_y:1.29 mse_u:0.88 mse_v:1.07 psnr_avg:47.38 psnr_y:47.01 psnr_u:48.67 psnr_v:47.85 \nn:10 mse_avg:0.92 mse_y:0.87 mse_u:0.91 mse_v:1.09 psnr_avg:48.51 psnr_y:48.72 psnr_u:48.55 psnr_v:47.74 \nn:11 mse_avg:1.76 mse_y:2.14 mse_u:0.94 mse_v:1.09 psnr_avg:45.67 psnr_y:44.83 psnr_u:48.41 psnr_v:47.75 \nn:12 mse_avg:1.04 mse_y:1.06 mse_u:0.96 mse_v:1.08 psnr_avg:47.94 psnr_y:47.90 psnr_u:48.30 psnr_v:47.79 \nn:13 mse_avg:0.97 mse_y:0.91 mse_u:1.04 mse_v:1.13 psnr_avg:48.28 psnr_y:48.56 psnr_u:47.95 psnr_v:47.60 \nn:14 mse_avg:1.00 mse_y:0.94 mse_u:1.11 mse_v:1.14 psnr_avg:48.11 psnr_y:48.38 psnr_u:47.70 psnr_v:47.56 \nn:15 mse_avg:0.97 mse_y:0.91 mse_u:1.01 mse_v:1.16 psnr_avg:48.27 psnr_y:48.53 psnr_u:48.08 psnr_v:47.50 \nn:16 mse_avg:1.03 mse_y:1.03 mse_u:0.93 mse_v:1.16 psnr_avg:47.98 psnr_y:48.01 psnr_u:48.44 psnr_v:47.47 \nn:17 mse_avg:0.93 mse_y:0.89 mse_u:0.89 mse_v:1.14 psnr_avg:48.44 psnr_y:48.65 psnr_u:48.62 psnr_v:47.55 \nn:18 mse_avg:0.98 mse_y:0.95 mse_u:0.92 mse_v:1.16 psnr_avg:48.21 psnr_y:48.35 psnr_u:48.49 psnr_v:47.47 \nn:19 mse_avg:1.00 mse_y:0.99 mse_u:0.90 mse_v:1.12 psnr_avg:48.15 psnr_y:48.18 psnr_u:48.60 psnr_v:47.63 \nn:20 mse_avg:1.66 mse_y:2.00 mse_u:0.89 mse_v:1.08 psnr_avg:45.92 psnr_y:45.11 psnr_u:48.65 psnr_v:47.81 \nn:21 mse_avg:0.96 mse_y:0.93 mse_u:0.87 mse_v:1.13 psnr_avg:48.33 psnr_y:48.43 psnr_u:48.72 psnr_v:47.61 \nn:22 mse_avg:0.98 mse_y:0.95 mse_u:0.90 mse_v:1.19 psnr_avg:48.20 psnr_y:48.34 psnr_u:48.58 psnr_v:47.38 \nn:23 mse_avg:1.01 mse_y:1.00 mse_u:0.90 mse_v:1.16 psnr_avg:48.09 psnr_y:48.14 psnr_u:48.57 psnr_v:47.47 \nn:24 mse_avg:1.30 mse_y:1.43 mse_u:0.93 mse_v:1.17 psnr_avg:46.99 psnr_y:46.59 psnr_u:48.45 psnr_v:47.45 \nn:25 mse_avg:1.21 mse_y:1.30 mse_u:0.94 mse_v:1.13 psnr_avg:47.30 psnr_y:47.00 psnr_u:48.38 psnr_v:47.62 \nn:26 mse_avg:1.01 mse_y:1.01 mse_u:0.94 mse_v:1.10 psnr_avg:48.08 psnr_y:48.10 psnr_u:48.40 psnr_v:47.70 \nn:27 mse_avg:1.24 mse_y:1.35 mse_u:1.00 mse_v:1.04 psnr_avg:47.21 psnr_y:46.84 psnr_u:48.13 psnr_v:47.97 \nn:28 mse_avg:1.03 mse_y:1.07 mse_u:0.90 mse_v:1.02 psnr_avg:47.99 psnr_y:47.84 psnr_u:48.60 psnr_v:48.04 \nn:29 mse_avg:0.96 mse_y:0.95 mse_u:0.90 mse_v:1.08 psnr_avg:48.29 psnr_y:48.34 psnr_u:48.59 psnr_v:47.81 \nn:30 mse_avg:1.03 mse_y:1.03 mse_u:0.92 mse_v:1.13 psnr_avg:48.02 psnr_y:48.02 psnr_u:48.51 psnr_v:47.59 \nn:31 mse_avg:1.09 mse_y:1.25 mse_u:0.70 mse_v:0.82 psnr_avg:47.76 psnr_y:47.15 psnr_u:49.69 psnr_v:48.98 \nn:32 mse_avg:0.91 mse_y:0.94 mse_u:0.78 mse_v:0.92 psnr_avg:48.53 psnr_y:48.38 psnr_u:49.20 psnr_v:48.49 \nn:33 mse_avg:0.78 mse_y:0.77 mse_u:0.71 mse_v:0.90 psnr_avg:49.19 psnr_y:49.25 psnr_u:49.62 psnr_v:48.57 \nn:34 mse_avg:0.86 mse_y:0.87 mse_u:0.75 mse_v:0.92 psnr_avg:48.79 psnr_y:48.74 psnr_u:49.39 psnr_v:48.48 \nn:35 mse_avg:0.87 mse_y:0.89 mse_u:0.76 mse_v:0.88 psnr_avg:48.75 psnr_y:48.63 psnr_u:49.35 psnr_v:48.70 \nn:36 mse_avg:1.86 mse_y:2.35 mse_u:0.80 mse_v:0.93 psnr_avg:45.44 psnr_y:44.42 psnr_u:49.10 psnr_v:48.45 \nn:37 mse_avg:0.85 mse_y:0.81 mse_u:0.86 mse_v:0.99 psnr_avg:48.83 psnr_y:49.03 psnr_u:48.77 psnr_v:48.16 \nn:38 mse_avg:0.91 mse_y:0.87 mse_u:0.88 mse_v:1.08 psnr_avg:48.56 psnr_y:48.76 psnr_u:48.67 psnr_v:47.78 \nn:39 mse_avg:0.90 mse_y:0.86 mse_u:0.93 mse_v:1.06 psnr_avg:48.57 psnr_y:48.79 psnr_u:48.47 psnr_v:47.89 \nn:40 mse_avg:1.10 mse_y:1.15 mse_u:0.97 mse_v:1.02 psnr_avg:47.73 psnr_y:47.53 psnr_u:48.25 psnr_v:48.04 \nn:41 mse_avg:1.00 mse_y:1.01 mse_u:0.89 mse_v:1.04 psnr_avg:48.14 psnr_y:48.07 psnr_u:48.63 psnr_v:47.98 \nn:42 mse_avg:0.89 mse_y:0.85 mse_u:0.92 mse_v:1.04 psnr_avg:48.62 psnr_y:48.83 psnr_u:48.51 psnr_v:47.97 \nn:43 mse_avg:1.81 mse_y:2.25 mse_u:0.87 mse_v:0.98 psnr_avg:45.55 psnr_y:44.60 psnr_u:48.73 psnr_v:48.20 \nn:44 mse_avg:1.00 mse_y:1.03 mse_u:0.89 mse_v:1.00 psnr_avg:48.13 psnr_y:48.00 psnr_u:48.66 psnr_v:48.11 \nn:45 mse_avg:0.89 mse_y:0.85 mse_u:0.87 mse_v:1.06 psnr_avg:48.65 psnr_y:48.83 psnr_u:48.76 psnr_v:47.89 \nn:46 mse_avg:0.96 mse_y:0.93 mse_u:0.89 mse_v:1.14 psnr_avg:48.32 psnr_y:48.46 psnr_u:48.61 psnr_v:47.57 \nn:47 mse_avg:0.95 mse_y:0.93 mse_u:0.88 mse_v:1.11 psnr_avg:48.34 psnr_y:48.43 psnr_u:48.70 psnr_v:47.70 \nn:48 mse_avg:1.00 mse_y:1.00 mse_u:0.90 mse_v:1.09 psnr_avg:48.14 psnr_y:48.14 psnr_u:48.57 psnr_v:47.74 \nn:49 mse_avg:0.93 mse_y:0.89 mse_u:0.93 mse_v:1.08 psnr_avg:48.45 psnr_y:48.63 psnr_u:48.46 psnr_v:47.78 \nn:50 mse_avg:1.00 mse_y:0.98 mse_u:0.96 mse_v:1.12 psnr_avg:48.12 psnr_y:48.21 psnr_u:48.29 psnr_v:47.63 \nn:51 mse_avg:0.99 mse_y:0.98 mse_u:0.95 mse_v:1.09 psnr_avg:48.17 psnr_y:48.22 psnr_u:48.35 psnr_v:47.77 \nn:52 mse_avg:1.80 mse_y:2.19 mse_u:0.98 mse_v:1.06 psnr_avg:45.58 psnr_y:44.73 psnr_u:48.23 psnr_v:47.89 \nn:53 mse_avg:0.94 mse_y:0.88 mse_u:1.03 mse_v:1.08 psnr_avg:48.41 psnr_y:48.68 psnr_u:48.01 psnr_v:47.81 \nn:54 mse_avg:0.98 mse_y:0.91 mse_u:1.02 mse_v:1.18 psnr_avg:48.23 psnr_y:48.52 psnr_u:48.03 psnr_v:47.42 \nn:55 mse_avg:0.98 mse_y:0.94 mse_u:0.97 mse_v:1.14 psnr_avg:48.22 psnr_y:48.39 psnr_u:48.28 psnr_v:47.55 \nn:56 mse_avg:1.21 mse_y:1.30 mse_u:0.95 mse_v:1.15 psnr_avg:47.29 psnr_y:47.00 psnr_u:48.37 psnr_v:47.53 \nn:57 mse_avg:0.93 mse_y:0.88 mse_u:0.92 mse_v:1.14 psnr_avg:48.45 psnr_y:48.69 psnr_u:48.50 psnr_v:47.57 \nn:58 mse_avg:0.95 mse_y:0.91 mse_u:0.92 mse_v:1.15 psnr_avg:48.34 psnr_y:48.54 psnr_u:48.51 psnr_v:47.52 \nn:59 mse_avg:1.83 mse_y:2.23 mse_u:0.93 mse_v:1.12 psnr_avg:45.51 psnr_y:44.65 psnr_u:48.43 psnr_v:47.63 \nn:60 mse_avg:1.04 mse_y:1.05 mse_u:0.93 mse_v:1.08 psnr_avg:47.97 psnr_y:47.91 psnr_u:48.43 psnr_v:47.79 \n",
+        "stats_sha256": "90C4D87151327069B78D0AA96ED71BD4BD8C437ED73283466E7D72576A84F83B",
+        "stats_frame_count": 60,
+        "stats_artifact_path": "psnr-q80.stats.txt",
+        "stderr_artifact_path": "psnr-q80.stderr.txt"
+      }
+    }
+  ],
+  "comparison": {
+    "source_frame_index": 30,
+    "source_time_seconds": 1.0,
+    "source_frame_sha256": "76113E8AA7D05C0C7B53196DE786CA45CC11FA83738E2223E806F4D66EF6FD4A",
+    "tile_layout": {
+      "canvas": {
+        "width": 1080,
+        "height": 1920
+      },
+      "tile": {
+        "width": 540,
+        "height": 960
+      },
+      "order": [
+        "reference",
+        "quality_60",
+        "quality_72",
+        "quality_80"
+      ],
+      "scaler": "lanczos"
+    },
+    "output": {
+      "path": "comparison-2x2-reference-q60-q72-q80.png",
+      "bytes": 657040,
+      "sha256": "4063FB6C42C0E5985432496D30FDD3D04672DA86CDBC41CD3BA7BA9AF14DB8D6"
+    },
+    "command_tokens": [
+      "{ffmpeg}",
+      "-hide_banner",
+      "-loglevel",
+      "info",
+      "-nostdin",
+      "-y",
+      "-f",
+      "rawvideo",
+      "-pixel_format",
+      "rgb24",
+      "-video_size",
+      "1080x1920",
+      "-framerate",
+      "1",
+      "-i",
+      "pipe:0",
+      "-ss",
+      "1.000000",
+      "-i",
+      "q60-draft.mp4",
+      "-ss",
+      "1.000000",
+      "-i",
+      "q72-standard.mp4",
+      "-ss",
+      "1.000000",
+      "-i",
+      "q80-high.mp4",
+      "-filter_complex",
+      "[0:v]scale=540:960:flags=lanczos,setsar=1[reference];[1:v]scale=540:960:flags=lanczos,setsar=1[q60];[2:v]scale=540:960:flags=lanczos,setsar=1[q72];[3:v]scale=540:960:flags=lanczos,setsar=1[q80];[reference][q60][q72][q80]xstack=inputs=4:layout=0_0|540_0|0_960|540_960:fill=black[comparison]",
+      "-map",
+      "[comparison]",
+      "-frames:v",
+      "1",
+      "-c:v",
+      "png",
+      "-pred",
+      "mixed",
+      "-compression_level",
+      "9",
+      "-f",
+      "image2",
+      "comparison-2x2-reference-q60-q72-q80.png"
+    ],
+    "exit_code": 0,
+    "raw_stderr": "[in#0/rawvideo @ 0000027B01634BC0] Stream #0: not enough frames to estimate rate; consider increasing probesize\r\nInput #0, rawvideo, from 'pipe:0':\r\n  Duration: N/A, start: 0.000000, bitrate: 49766 kb/s\r\n  Stream #0:0: Video: rawvideo (RGB[24] / 0x18424752), rgb24, 1080x1920, 49766 kb/s, 1 tbr, 1 tbn\r\nInput #1, mov,mp4,m4a,3gp,3g2,mj2, from 'q60-draft.mp4':\r\n  Metadata:\r\n    major_brand     : isom\r\n    minor_version   : 512\r\n    compatible_brands: isomiso2avc1mp41\r\n    encoder         : Lavf63.5.101\r\n  Duration: 00:00:02.00, start: 0.000000, bitrate: 8703 kb/s\r\n  Stream #1:0[0x1](und): Video: h264 (Constrained Baseline) (avc1 / 0x31637661), yuv420p(progressive), 1080x1920, 8698 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\r\n    Metadata:\r\n      handler_name    : VideoHandler\r\n      encoder         : Lavc63.7.100 h264_mf\r\nInput #2, mov,mp4,m4a,3gp,3g2,mj2, from 'q72-standard.mp4':\r\n  Metadata:\r\n    major_brand     : isom\r\n    minor_version   : 512\r\n    compatible_brands: isomiso2avc1mp41\r\n    encoder         : Lavf63.5.101\r\n  Duration: 00:00:02.00, start: 0.000000, bitrate: 10946 kb/s\r\n  Stream #2:0[0x1](und): Video: h264 (Constrained Baseline) (avc1 / 0x31637661), yuv420p(progressive), 1080x1920, 10942 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\r\n    Metadata:\r\n      handler_name    : VideoHandler\r\n      encoder         : Lavc63.7.100 h264_mf\r\nInput #3, mov,mp4,m4a,3gp,3g2,mj2, from 'q80-high.mp4':\r\n  Metadata:\r\n    major_brand     : isom\r\n    minor_version   : 512\r\n    compatible_brands: isomiso2avc1mp41\r\n    encoder         : Lavf63.5.101\r\n  Duration: 00:00:02.00, start: 0.000000, bitrate: 12671 kb/s\r\n  Stream #3:0[0x1](und): Video: h264 (Constrained Baseline) (avc1 / 0x31637661), yuv420p(progressive), 1080x1920, 12666 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\r\n    Metadata:\r\n      handler_name    : VideoHandler\r\n      encoder         : Lavc63.7.100 h264_mf\r\nStream mapping:\r\n  Stream #0:0 (rawvideo) -> scale:default\r\n  Stream #1:0 (h264) -> scale:default\r\n  Stream #2:0 (h264) -> scale:default\r\n  Stream #3:0 (h264) -> scale:default\r\n  xstack:default -> Stream #0:0 (png)\r\n[fc#0 @ 0000027B015BF480] [vo0->#0:0 @ 0000027B01637BC0] No information about the input framerate is available. Falling back to a default value of 25fps. Use the -r option if you want a different framerate.\r\nOutput #0, image2, to 'comparison-2x2-reference-q60-q72-q80.png':\r\n  Metadata:\r\n    encoder         : Lavf63.5.101\r\n  Stream #0:0: Video: png, rgb24(pc, gbr/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 200 kb/s, 25 fps, 25 tbn\r\n    Metadata:\r\n      encoder         : Lavc63.7.100 png\r\nframe=    0 fps=0.0 q=0.0 size=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.50    \rframe=    0 fps=0.0 q=0.0 size=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:01.01    \r[image2 @ 0000027B03A906C0] The specified filename 'comparison-2x2-reference-q60-q72-q80.png' does not contain an image sequence pattern or a pattern is invalid.\r\n[image2 @ 0000027B03A906C0] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.\r\n[out#0/image2 @ 0000027B01616E00] video:642KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown\r\nframe=    1 fps=0.9 q=-0.0 Lsize=N/A time=00:00:00.04 bitrate=N/A speed=0.0345x elapsed=0:00:01.15    \r\n",
+    "stderr_sha256": "71C18E56F2195E0569A0E1D47217F11743E6CA5B62FDFBFAB8809CD4FFA79D8A",
+    "stderr_artifact_path": "comparison.stderr.txt",
+    "repeatability": {
+      "status": "byte_identical_on_same_runtime_and_os_identity",
+      "repeat_sha256": "4063FB6C42C0E5985432496D30FDD3D04672DA86CDBC41CD3BA7BA9AF14DB8D6",
+      "command_tokens": [
+        "{ffmpeg}",
+        "-hide_banner",
+        "-loglevel",
+        "info",
+        "-nostdin",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        "rgb24",
+        "-video_size",
+        "1080x1920",
+        "-framerate",
+        "1",
+        "-i",
+        "pipe:0",
+        "-ss",
+        "1.000000",
+        "-i",
+        "q60-draft.mp4",
+        "-ss",
+        "1.000000",
+        "-i",
+        "q72-standard.mp4",
+        "-ss",
+        "1.000000",
+        "-i",
+        "q80-high.mp4",
+        "-filter_complex",
+        "[0:v]scale=540:960:flags=lanczos,setsar=1[reference];[1:v]scale=540:960:flags=lanczos,setsar=1[q60];[2:v]scale=540:960:flags=lanczos,setsar=1[q72];[3:v]scale=540:960:flags=lanczos,setsar=1[q80];[reference][q60][q72][q80]xstack=inputs=4:layout=0_0|540_0|0_960|540_960:fill=black[comparison]",
+        "-map",
+        "[comparison]",
+        "-frames:v",
+        "1",
+        "-c:v",
+        "png",
+        "-pred",
+        "mixed",
+        "-compression_level",
+        "9",
+        "-f",
+        "image2",
+        "repeat-comparison.png"
+      ],
+      "stderr_path": "repeat-comparison.stderr.txt",
+      "stderr_sha256": "6E646798F955D5CF6ED5B7D3EEC07C1170243EA44048E6921CCB9881F6539986"
+    }
+  },
+  "decision": {
+    "quality_tiers": {
+      "draft": 60,
+      "standard": 72,
+      "high": 80
+    },
+    "measurement_scope": "Byte size, decoded PSNR, stream metadata, and forced-keyframe behavior; no unrecorded visual-review claim is used.",
+    "reason": "The frozen 60/72/80 mapping produces strictly increasing byte size and decoded PSNR on the deterministic detail canary while preserving a distinct middle tier."
+  },
+  "external_artifacts": {
+    "root_relative_to_workspace": "08_产出与验收/v0.3发布闭环/20260810-hyperframes-h264-mf-quality-v2",
+    "index": {
+      "path": "artifact-manifest.json",
+      "bytes": 3805,
+      "sha256": "37AB7A9A176D95F97DF9B840B83DB8DAC361ACC52082916AA0F6CE836749FF12"
+    },
+    "files": [
+      {
+        "path": "comparison-2x2-reference-q60-q72-q80.png",
+        "bytes": 657040,
+        "sha256": "4063FB6C42C0E5985432496D30FDD3D04672DA86CDBC41CD3BA7BA9AF14DB8D6"
+      },
+      {
+        "path": "comparison.stderr.txt",
+        "bytes": 3376,
+        "sha256": "71C18E56F2195E0569A0E1D47217F11743E6CA5B62FDFBFAB8809CD4FFA79D8A"
+      },
+      {
+        "path": "encode-q60.stderr.txt",
+        "bytes": 953,
+        "sha256": "A3F4DDBD7DDE02609CDC15C3927B47E0EFB6F05C34DD39BB7F44998FCB370BC2"
+      },
+      {
+        "path": "encode-q72.stderr.txt",
+        "bytes": 957,
+        "sha256": "C26729C4BD349E729BAF4A314C31ACCF6E379454379CF08FBD74C30D3A96A578"
+      },
+      {
+        "path": "encode-q80.stderr.txt",
+        "bytes": 953,
+        "sha256": "BE6CF4F8EF49CE43D2C4D0AF4AF96F557661559DCF49D4BB9B7BCBD2555D1F49"
+      },
+      {
+        "path": "keyframes-q60.json",
+        "bytes": 917,
+        "sha256": "D83AEC185B211B09A401B5B1F4AD198532DBD5B5F0E72F5788997D4B6CA4756E"
+      },
+      {
+        "path": "keyframes-q72.json",
+        "bytes": 917,
+        "sha256": "D83AEC185B211B09A401B5B1F4AD198532DBD5B5F0E72F5788997D4B6CA4756E"
+      },
+      {
+        "path": "keyframes-q80.json",
+        "bytes": 917,
+        "sha256": "D83AEC185B211B09A401B5B1F4AD198532DBD5B5F0E72F5788997D4B6CA4756E"
+      },
+      {
+        "path": "probe-q60.json",
+        "bytes": 758,
+        "sha256": "295BA5976AE57DA8B976A9CE30B3369ED1F4BB2F942DD42E44EF9B7693E1F207"
+      },
+      {
+        "path": "probe-q72.json",
+        "bytes": 760,
+        "sha256": "C297A9D76F20CA46CF664C570DD7EAB25115AFEF5971694D432B1E0C0818E953"
+      },
+      {
+        "path": "probe-q80.json",
+        "bytes": 760,
+        "sha256": "2E31431639A6284F9663732EF844D4DFEAF828CA03DB301B533552E9FC658114"
+      },
+      {
+        "path": "psnr-q60.stats.txt",
+        "bytes": 6411,
+        "sha256": "B65C2F2AB6EB01B60F2245AEB6E6B6E66CC7C3DC8D12414B6FBEE94D8BD23384"
+      },
+      {
+        "path": "psnr-q60.stderr.txt",
+        "bytes": 1626,
+        "sha256": "A1EDB3275A6B32867E2FEE96998C36049AFA74AF2825DAE49E0F21E97F2C8E68"
+      },
+      {
+        "path": "psnr-q72.stats.txt",
+        "bytes": 6411,
+        "sha256": "66D682046C210886491221E924B8F257837667BF25005D7EC66900839333A460"
+      },
+      {
+        "path": "psnr-q72.stderr.txt",
+        "bytes": 1631,
+        "sha256": "4CE547533C855C23EEC4B4076AD5ECDCC1AE3E3B2A235119F6ED608FFDE3D3FA"
+      },
+      {
+        "path": "psnr-q80.stats.txt",
+        "bytes": 6411,
+        "sha256": "FDD5B0072A36899E4BB38364CF5891B7FFD04153AB6445C6014FD86400B3A1B0"
+      },
+      {
+        "path": "psnr-q80.stderr.txt",
+        "bytes": 1627,
+        "sha256": "8B00AFCF80F5B692E0CCDE5AEF23883853FF85E8061CB59ACE5A966B0BC1A620"
+      },
+      {
+        "path": "q60-draft.mp4",
+        "bytes": 2175789,
+        "sha256": "3A2F9E770FF9601F500296B4A0DEE289DADB855AC35EC210D08250690AC5E828"
+      },
+      {
+        "path": "q72-standard.mp4",
+        "bytes": 2736706,
+        "sha256": "980BF7BB60A3186E9CD2DDF1E307E024B84B324C2AE0855E7272ADE27D827280"
+      },
+      {
+        "path": "q80-high.mp4",
+        "bytes": 3167795,
+        "sha256": "20FC3DC197B24E12724EA5E66BE9E050A0F0479EB9DCC162111B4D1F23CD5A0E"
+      },
+      {
+        "path": "repeat-comparison.stderr.txt",
+        "bytes": 3338,
+        "sha256": "6E646798F955D5CF6ED5B7D3EEC07C1170243EA44048E6921CCB9881F6539986"
+      },
+      {
+        "path": "repeat-q60.stderr.txt",
+        "bytes": 960,
+        "sha256": "A8D5203448964A3445E667034CEC67E8C4A194485448266EC7F86344525B3D64"
+      },
+      {
+        "path": "repeat-q72.stderr.txt",
+        "bytes": 964,
+        "sha256": "1C302EC913FE9FF271C329802B2351995965908B249636BDEA8178D7FAFC2782"
+      },
+      {
+        "path": "repeat-q80.stderr.txt",
+        "bytes": 960,
+        "sha256": "B0C96CA8FAB8B78745F2DC7D33E20630A92D19453D1AD6662973BD166958E263"
+      }
+    ],
+    "repository_bloat_policy": "Large RGB/video/log artifacts remain under 08_产出与验收; only this reproducibility manifest and generator are stored in the repository."
+  }
+}

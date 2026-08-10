@@ -21,9 +21,16 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, ImageStat
 
 from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
 from core.motion_runtime_contract import (
+    H264_CODEC_STRATEGY,
     HYPERFRAMES_RENDERER,
+    HYPERFRAMES_PATCHED_CLI_SHA256,
+    HYPERFRAMES_PATCH_ID,
+    HYPERFRAMES_PATCH_VERSION,
     HYPERFRAMES_VERSION,
     MOTION_ENGINE_NAME,
+    SYSTEM_BROWSER_MINIMUM_MAJOR,
+    SYSTEM_BROWSER_STRATEGY,
+    h264_mf_video_args,
 )
 from core.production_engine import ENGINE_COMMIT, ENGINE_MODE, ENGINE_NAME, ENGINE_VERSION
 from core.provider import BudgetLedger, ProviderError
@@ -56,12 +63,26 @@ RENDER_PROVIDER_ENV_NAMES = frozenset(
 def _hyperframes_subprocess_environment() -> dict[str, str]:
     """Keep the pinned render runtime while excluding Provider credentials."""
 
-    return {
+    env = {
         key: value
         for key, value in os.environ.items()
         if key.upper() not in RENDER_PROVIDER_ENV_NAMES
         and not key.upper().startswith(RENDER_PROVIDER_ENV_PREFIXES)
     }
+    env.update(
+        {
+            "HYPERFRAMES_NO_UPDATE_CHECK": "1",
+            "HYPERFRAMES_NO_SKILL_CHECK": "1",
+            "HYPERFRAMES_TELEMETRY": "0",
+            "NO_UPDATE_NOTIFIER": "1",
+            "PRODUCER_TELEMETRY": "0",
+            "PRODUCER_ENABLE_TELEMETRY": "false",
+            "npm_config_offline": "true",
+            "npm_config_update_notifier": "false",
+            "SHIYI_HYPERFRAMES_CODEC_STRATEGY": H264_CODEC_STRATEGY,
+        }
+    )
+    return env
 
 
 def resolve_production_mode(
@@ -97,7 +118,7 @@ def production_mode_contract(mode: str) -> dict[str, Any]:
 
 
 def _resolve_hyperframes_runtime() -> dict[str, Any]:
-    """Resolve an offline CLI runtime without npm/npx or system-browser fallback."""
+    """Resolve the pinned CLI plus the launcher-verified system Edge identity."""
 
     configured_node = os.environ.get("SHIYI_NODE_EXECUTABLE", "").strip()
     configured_cli = os.environ.get("SHIYI_HYPERFRAMES_CLI", "").strip()
@@ -113,6 +134,15 @@ def _resolve_hyperframes_runtime() -> dict[str, Any]:
         browser = Path(configured_browser).expanduser()
         if not node.is_file() or not cli.is_file() or not browser.is_file():
             raise FileNotFoundError("封包HyperFrames运行时文件不可用")
+        browser_strategy = os.environ.get("SHIYI_HYPERFRAMES_BROWSER_STRATEGY", "").strip()
+        browser_version = os.environ.get("SHIYI_HYPERFRAMES_BROWSER_VERSION", "").strip()
+        browser_minimum = os.environ.get("SHIYI_HYPERFRAMES_BROWSER_MINIMUM_MAJOR", "").strip()
+        if browser_strategy != SYSTEM_BROWSER_STRATEGY or browser_minimum != str(SYSTEM_BROWSER_MINIMUM_MAJOR):
+            raise ValueError("封包浏览器策略未绑定到受信系统Edge")
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", browser_version):
+            raise ValueError("封包系统Edge版本身份无效")
+        if int(browser_version.split(".", 1)[0]) < SYSTEM_BROWSER_MINIMUM_MAJOR:
+            raise ValueError(f"封包系统Edge版本低于最低要求 {SYSTEM_BROWSER_MINIMUM_MAJOR}")
         runtime_version = _verified_hyperframes_version(cli)
         return {
             "node": node,
@@ -121,6 +151,13 @@ def _resolve_hyperframes_runtime() -> dict[str, Any]:
             "runtime_source": "packaged",
             "version": runtime_version,
             "renderer": HYPERFRAMES_RENDERER,
+            "codec_strategy": H264_CODEC_STRATEGY,
+            "patch_id": HYPERFRAMES_PATCH_ID,
+            "patch_version": HYPERFRAMES_PATCH_VERSION,
+            "patched_cli_sha256": HYPERFRAMES_PATCHED_CLI_SHA256,
+            "browser_strategy": browser_strategy,
+            "browser_version": browser_version,
+            "browser_minimum_major": SYSTEM_BROWSER_MINIMUM_MAJOR,
         }
 
     # Development mode may use only the already-installed, pinned repository
@@ -137,11 +174,18 @@ def _resolve_hyperframes_runtime() -> dict[str, Any]:
         "runtime_source": "development_repo",
         "version": runtime_version,
         "renderer": HYPERFRAMES_RENDERER,
+        "codec_strategy": H264_CODEC_STRATEGY,
+        "patch_id": HYPERFRAMES_PATCH_ID,
+        "patch_version": HYPERFRAMES_PATCH_VERSION,
+        "patched_cli_sha256": HYPERFRAMES_PATCHED_CLI_SHA256,
+        "browser_strategy": None,
+        "browser_version": None,
+        "browser_minimum_major": SYSTEM_BROWSER_MINIMUM_MAJOR,
     }
 
 
 def _verified_hyperframes_version(cli: Path) -> str:
-    """Bind an executable CLI to the shared, pinned runtime identity."""
+    """Bind the launcher to the exact patched executable, not just an npm version."""
 
     package_json = cli.parent.parent / "package.json"
     if not package_json.is_file():
@@ -154,6 +198,15 @@ def _verified_hyperframes_version(cli: Path) -> str:
     if actual_version != HYPERFRAMES_VERSION:
         raise ValueError(
             f"HyperFrames运行时版本不匹配：要求{HYPERFRAMES_VERSION}"
+        )
+    executable_bundle = package_json.parent / "dist" / "cli.js"
+    if not executable_bundle.is_file():
+        raise FileNotFoundError("HyperFrames runtime is missing the patched executable bundle")
+    actual_payload_sha256 = _file_sha256(executable_bundle)
+    if actual_payload_sha256 != HYPERFRAMES_PATCHED_CLI_SHA256:
+        raise ValueError(
+            "HyperFrames runtime payload is not the reviewed Windows Media Foundation patch: "
+            f"expected {HYPERFRAMES_PATCHED_CLI_SHA256}, got {actual_payload_sha256}"
         )
     return HYPERFRAMES_VERSION
 
@@ -1633,6 +1686,8 @@ class ProductionRunner:
             render_report = engine_stage["render"]
             production_engine_report = dict(engine_stage["engine"])
             production_engine_report["selected_mode"] = "footage"
+            production_engine_report["codec_strategy"] = H264_CODEC_STRATEGY
+            render_report["codec_strategy"] = H264_CODEC_STRATEGY
         else:
             voice_report = self.voice_adapter(folder, approved["script"], config) if self.voice_adapter else self._synthesize_voice(folder, approved["script"], config)
             if not (folder / "voice.wav").is_file():
@@ -1678,6 +1733,13 @@ class ProductionRunner:
                         "mode": MOTION_ENGINE_MODE,
                         "selected_mode": "motion",
                         "health": "completed",
+                        "codec_strategy": H264_CODEC_STRATEGY,
+                        "patch_id": HYPERFRAMES_PATCH_ID,
+                        "patch_version": HYPERFRAMES_PATCH_VERSION,
+                        "patched_cli_sha256": HYPERFRAMES_PATCHED_CLI_SHA256,
+                        "browser_strategy": render_report.get("browser_strategy"),
+                        "browser_version": render_report.get("browser_version"),
+                        "browser_minimum_major": render_report.get("browser_minimum_major"),
                     }
                 else:
                     production_engine_report = {
@@ -1696,6 +1758,7 @@ class ProductionRunner:
                     "mode": "diagnostic",
                     "selected_mode": "simple",
                     "health": "diagnostic_only",
+                    "codec_strategy": H264_CODEC_STRATEGY,
                 }
 
         render_report["production_mode"] = production_mode
@@ -2232,14 +2295,7 @@ class ProductionRunner:
             "[v]",
             "-map",
             "1:a:0",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "20",
-            "-pix_fmt",
-            "yuv420p",
+            *h264_mf_video_args(crf_equivalent=20),
             "-c:a",
             "aac",
             "-b:a",
@@ -2283,6 +2339,7 @@ class ProductionRunner:
             "audio_track": "normalized_voice_wav_to_aac",
             "caption_timing_scaled": True,
             "timing_count": timing_count,
+            "codec_strategy": H264_CODEC_STRATEGY,
         }
 
     @staticmethod
@@ -2384,6 +2441,7 @@ class ProductionRunner:
             "file": "final.mp4",
             "duration_seconds": round(duration, 3),
             "video_codec": "h264",
+            "codec_strategy": H264_CODEC_STRATEGY,
             "audio_codec": "aac",
             "width": 1080,
             "height": 1920,
@@ -2496,7 +2554,7 @@ class ProductionRunner:
         command = [
             str(FFMPEG), "-y", "-f", "concat", "-safe", "0", "-i", str(concat_path),
             "-i", str(folder / "voice.wav"), "-vf", "fps=30,format=yuv420p",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+            *h264_mf_video_args(crf_equivalent=20),
             "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(output),
         ]
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
@@ -2522,6 +2580,7 @@ class ProductionRunner:
             "height": video_stream.get("height"),
             "fps": video_stream.get("r_frame_rate"),
             "subtitle_mode": "burned_into_scene_cards_and_sidecar_srt",
+            "codec_strategy": H264_CODEC_STRATEGY,
         }
 
     def _render_animated_video(self, folder: Path, motion_plan: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
@@ -2564,6 +2623,13 @@ class ProductionRunner:
             "runtime_source": runtime["runtime_source"],
             "runtime_version": HYPERFRAMES_VERSION,
             "renderer": HYPERFRAMES_RENDERER,
+            "codec_strategy": runtime["codec_strategy"],
+            "patch_id": runtime["patch_id"],
+            "patch_version": runtime["patch_version"],
+            "patched_cli_sha256": runtime["patched_cli_sha256"],
+            "browser_strategy": runtime["browser_strategy"],
+            "browser_version": runtime["browser_version"],
+            "browser_minimum_major": runtime["browser_minimum_major"],
             "motion_validation": build_report["validation"],
             "subtitle_mode": "animated_caption_overlay_and_sidecar_srt",
         }

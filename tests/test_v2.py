@@ -1,8 +1,11 @@
 import json
 import hashlib
 import os
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -23,7 +26,7 @@ from core.production import (
     estimate_narration_duration,
     review_script,
 )
-from core.review_policy import CODEX_TEST_REVIEWER
+from core.review_policy import CODEX_TEST_REVIEWER, MECHANICAL_REVIEWER
 from core.secrets import protect_secret, unprotect_secret
 
 
@@ -148,6 +151,48 @@ class StrictRejectRunner(FakeStageRunner):
         }
         research["findings"][0]["script_eligible"] = False
         research_path.write_text(json.dumps(research, ensure_ascii=False), encoding="utf-8")
+
+
+class MechanicalStageRunner(FakeStageRunner):
+    def run_research_stage(self, output, production_input):
+        finding = {
+            "claim": "该来源页面称，气味不能单独证明甲醛浓度。",
+            "source_urls": ["https://example.test/source"],
+            "evidence": [{
+                "url": "https://example.test/source",
+                "excerpt": "气味不能单独证明甲醛浓度。",
+            }],
+            "limitations": ["仅限该来源页面表述，不能替代专业检测。"],
+            "allowed_use": "仅可带来源归属地进行保守转述。",
+            "prohibited_use": "不得扩大为具体空间或产品的检测结论。",
+            "strict_review_status": "proven_for_limited_use",
+            "script_eligible": True,
+        }
+        (output / "research.json").write_text(
+            json.dumps({
+                "status": "complete",
+                "findings": [finding],
+                "strict_audit": {
+                    "model_review_required": True,
+                    "model_review_status": "complete",
+                    "passed_count": 1,
+                },
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (output / "insight.json").write_text(
+            json.dumps({"topic": production_input["topic"]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+class MechanicalWarningRunner(MechanicalStageRunner):
+    def run_content_stage(self, output, production_input, research_approval):
+        super().run_content_stage(output, production_input, research_approval)
+        review_path = output / "review.json"
+        review = json.loads(review_path.read_text(encoding="utf-8"))
+        review["warnings"] = ["仍需补充来源归属"]
+        review_path.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
 
 
 class ReportRebuildRunner:
@@ -306,6 +351,29 @@ class V2WorkflowTests(unittest.TestCase):
             review_path = jobs.resolve_review_artifact(job["id"], "review.json")
             script_path = jobs.resolve_review_artifact(job["id"], "approved_script.json")
             with self.assertRaises(UnprocessableError):
+                jobs.update_script(
+                    job["id"],
+                    LONG_SAFE_SCRIPT,
+                    review_script(LONG_SAFE_SCRIPT),
+                    estimate_narration_duration(LONG_SAFE_SCRIPT),
+                    "本机会话用户",
+                )
+            job = jobs.update_script(
+                job["id"],
+                LONG_SAFE_SCRIPT,
+                review_script(LONG_SAFE_SCRIPT),
+                estimate_narration_duration(LONG_SAFE_SCRIPT),
+                CODEX_TEST_REVIEWER,
+            )
+            edited = json.loads(script_path.read_text(encoding="utf-8"))
+            self.assertEqual(edited["id"], "browser-edited")
+            self.assertEqual(edited["hook_type"], "浏览器改稿")
+            self.assertEqual(edited["selected_by"], "browser_editor")
+            self.assertEqual(edited["editor_identity"]["editor"], CODEX_TEST_REVIEWER)
+            self.assertEqual(edited["editor_identity"]["actor_type"], "agent")
+            self.assertFalse(edited["editor_identity"]["human_edit_claimed"])
+            self.assertTrue(edited["editor_identity"]["test_only"])
+            with self.assertRaises(UnprocessableError):
                 jobs.approve_compliance(job["id"], {
                     "decision": "approved",
                     "reviewer": CODEX_TEST_REVIEWER,
@@ -327,6 +395,103 @@ class V2WorkflowTests(unittest.TestCase):
             )
             self.assertEqual(manifest["evidence_status"], "test_only_pending_human_acceptance")
             self.assertTrue(manifest["review_policy"]["final_human_acceptance_required"])
+
+    def test_mechanical_review_advances_headlessly_without_claiming_human_approval(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            self.assertEqual(job["review_policy"], {
+                "stage_review_mode": "mechanical",
+                "final_human_acceptance_required": True,
+            })
+            runner = MechanicalStageRunner()
+            job = jobs.approve(job["id"])
+            job = jobs.advance(job["id"], runner, "mechanical-research-0001")
+            self.assertEqual(job["status"], "research_approved")
+            research_approval = job["approvals"]["research"]
+            self.assertEqual(research_approval["reviewer"], MECHANICAL_REVIEWER)
+            self.assertEqual(research_approval["actor_type"], "mechanical_reviewer")
+            self.assertEqual(research_approval["review_mode"], "mechanical")
+            self.assertEqual(research_approval["interaction_mode"], "headless")
+            self.assertEqual(research_approval["authority"], "internal_generation_only")
+            self.assertFalse(research_approval["human_approval_claimed"])
+            self.assertFalse(research_approval["test_only"])
+            self.assertEqual(
+                research_approval["findings"][0]["evidence_type"], "paraphrase"
+            )
+            with self.assertRaises(ConflictError):
+                jobs.approve_research(job["id"], {
+                    "decision": "approved",
+                    "reviewer": MECHANICAL_REVIEWER,
+                    "artifact_sha256": research_approval["artifact_sha256"],
+                    "findings": research_approval["findings"],
+                })
+
+            job = jobs.advance(job["id"], runner, "mechanical-content-0001")
+            self.assertEqual(job["status"], "compliance_approved")
+            compliance = job["approvals"]["compliance"]
+            self.assertEqual(compliance["reviewer"], MECHANICAL_REVIEWER)
+            self.assertFalse(compliance["human_approval_claimed"])
+            with self.assertRaises(ConflictError):
+                jobs.update_script(
+                    job["id"],
+                    LONG_SAFE_SCRIPT,
+                    review_script(LONG_SAFE_SCRIPT),
+                    estimate_narration_duration(LONG_SAFE_SCRIPT),
+                    MECHANICAL_REVIEWER,
+                )
+
+            job = jobs.advance(job["id"], runner, "mechanical-render-0001")
+            self.assertEqual(job["status"], "complete")
+            manifest = json.loads(
+                jobs.resolve_artifact(job["id"], "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                manifest["evidence_status"],
+                "mechanically_reviewed_internal_candidate_pending_human_release",
+            )
+            self.assertTrue(manifest["review_policy"]["final_human_acceptance_required"])
+
+    def test_mechanical_review_rejects_weak_research_and_warning_content(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            weak = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            weak = jobs.approve(weak["id"])
+            weak = jobs.advance(weak["id"], FakeStageRunner(), "mechanical-weak-research")
+            self.assertEqual(weak["status"], "awaiting_research_revision")
+            self.assertNotIn("waiting_human", {row["status"] for row in weak["step_states"]})
+            self.assertEqual(weak["approvals"]["research"], {"status": "pending"})
+            self.assertEqual(
+                weak["automatic_research_gate"]["decision"], "rejected"
+            )
+
+            warning = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            warning = jobs.approve(warning["id"])
+            runner = MechanicalWarningRunner()
+            warning = jobs.advance(
+                warning["id"], runner, "mechanical-warning-research"
+            )
+            self.assertEqual(warning["status"], "research_approved")
+            warning = jobs.advance(
+                warning["id"], runner, "mechanical-warning-content"
+            )
+            self.assertEqual(warning["status"], "research_approved")
+            self.assertEqual(
+                warning["automatic_content_gate"]["decision"], "rejected"
+            )
+            self.assertEqual(
+                warning["approvals"]["compliance"], {"status": "pending"}
+            )
+            self.assertNotIn("waiting_human", {row["status"] for row in warning["step_states"]})
 
     def test_no_key_empty_research_requires_scoped_human_confirmation(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -634,9 +799,25 @@ class V2WorkflowTests(unittest.TestCase):
             research_hash = job["approvals"]["research"]["artifact_sha256"]
             job = approve_compliance(jobs, job)
             estimate = estimate_narration_duration(LONG_SAFE_SCRIPT)
-            job = jobs.update_script(job["id"], LONG_SAFE_SCRIPT + "通风之后仍要看检测结果。", review_script(LONG_SAFE_SCRIPT), estimate)
+            job = jobs.update_script(
+                job["id"],
+                LONG_SAFE_SCRIPT + "通风之后仍要看检测结果。",
+                review_script(LONG_SAFE_SCRIPT),
+                estimate,
+                "何sir",
+            )
             self.assertEqual(job["approvals"]["research"]["artifact_sha256"], research_hash)
             self.assertEqual(job["approvals"]["compliance"]["status"], "pending")
+            edited = json.loads(
+                jobs.resolve_review_artifact(job["id"], "approved_script.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(edited["id"], "browser-edited")
+            self.assertEqual(edited["editor_identity"]["editor"], "何sir")
+            self.assertEqual(edited["editor_identity"]["actor_type"], "human")
+            self.assertTrue(edited["editor_identity"]["human_edit_claimed"])
+            self.assertFalse(edited["editor_identity"]["test_only"])
 
     def test_failed_render_does_not_replace_previous_success(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -646,7 +827,13 @@ class V2WorkflowTests(unittest.TestCase):
             job = jobs.advance(job["id"], FakeStageRunner(), "render-good-01")
             previous = job["current_run_id"]
             estimate = estimate_narration_duration(LONG_SAFE_SCRIPT)
-            job = jobs.update_script(job["id"], LONG_SAFE_SCRIPT, review_script(LONG_SAFE_SCRIPT), estimate)
+            job = jobs.update_script(
+                job["id"],
+                LONG_SAFE_SCRIPT,
+                review_script(LONG_SAFE_SCRIPT),
+                estimate,
+                "何sir",
+            )
             job = approve_compliance(jobs, job)
             with self.assertRaises(RuntimeError):
                 jobs.advance(job["id"], FakeStageRunner("render"), "render-fail-01")
@@ -787,6 +974,156 @@ class V2WorkflowTests(unittest.TestCase):
 
 
 class V2SecurityAndBudgetTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows byte-range lock regression")
+    def test_creation_lock_is_process_owned_and_recovers_after_process_exit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            ready = root / "child-ready"
+            project_root = Path(__file__).resolve().parents[1]
+            script = "\n".join(
+                (
+                    "from pathlib import Path",
+                    "import time",
+                    "from core.orchestrator import JobStore",
+                    f"root = Path({str(root)!r})",
+                    f"ready = Path({str(ready)!r})",
+                    "store = JobStore(root)",
+                    "lock = store._acquire_creation_lock('process-lock-fixture-0001')",
+                    "ready.write_text('ready', encoding='utf-8')",
+                    "time.sleep(60)",
+                )
+            )
+            child = subprocess.Popen(
+                [sys.executable, "-c", script],
+                cwd=project_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                if not ready.exists():
+                    stdout, stderr = child.communicate(timeout=2)
+                    self.fail(
+                        f"child lock holder did not start: rc={child.returncode}, "
+                        f"stdout={stdout!r}, stderr={stderr!r}"
+                    )
+
+                store = JobStore(root)
+                with self.assertRaises(ConflictError):
+                    store._acquire_creation_lock("process-lock-fixture-0001")
+
+                child.terminate()
+                child.wait(timeout=10)
+                recovered = None
+                deadline = time.monotonic() + 2
+                while recovered is None and time.monotonic() < deadline:
+                    try:
+                        recovered = store._acquire_creation_lock(
+                            "process-lock-fixture-0001"
+                        )
+                    except ConflictError:
+                        time.sleep(0.02)
+                self.assertIsNotNone(recovered)
+                store._release_creation_lock(recovered)
+            finally:
+                if child.poll() is None:
+                    child.terminate()
+                    child.wait(timeout=10)
+                if child.stdout is not None:
+                    child.stdout.close()
+                if child.stderr is not None:
+                    child.stderr.close()
+
+    @unittest.skipUnless(os.name == "nt", "Windows process-lock regression")
+    def test_two_processes_cannot_create_duplicate_for_same_request(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            start = root / "start"
+            project_root = Path(__file__).resolve().parents[1]
+            children = []
+            for index in range(2):
+                ready = root / f"ready-{index}"
+                result = root / f"result-{index}.json"
+                script = "\n".join(
+                    (
+                        "import json, time",
+                        "from pathlib import Path",
+                        "from core.orchestrator import ConflictError, JobStore, local_fallback_plan",
+                        f"root = Path({str(root)!r})",
+                        f"start = Path({str(start)!r})",
+                        f"ready = Path({str(ready)!r})",
+                        f"result = Path({str(result)!r})",
+                        "ready.write_text('ready', encoding='utf-8')",
+                        "deadline = time.monotonic() + 10",
+                        "while not start.exists() and time.monotonic() < deadline: time.sleep(0.01)",
+                        "store = JobStore(root)",
+                        "try:",
+                        "    job, replayed = store.create_idempotent(",
+                        "        local_fallback_plan('并发创建测试', []),",
+                        "        {'topic': '气味小就代表甲醛少吗？', 'audience': '新房家庭'},",
+                        "        idempotency_key='process-create-fixture-0001',",
+                        "        fingerprint='a' * 64,",
+                        "    )",
+                        "    payload = {'status': 'ok', 'job_id': job['id'], 'replayed': replayed}",
+                        "except ConflictError:",
+                        "    payload = {'status': 'conflict'}",
+                        "result.write_text(json.dumps(payload), encoding='utf-8')",
+                    )
+                )
+                children.append(
+                    subprocess.Popen(
+                        [sys.executable, "-c", script],
+                        cwd=project_root,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                )
+            try:
+                deadline = time.monotonic() + 10
+                while (
+                    not all((root / f"ready-{index}").exists() for index in range(2))
+                    and all(child.poll() is None for child in children)
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.02)
+                self.assertTrue(
+                    all((root / f"ready-{index}").exists() for index in range(2))
+                )
+                start.write_text("go", encoding="utf-8")
+                outputs = [child.communicate(timeout=15) for child in children]
+                for child, (stdout, stderr) in zip(children, outputs):
+                    self.assertEqual(
+                        child.returncode,
+                        0,
+                        f"child failed: stdout={stdout!r}, stderr={stderr!r}",
+                    )
+                results = [
+                    json.loads((root / f"result-{index}.json").read_text(encoding="utf-8"))
+                    for index in range(2)
+                ]
+                self.assertTrue(any(item["status"] == "ok" for item in results))
+                store = JobStore(root)
+                self.assertEqual(len(store.list()), 1)
+                job, replayed = store.create_idempotent(
+                    local_fallback_plan("并发创建测试", []),
+                    {"topic": "气味小就代表甲醛少吗？", "audience": "新房家庭"},
+                    idempotency_key="process-create-fixture-0001",
+                    fingerprint="a" * 64,
+                )
+                self.assertTrue(replayed)
+                self.assertEqual(job["id"], store.list()[0]["id"])
+            finally:
+                for child in children:
+                    if child.poll() is None:
+                        child.terminate()
+                        child.wait(timeout=10)
+                    if child.stdout is not None and not child.stdout.closed:
+                        child.stdout.close()
+                    if child.stderr is not None and not child.stderr.closed:
+                        child.stderr.close()
+
     @unittest.skipUnless(os.name == "nt", "DPAPI is Windows-only")
     def test_dpapi_roundtrip_and_no_plaintext_storage(self):
         value = "dummy-regression-secret-not-real"
