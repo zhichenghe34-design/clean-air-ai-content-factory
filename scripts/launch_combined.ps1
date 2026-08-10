@@ -8,6 +8,7 @@ param(
     [string]$Ffprobe,
     [string]$MaterialRoot,
     [switch]$AgentTestReview,
+    [switch]$MechanicalReview,
     [switch]$NoOpen,
     [switch]$PreflightOnly
 )
@@ -49,6 +50,7 @@ if (-not [string]::IsNullOrWhiteSpace($Ffmpeg)) { $arguments += @("--ffmpeg", $F
 if (-not [string]::IsNullOrWhiteSpace($Ffprobe)) { $arguments += @("--ffprobe", $Ffprobe) }
 if (-not [string]::IsNullOrWhiteSpace($MaterialRoot)) { $arguments += @("--material-root", $MaterialRoot) }
 if ($AgentTestReview) { $arguments += "--agent-test-review" }
+if ($MechanicalReview) { $arguments += "--mechanical-review" }
 if ($NoOpen) { $arguments += "--no-open" }
 if ($PreflightOnly) { $arguments += "--preflight-only" }
 

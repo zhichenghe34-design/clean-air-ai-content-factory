@@ -953,6 +953,8 @@ class CombinedPortableTests(unittest.TestCase):
         self.assertIn('@("-I", "-S", "-B", "-X", "utf8", $launcher', powershell_launcher)
         self.assertIn("[switch]$AgentTestReview", powershell_launcher)
         self.assertIn('if ($AgentTestReview) { $arguments += "--agent-test-review" }', powershell_launcher)
+        self.assertIn("[switch]$MechanicalReview", powershell_launcher)
+        self.assertIn('if ($MechanicalReview) { $arguments += "--mechanical-review" }', powershell_launcher)
         self.assertNotRegex(launcher.casefold(), r"pip\s+install|uv\s+sync|npx\s+--yes")
         stop_launcher = (inputs.output / STOP_LAUNCHER_NAME).read_text(encoding="ascii")
         self.assertNotIn("verify_combined_portable.py", stop_launcher)
