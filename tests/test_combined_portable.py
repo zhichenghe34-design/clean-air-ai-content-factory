@@ -93,6 +93,7 @@ class CombinedPortableTests(unittest.TestCase):
         self._write(self.repo, "static/app.js", "console.log('fixture');\n")
         self._write(self.repo, "catalog/tools.json", "{}\n")
         self._write(self.repo, "agent-skills/fixture/SKILL.md", "# fixture\n")
+        self._write(self.repo, "agent-skills/fixture/assets/hero.png", b"fixture-png")
         self._write(self.repo, "docs/fonts/NotoSansSC-Regular.ttf", b"regular-font")
         self._write(self.repo, "docs/fonts/NotoSansSC-Bold.ttf", b"bold-font")
         self._write(self.repo, "docs/fonts/OFL.txt", "Noto OFL fixture\n")

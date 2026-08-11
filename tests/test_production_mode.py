@@ -30,6 +30,7 @@ from core.production import (
     _hyperframes_subprocess_environment,
     resolve_production_mode,
 )
+from core.voice_contract import DEFAULT_VOICE_CHUNK_MAX_CHARS, DEFAULT_VOICE_ENGINE
 
 
 SAFE_SCRIPT = (
@@ -475,6 +476,9 @@ class HyperFramesRuntimeContractTests(unittest.TestCase):
 
 
 class VoiceFallbackContractTests(unittest.TestCase):
+    def test_default_voice_engine_is_portable_edge_tts(self):
+        self.assertEqual(DEFAULT_VOICE_ENGINE, "edge_tts")
+
     def test_render_stage_persists_hash_bound_natural_voice_identity(self):
         with tempfile.TemporaryDirectory() as folder_name:
             root = Path(folder_name)
@@ -535,8 +539,10 @@ class VoiceFallbackContractTests(unittest.TestCase):
             (job / "voice.wav").write_bytes(voice)
             (job / "voice_identity.json").write_text(
                 json.dumps({
-                    "schema_version": 1,
-                    "engine": "voxcpm2",
+                    "schema_version": 2,
+                    "engine": "edge_tts",
+                    "requested_engine": "edge_tts",
+                    "voice_chunk_max_chars": DEFAULT_VOICE_CHUNK_MAX_CHARS,
                     "natural_voice": True,
                     "quality_eligible": True,
                     "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest().upper(),
@@ -547,8 +553,97 @@ class VoiceFallbackContractTests(unittest.TestCase):
             with mock.patch("core.production.subprocess.run") as run:
                 report = ProductionRunner._synthesize_voice(job, script, {})
             self.assertTrue(report["reused"])
-            self.assertEqual(report["engine"], "voxcpm2")
+            self.assertEqual(report["engine"], "edge_tts")
             run.assert_not_called()
+
+    def test_voice_engine_alias_and_chunk_size_are_bound_to_workbench_command(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            root = Path(folder_name)
+            job = root / "job"
+            job.mkdir()
+            workbench = root / "voice_workbench.py"
+            reference = root / "voice-reference.wav"
+            workbench.write_text("# fixture", encoding="utf-8")
+            reference.write_bytes(b"RIFF" + b"reference" * 8)
+            commands: list[list[str]] = []
+
+            def fake_run(command: list[str], **_kwargs):
+                commands.append(command)
+                output_dir = Path(command[command.index("--output-dir") + 1])
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / "merged.wav").write_bytes(b"RIFF" + b"qwen-natural" * 8)
+                (output_dir / "qc_report.json").write_text(
+                    json.dumps({"parts": [{"ok": True}, {"ok": True}], "merged": {"ok": True}}),
+                    encoding="utf-8",
+                )
+                return mock.Mock(stdout="", stderr="")
+
+            with (
+                mock.patch("core.production.VOICE_WORKBENCH", workbench),
+                mock.patch("core.production.VOICE_REFERENCE", reference),
+                mock.patch("core.production.subprocess.run", side_effect=fake_run),
+            ):
+                report = ProductionRunner._synthesize_voice(
+                    job,
+                    "自然配音按语义分段，避免一整段机械朗读。",
+                    {"voice_engine": "qwen3-tts", "voice_chunk_max_chars": 72},
+                )
+
+            self.assertEqual(report["engine"], "qwen3_tts")
+            self.assertEqual(report["requested_engine"], "qwen3_tts")
+            self.assertEqual(report["voice_chunk_max_chars"], 72)
+            self.assertEqual(report["segment_count"], 2)
+            self.assertEqual(commands[0][commands[0].index("--engine") + 1], "qwen3_tts")
+            self.assertEqual(commands[0][commands[0].index("--max-chars") + 1], "72")
+
+    def test_voice_identity_with_different_chunk_contract_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            root = Path(folder_name)
+            job = root / "job"
+            job.mkdir()
+            script = "旧分段参数生成的配音不能冒充当前配音。"
+            voice = b"RIFF" + b"old-contract" * 8
+            (job / "narration.txt").write_text(script, encoding="utf-8")
+            (job / "voice.wav").write_bytes(voice)
+            (job / "voice_identity.json").write_text(
+                json.dumps({
+                    "schema_version": 2,
+                    "engine": "qwen3_tts",
+                    "requested_engine": "qwen3_tts",
+                    "voice_chunk_max_chars": 260,
+                    "natural_voice": True,
+                    "quality_eligible": True,
+                    "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest().upper(),
+                    "voice_sha256": hashlib.sha256(voice).hexdigest().upper(),
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"):
+                with self.assertRaisesRegex(RuntimeError, "禁止静默降级"):
+                    ProductionRunner._synthesize_voice(
+                        job,
+                        script,
+                        {
+                            "voice_engine": "qwen3_tts",
+                            "voice_chunk_max_chars": DEFAULT_VOICE_CHUNK_MAX_CHARS,
+                            "allow_online_voice_fallback": False,
+                        },
+                    )
+            self.assertFalse((job / "voice.wav").exists())
+
+    def test_topic_input_normalizes_voice_engine_alias_and_chunk_contract(self):
+        normalized = validate_topic_input({
+            "topic": "自然配音分段合同测试",
+            "voice_engine": "qwen3-tts",
+            "voice_chunk_max_chars": 72,
+        })
+        self.assertEqual(normalized["voice_engine"], "qwen3_tts")
+        self.assertEqual(normalized["voice_chunk_max_chars"], 72)
+        with self.assertRaisesRegex(UnprocessableError, "48到140"):
+            validate_topic_input({
+                "topic": "自然配音分段合同测试",
+                "voice_chunk_max_chars": 260,
+            })
 
     def test_explicit_diagnostic_sapi_uses_systemroot_powershell_absolute_path(self):
         with tempfile.TemporaryDirectory() as folder_name:
@@ -575,7 +670,11 @@ class VoiceFallbackContractTests(unittest.TestCase):
                 report = ProductionRunner._synthesize_voice(
                     job,
                     "固定路径语音测试",
-                    {"allow_online_voice_fallback": False, "allow_diagnostic_sapi": True},
+                    {
+                        "voice_engine": "qwen3_tts",
+                        "allow_online_voice_fallback": False,
+                        "allow_diagnostic_sapi": True,
+                    },
                 )
             self.assertEqual(report["engine"], "windows_sapi")
             self.assertTrue(report["quality_blocked"])
@@ -602,7 +701,11 @@ class VoiceFallbackContractTests(unittest.TestCase):
                     ProductionRunner._synthesize_voice(
                         job,
                         "固定路径语音测试",
-                        {"allow_online_voice_fallback": False, "allow_diagnostic_sapi": True},
+                        {
+                            "voice_engine": "qwen3_tts",
+                            "allow_online_voice_fallback": False,
+                            "allow_diagnostic_sapi": True,
+                        },
                     )
 
     def test_natural_voice_failure_does_not_silently_fall_back_to_sapi(self):
@@ -617,7 +720,7 @@ class VoiceFallbackContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "禁止静默降级到Windows SAPI"):
                     ProductionRunner._synthesize_voice(job, "固定路径语音测试", {})
 
-    def test_edge_neural_voice_is_the_portable_natural_fallback(self):
+    def test_edge_neural_voice_is_the_portable_natural_default(self):
         with tempfile.TemporaryDirectory() as folder_name:
             root = Path(folder_name)
             job = root / "job"
@@ -642,6 +745,8 @@ class VoiceFallbackContractTests(unittest.TestCase):
 
             self.assertEqual(report["engine"], "edge_tts")
             self.assertTrue(report["natural_voice"])
+            self.assertFalse(report["fallback"])
+            self.assertEqual(report["requested_engine"], "edge_tts")
             self.assertEqual(len(commands), 2)
             self.assertEqual(commands[0][1:3], ["-m", "edge_tts"])
             self.assertNotIn("sapi_tts.ps1", " ".join(commands[0]))

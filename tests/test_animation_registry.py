@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
@@ -14,12 +15,15 @@ from core.animation_registry import (
     validate_animation_pack,
 )
 from core.motion_director import (
+    CINEMATIC_TEMPLATE_FILE,
+    CINEMATIC_VISUAL_FILE,
     FONT_BOLD_FILE,
     FONT_REGULAR_FILE,
     MotionPlanError,
     TEMPLATE_FILE,
     build_motion_plan,
     build_motion_project,
+    derive_motion_segments,
     validate_motion_plan,
 )
 
@@ -42,6 +46,25 @@ def _segments(count: int = 6) -> list[dict[str, str]]:
 
 
 class AnimationRegistryTests(unittest.TestCase):
+    def test_legacy_natural_script_uses_short_actionable_scene_titles(self):
+        script = (
+            "闻不到气味，不代表甲醛达标。"
+            "第一步先看它讨论的对象和使用场景。"
+            "第二步核对剂量、空间体积和作用时间。"
+            "保存完整检测报告并持续通风，请专业人员判断。"
+            "记住，感觉只能提醒你，证据才能支持结论。"
+        )
+        segments = derive_motion_segments(
+            "闻不到气味，不代表甲醛达标",
+            script,
+            target_count=5,
+            capability_pack={"id": "legacy-clean-air-v2"},
+        )
+        titles = [segment["title"] for segment in segments]
+        self.assertIn("先看对象与场景", titles)
+        self.assertIn("报告 × 通风 × 判断", titles)
+        self.assertEqual("感觉 ≠ 结论", titles[-1])
+
     def test_bundled_pack_is_hash_bound_and_families_are_explicit(self):
         registry = AnimationRegistry.load()
         summary = registry.summary()
@@ -165,13 +188,16 @@ class AnimationRegistryTests(unittest.TestCase):
             generic_output = output_root / "generic"
             legacy_output = output_root / "legacy"
             build_motion_project(generic_output, generic_plan)
-            build_motion_project(
+            legacy_built = build_motion_project(
                 legacy_output,
                 legacy_plan,
                 capability_pack={"id": "legacy-clean-air-v2"},
             )
             generic_html = (generic_output / "index.html").read_text(encoding="utf-8")
             legacy_html = (legacy_output / "index.html").read_text(encoding="utf-8")
+            legacy_asset_exists = (legacy_output / "assets" / CINEMATIC_VISUAL_FILE.name).is_file()
+            generic_asset_exists = (generic_output / "assets" / CINEMATIC_VISUAL_FILE.name).exists()
+            legacy_motion = json.loads((legacy_output / "index.motion.json").read_text(encoding="utf-8"))
 
         self.assertIn(
             'if (type === "timeline-pulse") return `<div class="timeline-board"',
@@ -200,6 +226,21 @@ class AnimationRegistryTests(unittest.TestCase):
         self.assertIn('<i>时</i><span>净界AI内容工厂</span>', legacy_html)
         self.assertIn('"visual_type": "liquid-chamber"', legacy_html)
         self.assertIn('"visual_type": "orbit-summary"', legacy_html)
+        self.assertEqual(legacy_built["template"], CINEMATIC_TEMPLATE_FILE.name)
+        self.assertEqual(
+            legacy_built["visual_asset_sha256"],
+            hashlib.sha256(CINEMATIC_VISUAL_FILE.read_bytes()).hexdigest(),
+        )
+        self.assertTrue(legacy_asset_exists)
+        self.assertFalse(generic_asset_exists)
+        self.assertIn(
+            {"kind": "keepsMoving", "withinSelector": "#motion-stage", "maxStaticSec": 1.5},
+            legacy_motion["assertions"],
+        )
+        self.assertIn(
+            {"kind": "staysInFrame", "selector": "#visual-scene-01 .visual-module"},
+            legacy_motion["assertions"],
+        )
 
     def test_generic_plan_rejects_legacy_only_block_even_with_rehashed_receipt(self):
         registry = AnimationRegistry.load()

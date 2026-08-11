@@ -244,7 +244,7 @@ REPO_TREE_ALLOWLIST: dict[str, frozenset[str]] = {
         {".css", ".html", ".js", ".json", ".jpeg", ".jpg", ".lucide", ".png", ".svg", ".webp", ".woff", ".woff2"}
     ),
     "catalog": frozenset({".json", ".md", ".txt", ".yaml", ".yml"}),
-    "agent-skills": frozenset({".css", ".html", ".js", ".json", ".md", ".py", ".txt", ".yaml", ".yml"}),
+    "agent-skills": frozenset({".css", ".html", ".js", ".json", ".md", ".png", ".py", ".txt", ".yaml", ".yml"}),
 }
 MPT_APP_SUFFIX_ALLOWLIST = frozenset({".py", ".json"})
 SKIPPED_DIRECTORY_NAMES = frozenset(

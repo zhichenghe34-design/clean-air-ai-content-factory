@@ -1193,7 +1193,7 @@ class AppHandler(BaseHTTPRequestHandler):
             if not isinstance(options, dict):
                 raise UnprocessableError("production_options必须是JSON对象")
             allowed_options = {
-                "target_duration_seconds", "pattern_card_ids", "voice_engine", "aspect_ratio", "production_mode", "render_mode",
+                "target_duration_seconds", "pattern_card_ids", "voice_engine", "voice_chunk_max_chars", "aspect_ratio", "production_mode", "render_mode",
                 "require_animation", "enable_web_research", "source_urls", "motion_scenes", "animation_quality",
             }
             option_unknown = sorted(set(options) - allowed_options)

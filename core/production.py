@@ -41,6 +41,14 @@ from core.web_agent import (
     _capability_pack_has_clean_air_scope,
 )
 from core.web_tools import TrustedWebToolRegistry
+from core.voice_contract import (
+    DEFAULT_VOICE_CHUNK_MAX_CHARS,
+    DEFAULT_VOICE_ENGINE,
+    NATURAL_VOICE_ENGINES,
+    WORKBENCH_VOICE_ENGINES,
+    normalize_voice_chunk_max_chars,
+    normalize_voice_engine,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -318,7 +326,8 @@ DEFAULT_INPUT: dict[str, Any] = {
     "audience": "需要快速制作竖屏内容的业务团队",
     "target_duration_seconds": 52,
     "pattern_card_ids": [],
-    "voice_engine": "voxcpm2",
+    "voice_engine": DEFAULT_VOICE_ENGINE,
+    "voice_chunk_max_chars": DEFAULT_VOICE_CHUNK_MAX_CHARS,
     "aspect_ratio": "9:16",
     "production_mode": "motion",
     "render_mode": "animated",
@@ -1822,13 +1831,13 @@ class ProductionRunner:
             voice_report.update(self._normalize_voice_duration(folder, float(config.get("target_duration_seconds", 52))))
             if self.voice_adapter is None:
                 voice_report.update({
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "script_sha256": hashlib.sha256(str(approved["script"]).encode("utf-8")).hexdigest().upper(),
                     "voice_sha256": _file_sha256(folder / "voice.wav"),
                     "quality_eligible": (
                         voice_report.get("natural_voice") is True
                         and voice_report.get("quality_blocked") is not True
-                        and str(voice_report.get("engine")) in {"voxcpm2", "edge_tts"}
+                        and str(voice_report.get("engine")) in NATURAL_VOICE_ENGINES
                     ),
                 })
                 atomic_json(folder / "voice_identity.json", voice_report)
@@ -2155,6 +2164,8 @@ class ProductionRunner:
 
     @staticmethod
     def _synthesize_voice(folder: Path, script: str, config: dict[str, Any]) -> dict[str, Any]:
+        requested_engine = normalize_voice_engine(config.get("voice_engine", DEFAULT_VOICE_ENGINE))
+        chunk_max_chars = normalize_voice_chunk_max_chars(config.get("voice_chunk_max_chars"))
         text_path = folder / "narration.txt"
         previous_text = text_path.read_text(encoding="utf-8") if text_path.exists() else None
         existing_voice = folder / "voice.wav"
@@ -2167,12 +2178,21 @@ class ProductionRunner:
                 identity = None
             if (
                 isinstance(identity, dict)
-                and identity.get("schema_version") == 1
+                and identity.get("schema_version") == 2
                 and identity.get("script_sha256") == script_sha256
                 and identity.get("voice_sha256") == _file_sha256(existing_voice)
                 and identity.get("natural_voice") is True
                 and identity.get("quality_eligible") is True
-                and str(identity.get("engine")) in {"voxcpm2", "edge_tts"}
+                and identity.get("requested_engine") == requested_engine
+                and identity.get("voice_chunk_max_chars") == chunk_max_chars
+                and str(identity.get("engine")) in NATURAL_VOICE_ENGINES
+                and (
+                    identity.get("engine") == requested_engine
+                    or (
+                        identity.get("engine") == "edge_tts"
+                        and identity.get("fallback_from") == requested_engine
+                    )
+                )
             ):
                 report = dict(identity)
                 report.update({"reused": True, "reason": "脚本、音频哈希和自然配音身份均匹配"})
@@ -2181,35 +2201,39 @@ class ProductionRunner:
         existing_voice.unlink(missing_ok=True)
         identity_path.unlink(missing_ok=True)
         script_digest = hashlib.sha256(script.encode("utf-8")).hexdigest()[:12]
-        voice_dir = folder / f"voice_parts-{script_digest}"
+        voice_dir = folder / f"voice_parts-{script_digest}-{requested_engine}-{chunk_max_chars}"
         command = [
-            sys.executable, str(VOICE_WORKBENCH), "--engine", str(config.get("voice_engine", "voxcpm2")),
+            sys.executable, str(VOICE_WORKBENCH), "--engine", requested_engine,
             "--text-file", str(text_path), "--reference-audio", str(VOICE_REFERENCE),
-            "--output-dir", str(voice_dir), "--max-chars", "260",
+            "--output-dir", str(voice_dir), "--max-chars", str(chunk_max_chars),
         ]
         log_path = folder / "voice_generation.log"
         failures: list[str] = []
-        try:
-            if not VOICE_WORKBENCH.exists() or not VOICE_REFERENCE.exists():
-                raise FileNotFoundError("Local Voice Workbench或参考音频不存在")
-            result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800, check=True)
-            log_path.write_text((result.stdout or "") + "\n" + (result.stderr or ""), encoding="utf-8")
-            merged = voice_dir / "merged.wav"
-            if not merged.exists():
-                raise RuntimeError("语音工作台未生成 merged.wav")
-            shutil.copy2(merged, folder / "voice.wav")
-            qc = json.loads((voice_dir / "qc_report.json").read_text(encoding="utf-8"))
-            return {
-                "engine": config.get("voice_engine", "voxcpm2"),
-                "fallback": False,
-                "natural_voice": True,
-                "qc": qc,
-            }
-        except Exception as exc:
-            failures.append(f"primary:{type(exc).__name__}:{exc}")
-            log_path.write_text(f"Primary natural voice failed: {exc}\n", encoding="utf-8")
+        if requested_engine in WORKBENCH_VOICE_ENGINES:
+            try:
+                if not VOICE_WORKBENCH.exists() or not VOICE_REFERENCE.exists():
+                    raise FileNotFoundError("Local Voice Workbench或参考音频不存在")
+                result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800, check=True)
+                log_path.write_text((result.stdout or "") + "\n" + (result.stderr or ""), encoding="utf-8")
+                merged = voice_dir / "merged.wav"
+                if not merged.exists():
+                    raise RuntimeError("语音工作台未生成 merged.wav")
+                shutil.copy2(merged, folder / "voice.wav")
+                qc = json.loads((voice_dir / "qc_report.json").read_text(encoding="utf-8"))
+                return {
+                    "engine": requested_engine,
+                    "requested_engine": requested_engine,
+                    "voice_chunk_max_chars": chunk_max_chars,
+                    "segment_count": len(qc.get("parts", [])) if isinstance(qc, dict) else None,
+                    "fallback": False,
+                    "natural_voice": True,
+                    "qc": qc,
+                }
+            except Exception as exc:
+                failures.append(f"primary:{type(exc).__name__}:{exc}")
+                log_path.write_text(f"Primary natural voice failed: {exc}\n", encoding="utf-8")
 
-        if config.get("allow_online_voice_fallback", True) is not False:
+        if requested_engine == "edge_tts" or config.get("allow_online_voice_fallback", True) is not False:
             edge_media = folder / "voice.edge.mp3"
             edge_media.unlink(missing_ok=True)
             edge_voice = str(config.get("edge_tts_voice") or DEFAULT_EDGE_TTS_VOICE).strip()
@@ -2256,13 +2280,19 @@ class ProductionRunner:
                 with log_path.open("a", encoding="utf-8") as handle:
                     handle.write((edge_result.stdout or "") + "\n" + (edge_result.stderr or ""))
                     handle.write((conversion.stdout or "") + "\n" + (conversion.stderr or ""))
-                return {
+                edge_fallback = requested_engine != "edge_tts"
+                report = {
                     "engine": "edge_tts",
                     "voice": edge_voice,
-                    "fallback": True,
-                    "fallback_from": str(config.get("voice_engine", "voxcpm2")),
+                    "fallback": edge_fallback,
+                    "requested_engine": requested_engine,
+                    "voice_chunk_max_chars": chunk_max_chars,
+                    "segment_count": 1,
                     "natural_voice": True,
                 }
+                if edge_fallback:
+                    report["fallback_from"] = requested_engine
+                return report
             except Exception as exc:
                 failures.append(f"edge_tts:{type(exc).__name__}:{exc}")
                 with log_path.open("a", encoding="utf-8") as handle:

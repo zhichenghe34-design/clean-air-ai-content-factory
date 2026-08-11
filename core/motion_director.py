@@ -19,6 +19,8 @@ from core.animation_registry import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPO_ROOT / "agent-skills" / "produce-dynamic-health-video"
 TEMPLATE_FILE = SKILL_ROOT / "assets" / "composition-template.html"
+CINEMATIC_TEMPLATE_FILE = SKILL_ROOT / "assets" / "composition-template-cinematic.html"
+CINEMATIC_VISUAL_FILE = SKILL_ROOT / "assets" / "media" / "clean-air-device-neutral-v1.png"
 ANIMATION_PACK_FILE = DEFAULT_PACK_PATH
 FONT_REGULAR_FILE = REPO_ROOT / "docs" / "fonts" / "NotoSansSC-Regular.ttf"
 FONT_BOLD_FILE = REPO_ROOT / "docs" / "fonts" / "NotoSansSC-Bold.ttf"
@@ -182,6 +184,9 @@ def derive_motion_segments(
     def title_for(caption: str, index: int) -> tuple[str, str]:
         if _is_legacy_pack(capability_pack):
             rules = [
+                (("第一步",), "先看对象与场景", "判断从场景开始"),
+                (("持续通风", "专业人员", "保存完整"), "报告 × 通风 × 判断", "稳妥行动"),
+                (("记住", "感觉"), "感觉 ≠ 结论", "最终判断原则"),
                 (("气味", "鼻子", "嗅觉"), "嗅觉只是线索", "别让感受替代检测"),
                 (("剂量", "空间", "体积"), "剂量 × 空间", "先看使用和空间条件"),
                 (("时间", "浓度", "温度", "湿度"), "时间与环境条件", "结果取决于过程"),
@@ -470,8 +475,13 @@ def build_motion_project(
     capability_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     validation = validate_motion_plan(plan)
-    if not TEMPLATE_FILE.exists():
-        raise FileNotFoundError(f"缺少受信动画模板：{TEMPLATE_FILE}")
+    project = plan.get("project") if isinstance(plan.get("project"), dict) else {}
+    legacy = bool(project.get("legacy")) or _is_legacy_pack(capability_pack)
+    template_file = CINEMATIC_TEMPLATE_FILE if legacy else TEMPLATE_FILE
+    if not template_file.exists():
+        raise FileNotFoundError(f"缺少受信动画模板：{template_file}")
+    if legacy and (not CINEMATIC_VISUAL_FILE.is_file() or CINEMATIC_VISUAL_FILE.is_symlink()):
+        raise FileNotFoundError(f"缺少已核验电影化主视觉：{CINEMATIC_VISUAL_FILE.name}")
     for font_path in (FONT_REGULAR_FILE, FONT_BOLD_FILE):
         if not font_path.is_file() or font_path.is_symlink():
             raise FileNotFoundError(f"缺少已核验离线字体：{font_path.name}")
@@ -480,13 +490,13 @@ def build_motion_project(
     assets_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(FONT_REGULAR_FILE, assets_dir / FONT_REGULAR_FILE.name)
     shutil.copy2(FONT_BOLD_FILE, assets_dir / FONT_BOLD_FILE.name)
+    if legacy:
+        shutil.copy2(CINEMATIC_VISUAL_FILE, assets_dir / CINEMATIC_VISUAL_FILE.name)
 
     has_audio = bool(voice_path and Path(voice_path).exists())
     if has_audio:
         shutil.copy2(Path(voice_path), assets_dir / "voice.wav")
-    html = TEMPLATE_FILE.read_text(encoding="utf-8")
-    project = plan.get("project") if isinstance(plan.get("project"), dict) else {}
-    legacy = bool(project.get("legacy")) or _is_legacy_pack(capability_pack)
+    html = template_file.read_text(encoding="utf-8")
     project_name = str(project.get("name") or ("clean-air-motion-output" if legacy else "evidence-motion-output"))
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", project_name):
         project_name = "clean-air-motion-output" if legacy else "evidence-motion-output"
@@ -546,18 +556,30 @@ def build_motion_project(
         encoding="utf-8",
     )
     first_scene = plan["scenes"][0]["id"]
-    caption_assertions = [
-        {"kind": "staysInFrame", "selector": f'#{scene["id"]} .caption'}
-        for scene in plan["scenes"]
-    ]
+    if legacy:
+        motion_assertions = [
+            {"kind": "appearsBy", "selector": f"#{first_scene} strong", "bySec": 1.1},
+            {"kind": "keepsMoving", "withinSelector": "#motion-stage", "maxStaticSec": 1.5},
+        ] + [
+            {"kind": "staysInFrame", "selector": f'#{scene["id"]} .beat-panel'}
+            for scene in plan["scenes"]
+        ] + [
+            {"kind": "staysInFrame", "selector": f'#visual-{scene["id"]} .visual-module'}
+            for scene in plan["scenes"]
+        ]
+    else:
+        motion_assertions = [
+            {"kind": "appearsBy", "selector": f"#{first_scene} h1", "bySec": 0.8},
+            {"kind": "keepsMoving", "withinSelector": "#scenes", "maxStaticSec": 2.5},
+        ] + [
+            {"kind": "staysInFrame", "selector": f'#{scene["id"]} .caption'}
+            for scene in plan["scenes"]
+        ]
     (project_dir / "index.motion.json").write_text(
         json.dumps(
             {
                 "duration": plan["duration_seconds"],
-                "assertions": [
-                    {"kind": "appearsBy", "selector": f"#{first_scene} h1", "bySec": 0.8},
-                    {"kind": "keepsMoving", "withinSelector": "#scenes", "maxStaticSec": 2.5},
-                ] + caption_assertions,
+                "assertions": motion_assertions,
             },
             ensure_ascii=False,
             indent=2,
@@ -569,10 +591,16 @@ def build_motion_project(
         "project_name": project_name,
         "brand_name": brand_name,
         "has_audio": has_audio,
+        "template": template_file.name,
         "validation": validation,
         "animation_registry": dict(plan["animation_registry"]),
         "font_sha256": {
             FONT_REGULAR_FILE.name: hashlib.sha256((assets_dir / FONT_REGULAR_FILE.name).read_bytes()).hexdigest(),
             FONT_BOLD_FILE.name: hashlib.sha256((assets_dir / FONT_BOLD_FILE.name).read_bytes()).hexdigest(),
         },
+        "visual_asset_sha256": (
+            hashlib.sha256((assets_dir / CINEMATIC_VISUAL_FILE.name).read_bytes()).hexdigest()
+            if legacy
+            else None
+        ),
     }

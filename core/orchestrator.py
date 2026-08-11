@@ -34,6 +34,7 @@ from core.review_policy import (
     normalize_review_policy,
     script_edit_identity,
 )
+from core.voice_contract import normalize_voice_chunk_max_chars, normalize_voice_engine
 
 
 PIPELINE = [
@@ -75,7 +76,7 @@ LEGACY_CLEAN_AIR_MARKERS = ("甲醛", "除醛", "测醛", "室内空气", "装�
 RUNNING_STATES = {"research_running", "content_running", "rendering"}
 IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 PRODUCTION_INPUT_FIELDS = {
-    "topic", "audience", "target_duration_seconds", "pattern_card_ids", "voice_engine",
+    "topic", "audience", "target_duration_seconds", "pattern_card_ids", "voice_engine", "voice_chunk_max_chars",
     "aspect_ratio", "production_mode", "render_mode", "require_animation", "enable_web_research", "source_urls",
     "motion_scenes", "animation_quality", "capability_pack", "learning_rules", "project_id",
     "selection_bundle_id", "candidate_id",
@@ -288,8 +289,18 @@ def validate_topic_input(
         values = normalized["pattern_card_ids"]
         if not isinstance(values, list) or len(values) > 20 or not all(isinstance(value, str) and 1 <= len(value) <= 40 for value in values):
             raise UnprocessableError("pattern_card_ids必须是不超过20项的短字符串数组")
-    if "voice_engine" in normalized and normalized["voice_engine"] not in {"voxcpm2", "qwen3-tts", "gpt-sovits", "windows_sapi"}:
-        raise UnprocessableError("voice_engine不在允许范围内")
+    if "voice_engine" in normalized:
+        try:
+            normalized["voice_engine"] = normalize_voice_engine(normalized["voice_engine"])
+        except ValueError as exc:
+            raise UnprocessableError(str(exc)) from exc
+    if "voice_chunk_max_chars" in normalized:
+        try:
+            normalized["voice_chunk_max_chars"] = normalize_voice_chunk_max_chars(
+                normalized["voice_chunk_max_chars"]
+            )
+        except ValueError as exc:
+            raise UnprocessableError(str(exc)) from exc
     if "aspect_ratio" in normalized and normalized["aspect_ratio"] != "9:16":
         raise UnprocessableError("当前原型只允许9:16竖屏")
     if "render_mode" in normalized and normalized["render_mode"] not in {"animated", "simple"}:
