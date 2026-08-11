@@ -16,6 +16,7 @@ from core.production import (
     VISUAL_QC_SAMPLE_COUNT,
     VideoVisualQualityBlocked,
     _bind_visual_qc_to_engine_report,
+    analyze_visual_motion_pairs,
     analyze_visual_qc_frames,
     verify_video_visuals,
 )
@@ -33,6 +34,17 @@ def normal_frames() -> list[Image.Image]:
         draw.rectangle((40, 350 - index * 5, 320, 390 + index * 5), fill=(45, 120, 100))
         frames.append(image)
     return frames
+
+
+def active_motion_pairs() -> list[tuple[Image.Image, Image.Image]]:
+    pairs: list[tuple[Image.Image, Image.Image]] = []
+    for index in range(VISUAL_QC_SAMPLE_COUNT):
+        left = Image.new("RGB", (360, 640), (16, 34, 48))
+        right = left.copy()
+        ImageDraw.Draw(left).ellipse((30, 170, 180, 320), fill=(80, 205, 245))
+        ImageDraw.Draw(right).ellipse((125, 105, 275, 255), fill=(80, 205, 245))
+        pairs.append((left, right))
+    return pairs
 
 
 class VisualQualityGateTests(unittest.TestCase):
@@ -76,17 +88,39 @@ class VisualQualityGateTests(unittest.TestCase):
         self.assertEqual(report["status"], "needs_visual_review")
         self.assertIn("extreme_visual_repetition", report["review_reasons"])
 
+    def test_motion_density_rejects_static_cards(self):
+        image = Image.new("RGB", (360, 640), (35, 45, 55))
+        report = analyze_visual_motion_pairs(
+            [(image.copy(), image.copy()) for _ in range(VISUAL_QC_SAMPLE_COUNT)],
+            self.timestamps,
+        )
+        self.assertEqual(report["status"], "needs_visual_review")
+        self.assertEqual(report["active_pair_count"], 0)
+        self.assertEqual(report["longest_inactive_run"], VISUAL_QC_SAMPLE_COUNT)
+
+    def test_motion_density_accepts_sustained_internal_motion(self):
+        report = analyze_visual_motion_pairs(active_motion_pairs(), self.timestamps)
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["active_pair_count"], VISUAL_QC_SAMPLE_COUNT)
+
     def test_verifier_writes_contact_sheet_and_json(self):
         with tempfile.TemporaryDirectory() as folder_name:
             folder = Path(folder_name)
             video = folder / "final.mp4"
             video.write_bytes(b"video-fixture")
-            with patch(
-                "core.production._extract_visual_qc_frames",
-                return_value=(normal_frames(), self.timestamps),
+            with (
+                patch(
+                    "core.production._extract_visual_qc_frames",
+                    return_value=(normal_frames(), self.timestamps),
+                ),
+                patch(
+                    "core.production._extract_visual_motion_pairs",
+                    return_value=(active_motion_pairs(), self.timestamps),
+                ),
             ):
                 report = verify_video_visuals(video, output_dir=folder)
             self.assertEqual(report["status"], "passed")
+            self.assertEqual(report["checks"]["motion_density"]["status"], "passed")
             self.assertTrue((folder / "contact-sheet.png").is_file())
             on_disk = json.loads((folder / "visual-qc.json").read_text(encoding="utf-8"))
             self.assertEqual(on_disk["sample_count"], 12)

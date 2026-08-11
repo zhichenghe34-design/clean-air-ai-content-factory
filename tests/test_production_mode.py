@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 import unittest
@@ -474,7 +475,82 @@ class HyperFramesRuntimeContractTests(unittest.TestCase):
 
 
 class VoiceFallbackContractTests(unittest.TestCase):
-    def test_sapi_fallback_uses_systemroot_powershell_absolute_path(self):
+    def test_render_stage_persists_hash_bound_natural_voice_identity(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            root = Path(folder_name)
+            _prepare_stage(root)
+
+            def synthesize(folder: Path, _script: str, _config: dict):
+                (folder / "voice.wav").write_bytes(b"RIFF" + b"natural-render" * 8)
+                return {"engine": "voxcpm2", "natural_voice": True, "fallback": False}
+
+            runner = ProductionRunner(
+                render_adapter=_render_adapter,
+                visual_qc_adapter=_visual_qc,
+            )
+            with (
+                mock.patch.object(ProductionRunner, "_synthesize_voice", side_effect=synthesize),
+                mock.patch.object(
+                    ProductionRunner,
+                    "_normalize_voice_duration",
+                    return_value={"duration_seconds": 52.0, "tempo_adjusted": False},
+                ),
+                mock.patch.object(ProductionRunner, "_audio_duration", return_value=52.0),
+            ):
+                report = runner.run_render_stage(
+                    root,
+                    {"topic": "本地门店短视频选题", "audience": "潜在客户", "production_mode": "motion"},
+                    APPROVALS,
+                )
+
+            identity = json.loads((root / "voice_identity.json").read_text(encoding="utf-8"))
+            self.assertTrue(identity["quality_eligible"])
+            self.assertEqual(identity["engine"], "voxcpm2")
+            self.assertEqual(identity["script_sha256"], hashlib.sha256(SAFE_SCRIPT.encode("utf-8")).hexdigest().upper())
+            self.assertEqual(identity["voice_sha256"], hashlib.sha256((root / "voice.wav").read_bytes()).hexdigest().upper())
+            self.assertEqual(report["voice"]["voice_sha256"], identity["voice_sha256"])
+
+    def test_legacy_unbound_voice_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            root = Path(folder_name)
+            job = root / "job"
+            job.mkdir()
+            script = "旧配音不能无证据复用"
+            (job / "narration.txt").write_text(script, encoding="utf-8")
+            (job / "voice.wav").write_bytes(b"RIFF" + b"legacy-sapi" * 8)
+            with mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"):
+                with self.assertRaisesRegex(RuntimeError, "禁止静默降级"):
+                    ProductionRunner._synthesize_voice(
+                        job, script, {"allow_online_voice_fallback": False}
+                    )
+            self.assertFalse((job / "voice.wav").exists())
+
+    def test_hash_bound_natural_voice_can_be_reused(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            job = Path(folder_name) / "job"
+            job.mkdir()
+            script = "自然配音身份绑定后才允许复用"
+            voice = b"RIFF" + b"natural-voice" * 8
+            (job / "narration.txt").write_text(script, encoding="utf-8")
+            (job / "voice.wav").write_bytes(voice)
+            (job / "voice_identity.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "engine": "voxcpm2",
+                    "natural_voice": True,
+                    "quality_eligible": True,
+                    "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest().upper(),
+                    "voice_sha256": hashlib.sha256(voice).hexdigest().upper(),
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch("core.production.subprocess.run") as run:
+                report = ProductionRunner._synthesize_voice(job, script, {})
+            self.assertTrue(report["reused"])
+            self.assertEqual(report["engine"], "voxcpm2")
+            run.assert_not_called()
+
+    def test_explicit_diagnostic_sapi_uses_systemroot_powershell_absolute_path(self):
         with tempfile.TemporaryDirectory() as folder_name:
             root = Path(folder_name)
             job = root / "job"
@@ -496,14 +572,20 @@ class VoiceFallbackContractTests(unittest.TestCase):
                 mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"),
                 mock.patch("core.production.subprocess.run", side_effect=fallback_run),
             ):
-                report = ProductionRunner._synthesize_voice(job, "固定路径语音测试", {})
+                report = ProductionRunner._synthesize_voice(
+                    job,
+                    "固定路径语音测试",
+                    {"allow_online_voice_fallback": False, "allow_diagnostic_sapi": True},
+                )
             self.assertEqual(report["engine"], "windows_sapi")
+            self.assertTrue(report["quality_blocked"])
+            self.assertTrue(report["diagnostic_only"])
             self.assertEqual(len(commands), 1)
             self.assertEqual(commands[0][0], str(powershell.resolve()))
             self.assertTrue(Path(commands[0][0]).is_absolute())
             self.assertNotEqual(commands[0][0].casefold(), "powershell.exe")
 
-    def test_sapi_fallback_fails_closed_when_fixed_powershell_is_missing(self):
+    def test_explicit_diagnostic_sapi_fails_closed_when_fixed_powershell_is_missing(self):
         with tempfile.TemporaryDirectory() as folder_name:
             root = Path(folder_name)
             job = root / "job"
@@ -517,7 +599,53 @@ class VoiceFallbackContractTests(unittest.TestCase):
                 ),
             ):
                 with self.assertRaisesRegex(FileNotFoundError, "固定路径不可用"):
+                    ProductionRunner._synthesize_voice(
+                        job,
+                        "固定路径语音测试",
+                        {"allow_online_voice_fallback": False, "allow_diagnostic_sapi": True},
+                    )
+
+    def test_natural_voice_failure_does_not_silently_fall_back_to_sapi(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            root = Path(folder_name)
+            job = root / "job"
+            job.mkdir()
+            with (
+                mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"),
+                mock.patch("core.production.subprocess.run", side_effect=RuntimeError("edge unavailable")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "禁止静默降级到Windows SAPI"):
                     ProductionRunner._synthesize_voice(job, "固定路径语音测试", {})
+
+    def test_edge_neural_voice_is_the_portable_natural_fallback(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            root = Path(folder_name)
+            job = root / "job"
+            job.mkdir()
+            commands: list[list[str]] = []
+
+            def fake_run(command: list[str], **_kwargs):
+                commands.append(command)
+                if "edge_tts" in command:
+                    Path(command[command.index("--write-media") + 1]).write_bytes(b"edge-mp3")
+                else:
+                    Path(command[-1]).write_bytes(b"RIFF" + b"\0" * 64)
+                return mock.Mock(stdout="", stderr="")
+
+            with (
+                mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"),
+                mock.patch("core.production.FFMPEG", root / "ffmpeg.exe"),
+                mock.patch("core.production._tool_available", return_value=True),
+                mock.patch("core.production.subprocess.run", side_effect=fake_run),
+            ):
+                report = ProductionRunner._synthesize_voice(job, "固定路径语音测试", {})
+
+            self.assertEqual(report["engine"], "edge_tts")
+            self.assertTrue(report["natural_voice"])
+            self.assertEqual(len(commands), 2)
+            self.assertEqual(commands[0][1:3], ["-m", "edge_tts"])
+            self.assertNotIn("sapi_tts.ps1", " ".join(commands[0]))
+            self.assertFalse((job / "voice.edge.mp3").exists())
 
 
 class ProductionEngineSummaryTests(unittest.TestCase):

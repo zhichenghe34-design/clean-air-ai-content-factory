@@ -16,8 +16,8 @@
     .orb.a { width: 650px; height: 650px; left: -270px; top: 30px; background: radial-gradient(circle, rgba(31,90,70,.9), transparent 68%); }
     .orb.b { width: 560px; height: 560px; right: -230px; bottom: 80px; background: radial-gradient(circle, rgba(200,227,91,.17), transparent 68%); }
     .scene { position: absolute; inset: 0; width: 1080px; height: 1920px; overflow: hidden; }
-    .content { position: absolute; inset: 0; padding: 118px 78px 270px; display: flex; flex-direction: column; }
-    .top { display: flex; justify-content: space-between; align-items: center; font-size: 24px; letter-spacing: .12em; color: #C8E35B; }
+    .content { position: absolute; inset: 0; z-index: 4; padding: 118px 78px 270px; display: flex; flex-direction: column; transform-origin: 50% 58%; }
+    .top { display: flex; justify-content: flex-end; align-items: center; font-size: 24px; letter-spacing: .12em; color: #C8E35B; }
     .brand { position: absolute; left: 64px; top: 48px; z-index: 30; display: flex; gap: 14px; align-items: center; color: #B8CFC5; font-size: 22px; }
     .brand i { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; background: #C8E35B; color: #071713; font-style: normal; font-weight: 900; }
     .kicker { margin-top: 105px; color: #C8E35B; font-size: 31px; font-weight: 800; }
@@ -156,6 +156,19 @@
     .fence-piece.top, .fence-piece.bottom { width: 700px; height: 15px; left: 0; transform-origin: left; } .fence-piece.top { top: 0; } .fence-piece.bottom { bottom: 0; }
     .fence-piece.left, .fence-piece.right { width: 15px; height: 560px; top: 0; transform-origin: top; } .fence-piece.left { left: 0; } .fence-piece.right { right: 0; }
     .fence-core { width: 390px; padding: 70px 40px; border: 5px solid #C8E35B; text-align: center; font-size: 40px; font-weight: 900; }
+    .scene-atmosphere { position: absolute; inset: 0; z-index: 1; overflow: hidden; }
+    .atmo-glow { position: absolute; width: 760px; height: 760px; left: 160px; top: 620px; border-radius: 50%; background: radial-gradient(circle, rgba(61,178,255,.23) 0, rgba(56,111,255,.11) 38%, transparent 70%); filter: blur(8px); }
+    .airflow { position: absolute; inset: 0; width: 1080px; height: 1920px; overflow: visible; opacity: .74; }
+    .flow-line { fill: none; stroke-width: 10; stroke-linecap: round; stroke-dasharray: 34 46; filter: drop-shadow(0 0 16px rgba(78,184,255,.68)); }
+    .flow-line.f1 { stroke: #54C7FF; }
+    .flow-line.f2 { stroke: #77E6D1; stroke-width: 7; }
+    .flow-line.f3 { stroke: #C693FF; stroke-width: 8; }
+    .flow-particle { position: absolute; width: 13px; height: 13px; border-radius: 50%; background: #BDEEFF; box-shadow: 0 0 12px #54C7FF, 0 0 28px rgba(84,199,255,.72); }
+    .pulse-ring { position: absolute; width: 520px; height: 520px; left: 280px; top: 720px; border: 7px solid rgba(84,199,255,.68); border-radius: 50%; box-shadow: 0 0 34px rgba(84,199,255,.28), inset 0 0 32px rgba(119,230,209,.18); }
+    .pulse-ring.r2 { border-color: rgba(119,230,209,.58); }
+    .pulse-ring.r3 { border-color: rgba(198,147,255,.52); }
+    .kinetic-rail { position: absolute; right: 34px; top: 190px; width: 7px; height: 1350px; border-radius: 8px; background: linear-gradient(180deg, transparent, #54C7FF 18%, #77E6D1 56%, #C693FF 86%, transparent); transform-origin: top; box-shadow: 0 0 18px rgba(84,199,255,.65); }
+    .kinetic-rail::after { content: ""; position: absolute; width: 22px; height: 22px; left: -7px; bottom: -3px; border: 4px solid #BDEEFF; border-radius: 50%; background: #071713; }
   </style>
 </head>
 <body>
@@ -186,6 +199,14 @@
     };
     const labeledItems = (values, className, prefix) => values.map((value, index) => `<div class="${className} ${prefix}${index + 1}">${esc(value)}</div>`).join("");
     const orbitChips = (values) => values.map((value, index) => `<div class="chip c${index + 1}">${esc(value)}</div>`).join("");
+    const atmosphereMarkup = (index) => {
+      const particles = Array.from({length: 12}, (_, particleIndex) => {
+        const left = 70 + ((particleIndex * 83 + index * 41) % 920);
+        const top = 420 + ((particleIndex * 137 + index * 89) % 1120);
+        return `<i class="flow-particle p${particleIndex + 1}" style="left:${left}px;top:${top}px"></i>`;
+      }).join("");
+      return `<div class="scene-atmosphere" data-layout-ignore><div class="atmo-glow"></div><svg class="airflow" viewBox="0 0 1080 1920" aria-hidden="true"><path class="flow-line f1" d="M-80 1540 C260 1370 120 970 510 830 S840 420 1160 250"/><path class="flow-line f2" d="M-120 1260 C180 1130 360 1330 530 1010 S760 560 1160 600"/><path class="flow-line f3" d="M40 1830 C370 1520 730 1570 600 1160 S450 590 900 110"/></svg>${particles}<i class="pulse-ring r1"></i><i class="pulse-ring r2"></i><i class="pulse-ring r3"></i><i class="kinetic-rail"></i></div>`;
+    };
 
     const FAMILY_BUILDERS = {
       "radial-focus": (scene, type) => {
@@ -268,6 +289,45 @@
       root.querySelectorAll(selector).forEach((element, index) => {
         finiteAnimation(element, keyframes, Object.assign({}, timing, {delay: timing.delay + index * staggerMs}));
       });
+    }
+
+    function animateAtmosphere(root, index, startMs, durationMs) {
+      const direction = index % 2 === 0 ? 1 : -1;
+      finiteAnimation(root.querySelector(".scene-atmosphere"), [{opacity:0},{opacity:1,offset:.08},{opacity:1,offset:.9},{opacity:0}], {duration:durationMs,delay:startMs,easing:"linear"});
+      root.querySelectorAll(".flow-line").forEach((line, lineIndex) => {
+        finiteAnimation(line, [
+          {strokeDashoffset:"1500",opacity:.08,transform:`translateX(${-26 * direction}px)`},
+          {strokeDashoffset:"420",opacity:.88,transform:`translateX(${18 * direction}px)`,offset:.38},
+          {strokeDashoffset:"-620",opacity:.64,transform:`translateX(${-10 * direction}px)`,offset:.72},
+          {strokeDashoffset:"-1580",opacity:.16,transform:`translateX(${24 * direction}px)`}
+        ], {duration:Math.max(1400,durationMs),delay:startMs+lineIndex*120,easing:"linear"});
+      });
+      root.querySelectorAll(".flow-particle").forEach((particle, particleIndex) => {
+        const lateral = ((particleIndex % 5) - 2) * 38 * direction;
+        finiteAnimation(particle, [
+          {transform:"translate3d(0,220px,0) scale(.35)",opacity:0},
+          {transform:`translate3d(${lateral*.25}px,30px,0) scale(1)`,opacity:.92,offset:.2},
+          {transform:`translate3d(${lateral}px,-430px,0) scale(.72)`,opacity:.7,offset:.68},
+          {transform:`translate3d(${-lateral*.55}px,-850px,0) scale(.18)`,opacity:0}
+        ], {duration:Math.max(1200,durationMs-240),delay:startMs+(particleIndex%4)*115,easing:"cubic-bezier(.34,0,.2,1)"});
+      });
+      root.querySelectorAll(".pulse-ring").forEach((ring, ringIndex) => {
+        const offset = ringIndex * .13;
+        finiteAnimation(ring, [
+          {transform:"scale(.25)",opacity:0},
+          {transform:"scale(.62)",opacity:.72,offset:.12+offset},
+          {transform:"scale(1.45)",opacity:0,offset:.36+offset},
+          {transform:"scale(.38)",opacity:0,offset:.48+offset},
+          {transform:"scale(.78)",opacity:.55,offset:.66+offset/2},
+          {transform:"scale(1.72)",opacity:0}
+        ], {duration:Math.max(1600,durationMs),delay:startMs,easing:"cubic-bezier(.2,0,.28,1)"});
+      });
+      finiteAnimation(root.querySelector(".kinetic-rail"), [{transform:"scaleY(0)",opacity:0},{transform:"scaleY(.48)",opacity:.92,offset:.24},{transform:"scaleY(1)",opacity:.76,offset:.78},{transform:"scaleY(.18)",opacity:0}], {duration:durationMs,delay:startMs,easing:"cubic-bezier(.2,0,.2,1)"});
+      finiteAnimation(root.querySelector(".atmo-glow"), [
+        {transform:`translate3d(${-90*direction}px,80px,0) scale(.72)`,opacity:.2},
+        {transform:`translate3d(${70*direction}px,-70px,0) scale(1.18)`,opacity:.72,offset:.48},
+        {transform:`translate3d(${-35*direction}px,15px,0) scale(.9)`,opacity:.34}
+      ], {duration:durationMs,delay:startMs,easing:"ease-in-out"});
     }
 
     const FAMILY_ANIMATORS = {
@@ -356,7 +416,18 @@
       finiteAnimation(root.querySelector(".kicker"), [{transform:"translateX(-65px)",opacity:0},{transform:"translateX(0)",opacity:1}], {duration:480,delay:startMs+50,easing:"cubic-bezier(.2,0,0,1)"});
       finiteAnimation(root.querySelector("h1"), [{transform:"translateY(70px)",opacity:0},{transform:"translateY(0)",opacity:1}], {duration:620,delay:startMs+100,easing:"cubic-bezier(.2,0,0,1)"});
       finiteAnimation(root.querySelector(".caption span"), [{transform:"translateY(35px)",opacity:0},{transform:"translateY(0)",opacity:1}], {duration:450,delay:startMs+160,easing:"cubic-bezier(.2,0,0,1)"});
-      finiteAnimation(root.querySelector(".visual"), [{transform:"translateY(0)"},{transform:"translateY(-14px)"}], {duration:Math.max(500,durationMs),delay:startMs,easing:"linear"});
+      const cameraDirection = index % 2 === 0 ? 1 : -1;
+      finiteAnimation(root.querySelector(".content"), [
+        {transform:`translate3d(${-16*cameraDirection}px,24px,0) scale(1.015)`},
+        {transform:`translate3d(${10*cameraDirection}px,-8px,0) scale(1.048)`,offset:.52},
+        {transform:`translate3d(${-5*cameraDirection}px,-28px,0) scale(1.075)`}
+      ], {duration:Math.max(800,durationMs),delay:startMs,easing:"cubic-bezier(.3,0,.2,1)"});
+      finiteAnimation(root.querySelector(".visual"), [
+        {transform:`translate3d(${-22*cameraDirection}px,30px,0) rotate(${-0.7*cameraDirection}deg) scale(.97)`},
+        {transform:`translate3d(${18*cameraDirection}px,-12px,0) rotate(${0.45*cameraDirection}deg) scale(1.035)`,offset:.46},
+        {transform:`translate3d(${-8*cameraDirection}px,-34px,0) rotate(${-0.25*cameraDirection}deg) scale(1.015)`}
+      ], {duration:Math.max(800,durationMs),delay:startMs,easing:"ease-in-out"});
+      animateAtmosphere(root, index, startMs, durationMs);
 
       const family = scene.renderer_family;
       const animator = FAMILY_ANIMATORS[family];
@@ -380,10 +451,13 @@
       node.setAttribute("data-track-index", String(index + 1));
       node.setAttribute("data-layout-allow-overlap", "");
       node.setAttribute("data-layout-allow-occlusion", "");
-      node.innerHTML = `<div class="content"><div class="top"><span>EVIDENCE IN MOTION</span><span>${String(index+1).padStart(2,"0")} / ${String(plan.scenes.length).padStart(2,"0")}</span></div><div class="kicker">${esc(scene.kicker)}</div><h1>${esc(scene.title)}</h1><div class="visual">${visualMarkup(scene)}</div></div><div class="caption"><span>${esc(scene.caption)}</span></div><div class="scene-wipe" data-layout-allow-overflow data-layout-allow-occlusion></div>`;
+      node.innerHTML = `${atmosphereMarkup(index)}<div class="content" data-layout-allow-overflow><div class="top"><span>${String(index+1).padStart(2,"0")} / ${String(plan.scenes.length).padStart(2,"0")}</span></div><div class="kicker">${esc(scene.kicker)}</div><h1>${esc(scene.title)}</h1><div class="visual">${visualMarkup(scene)}</div></div><div class="caption"><span>${esc(scene.caption)}</span></div><div class="scene-wipe" data-layout-allow-overflow data-layout-allow-occlusion></div>`;
       scenesRoot.appendChild(node);
     });
     plan.scenes.forEach(animateScene);
+    const totalDurationMs = Math.max(1000, Number(plan.duration_seconds || __DURATION__) * 1000);
+    finiteAnimation(document.querySelector(".orb.a"), [{transform:"translate3d(-90px,-40px,0) scale(.8)"},{transform:"translate3d(170px,210px,0) scale(1.28)",offset:.5},{transform:"translate3d(-20px,90px,0) scale(.94)"}], {duration:totalDurationMs,delay:0,easing:"ease-in-out"});
+    finiteAnimation(document.querySelector(".orb.b"), [{transform:"translate3d(110px,100px,0) scale(.75)"},{transform:"translate3d(-190px,-230px,0) scale(1.35)",offset:.56},{transform:"translate3d(20px,-80px,0) scale(1)"}], {duration:totalDurationMs,delay:0,easing:"ease-in-out"});
   </script>
 </body>
 </html>

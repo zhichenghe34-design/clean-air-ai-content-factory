@@ -300,7 +300,15 @@ FFPROBE = _tool_path("FFPROBE_PATH", "ffprobe")
 FONT_REGULAR = _configured_path("FONT_REGULAR", r"C:\Windows\Fonts\msyh.ttc")
 FONT_BOLD = _configured_path("FONT_BOLD", r"C:\Windows\Fonts\msyhbd.ttc")
 
+VOICE_TEMPO_MINIMUM = 0.90
+VOICE_TEMPO_MAXIMUM = 1.12
+DEFAULT_EDGE_TTS_VOICE = "zh-CN-YunxiNeural"
+
 VISUAL_QC_SAMPLE_COUNT = 12
+VISUAL_QC_MOTION_OFFSET_SECONDS = 0.40
+VISUAL_QC_MIN_ACTIVE_PAIR_RATIO = 0.75
+VISUAL_QC_MIN_FRAME_DIFFERENCE = 0.0035
+VISUAL_QC_MIN_MOVING_PIXEL_RATIO = 0.035
 KNOWN_TEST_MATERIAL_SHA256 = {
     "9A37A318334DD6478E5BBE3B4447E97B437B92C22855F96640D2CF9DD1F9716D": "mpt_testsrc2_fixture",
 }
@@ -984,6 +992,52 @@ def _extract_visual_qc_frames(
     return frames, timestamps
 
 
+def _extract_visual_motion_pairs(
+    video_path: Path,
+    work_dir: Path,
+    ffmpeg_path: Path,
+    ffprobe_path: Path,
+    sample_count: int = VISUAL_QC_SAMPLE_COUNT,
+    offset_seconds: float = VISUAL_QC_MOTION_OFFSET_SECONDS,
+) -> tuple[list[tuple[Image.Image, Image.Image]], list[float]]:
+    """Sample short frame pairs so scene changes cannot masquerade as animation."""
+
+    if not _tool_available(ffmpeg_path):
+        raise RuntimeError("未找到FFmpeg，无法执行动态密度门禁")
+    duration = _visual_qc_duration(video_path, ffprobe_path)
+    if duration <= offset_seconds + 0.1:
+        raise RuntimeError("成片过短，无法执行动态密度门禁")
+    latest_start = max(0.0, duration - offset_seconds - 0.05)
+    timestamps = [
+        min(latest_start, max(0.0, duration * (index + 0.5) / sample_count))
+        for index in range(sample_count)
+    ]
+    pairs: list[tuple[Image.Image, Image.Image]] = []
+    for index, timestamp in enumerate(timestamps, start=1):
+        images: list[Image.Image] = []
+        for suffix, pair_timestamp in (("a", timestamp), ("b", timestamp + offset_seconds)):
+            frame_path = work_dir / f"motion-{index:02d}-{suffix}.png"
+            result = subprocess.run(
+                [
+                    str(ffmpeg_path), "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", f"{pair_timestamp:.6f}", "-i", str(video_path),
+                    "-frames:v", "1", "-vf", "scale=320:-2:flags=lanczos",
+                    str(frame_path),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+            )
+            if result.returncode or not frame_path.is_file() or frame_path.stat().st_size <= 0:
+                raise RuntimeError("正式成片动态密度抽帧失败")
+            with Image.open(frame_path) as image:
+                images.append(image.convert("RGB").copy())
+        pairs.append((images[0], images[1]))
+    return pairs, timestamps
+
+
 def _classify_test_bar_pixel(red: int, green: int, blue: int) -> int:
     targets = (
         red >= 170 and green <= 105 and blue <= 105,
@@ -1069,6 +1123,66 @@ def _normalized_frame_difference(left: Image.Image, right: Image.Image) -> float
     difference = ImageChops.difference(normalized(left), normalized(right))
     channel_means = ImageStat.Stat(difference).mean
     return sum(channel_means) / (len(channel_means) * 255.0)
+
+
+def analyze_visual_motion_pairs(
+    pairs: list[tuple[Image.Image, Image.Image]],
+    timestamps: list[float],
+) -> dict[str, Any]:
+    if len(pairs) != VISUAL_QC_SAMPLE_COUNT or len(timestamps) != len(pairs):
+        raise ValueError(f"动态密度门禁必须恰好抽取{VISUAL_QC_SAMPLE_COUNT}组相邻帧")
+    rows: list[dict[str, Any]] = []
+    active_flags: list[bool] = []
+    for index, ((left, right), timestamp) in enumerate(zip(pairs, timestamps), start=1):
+        def normalized(image: Image.Image) -> Image.Image:
+            width, height = image.size
+            return image.crop((0, 0, width, max(1, int(height * 0.78)))).convert("RGB").resize(
+                (160, 250), Image.Resampling.BILINEAR
+            )
+
+        difference = ImageChops.difference(normalized(left), normalized(right))
+        pixels = (
+            list(difference.get_flattened_data())
+            if hasattr(difference, "get_flattened_data")
+            else list(difference.getdata())
+        )
+        normalized_difference = sum(sum(pixel) / 3 for pixel in pixels) / (len(pixels) * 255.0)
+        moving_pixel_ratio = sum(1 for pixel in pixels if max(pixel) >= 10) / len(pixels)
+        active = (
+            normalized_difference >= VISUAL_QC_MIN_FRAME_DIFFERENCE
+            and moving_pixel_ratio >= VISUAL_QC_MIN_MOVING_PIXEL_RATIO
+        )
+        active_flags.append(active)
+        rows.append({
+            "index": index,
+            "timestamp_seconds": round(float(timestamp), 3),
+            "offset_seconds": VISUAL_QC_MOTION_OFFSET_SECONDS,
+            "normalized_frame_difference": round(normalized_difference, 6),
+            "moving_pixel_ratio": round(moving_pixel_ratio, 6),
+            "active": active,
+        })
+
+    longest_inactive_run = 0
+    current_inactive_run = 0
+    for active in active_flags:
+        if active:
+            current_inactive_run = 0
+        else:
+            current_inactive_run += 1
+            longest_inactive_run = max(longest_inactive_run, current_inactive_run)
+    active_pair_ratio = sum(active_flags) / len(active_flags)
+    passed = active_pair_ratio >= VISUAL_QC_MIN_ACTIVE_PAIR_RATIO and longest_inactive_run <= 2
+    return {
+        "status": "passed" if passed else "needs_visual_review",
+        "active_pair_count": sum(active_flags),
+        "sample_pair_count": len(active_flags),
+        "active_pair_ratio": round(active_pair_ratio, 4),
+        "longest_inactive_run": longest_inactive_run,
+        "minimum_active_pair_ratio": VISUAL_QC_MIN_ACTIVE_PAIR_RATIO,
+        "minimum_frame_difference": VISUAL_QC_MIN_FRAME_DIFFERENCE,
+        "minimum_moving_pixel_ratio": VISUAL_QC_MIN_MOVING_PIXEL_RATIO,
+        "pairs": rows,
+    }
 
 
 def analyze_visual_qc_frames(
@@ -1239,6 +1353,19 @@ def verify_video_visuals(
             material_hashes=material_hashes,
             material_sources_valid=material_sources_valid,
         )
+        motion_pairs, motion_timestamps = _extract_visual_motion_pairs(
+            video_path,
+            Path(work_name),
+            ffmpeg_path,
+            ffprobe_path,
+        )
+        motion_density = analyze_visual_motion_pairs(motion_pairs, motion_timestamps)
+        report["checks"]["motion_density"] = motion_density
+        if motion_density["status"] != "passed":
+            if "insufficient_motion_density" not in report["review_reasons"]:
+                report["review_reasons"].append("insufficient_motion_density")
+            if report["status"] == "passed":
+                report["status"] = "needs_visual_review"
         report.update({
             "schema_version": 1,
             "video": {
@@ -1693,6 +1820,18 @@ class ProductionRunner:
             if not (folder / "voice.wav").is_file():
                 raise RuntimeError("配音适配器没有生成voice.wav")
             voice_report.update(self._normalize_voice_duration(folder, float(config.get("target_duration_seconds", 52))))
+            if self.voice_adapter is None:
+                voice_report.update({
+                    "schema_version": 1,
+                    "script_sha256": hashlib.sha256(str(approved["script"]).encode("utf-8")).hexdigest().upper(),
+                    "voice_sha256": _file_sha256(folder / "voice.wav"),
+                    "quality_eligible": (
+                        voice_report.get("natural_voice") is True
+                        and voice_report.get("quality_blocked") is not True
+                        and str(voice_report.get("engine")) in {"voxcpm2", "edge_tts"}
+                    ),
+                })
+                atomic_json(folder / "voice_identity.json", voice_report)
             duration = self._audio_duration(folder / "voice.wav")
             captions = self._write_captions(folder, segments, duration)
             if production_mode == "motion":
@@ -2019,16 +2158,37 @@ class ProductionRunner:
         text_path = folder / "narration.txt"
         previous_text = text_path.read_text(encoding="utf-8") if text_path.exists() else None
         existing_voice = folder / "voice.wav"
+        identity_path = folder / "voice_identity.json"
+        script_sha256 = hashlib.sha256(script.encode("utf-8")).hexdigest().upper()
         if previous_text == script and existing_voice.exists() and existing_voice.stat().st_size > 44:
-            return {"engine": config.get("voice_engine", "voxcpm2"), "fallback": False, "reused": True, "reason": "脚本未变化，复用已通过QC的配音"}
+            try:
+                identity = json.loads(identity_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                identity = None
+            if (
+                isinstance(identity, dict)
+                and identity.get("schema_version") == 1
+                and identity.get("script_sha256") == script_sha256
+                and identity.get("voice_sha256") == _file_sha256(existing_voice)
+                and identity.get("natural_voice") is True
+                and identity.get("quality_eligible") is True
+                and str(identity.get("engine")) in {"voxcpm2", "edge_tts"}
+            ):
+                report = dict(identity)
+                report.update({"reused": True, "reason": "脚本、音频哈希和自然配音身份均匹配"})
+                return report
         text_path.write_text(script, encoding="utf-8")
-        voice_dir = folder / "voice_parts"
+        existing_voice.unlink(missing_ok=True)
+        identity_path.unlink(missing_ok=True)
+        script_digest = hashlib.sha256(script.encode("utf-8")).hexdigest()[:12]
+        voice_dir = folder / f"voice_parts-{script_digest}"
         command = [
             sys.executable, str(VOICE_WORKBENCH), "--engine", str(config.get("voice_engine", "voxcpm2")),
             "--text-file", str(text_path), "--reference-audio", str(VOICE_REFERENCE),
             "--output-dir", str(voice_dir), "--max-chars", "260",
         ]
         log_path = folder / "voice_generation.log"
+        failures: list[str] = []
         try:
             if not VOICE_WORKBENCH.exists() or not VOICE_REFERENCE.exists():
                 raise FileNotFoundError("Local Voice Workbench或参考音频不存在")
@@ -2039,9 +2199,78 @@ class ProductionRunner:
                 raise RuntimeError("语音工作台未生成 merged.wav")
             shutil.copy2(merged, folder / "voice.wav")
             qc = json.loads((voice_dir / "qc_report.json").read_text(encoding="utf-8"))
-            return {"engine": config.get("voice_engine", "voxcpm2"), "fallback": False, "qc": qc}
+            return {
+                "engine": config.get("voice_engine", "voxcpm2"),
+                "fallback": False,
+                "natural_voice": True,
+                "qc": qc,
+            }
         except Exception as exc:
-            log_path.write_text(f"Primary voice failed: {exc}\n", encoding="utf-8")
+            failures.append(f"primary:{type(exc).__name__}:{exc}")
+            log_path.write_text(f"Primary natural voice failed: {exc}\n", encoding="utf-8")
+
+        if config.get("allow_online_voice_fallback", True) is not False:
+            edge_media = folder / "voice.edge.mp3"
+            edge_media.unlink(missing_ok=True)
+            edge_voice = str(config.get("edge_tts_voice") or DEFAULT_EDGE_TTS_VOICE).strip()
+            edge_command = [
+                sys.executable,
+                "-m",
+                "edge_tts",
+                "--file",
+                str(text_path),
+                "--voice",
+                edge_voice,
+                "--write-media",
+                str(edge_media),
+            ]
+            try:
+                edge_result = subprocess.run(
+                    edge_command,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=300,
+                    check=True,
+                )
+                if not edge_media.is_file() or edge_media.stat().st_size <= 0:
+                    raise RuntimeError("Edge Neural TTS未生成音频")
+                if not _tool_available(FFMPEG):
+                    raise FileNotFoundError("未找到FFmpeg，无法规范化Edge Neural TTS音频")
+                conversion = subprocess.run(
+                    [
+                        str(FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
+                        "-i", str(edge_media), "-vn", "-ac", "1", "-ar", "48000",
+                        "-c:a", "pcm_s16le", str(folder / "voice.wav"),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=300,
+                    check=True,
+                )
+                if not existing_voice.is_file() or existing_voice.stat().st_size <= 44:
+                    raise RuntimeError("Edge Neural TTS音频规范化失败")
+                with log_path.open("a", encoding="utf-8") as handle:
+                    handle.write((edge_result.stdout or "") + "\n" + (edge_result.stderr or ""))
+                    handle.write((conversion.stdout or "") + "\n" + (conversion.stderr or ""))
+                return {
+                    "engine": "edge_tts",
+                    "voice": edge_voice,
+                    "fallback": True,
+                    "fallback_from": str(config.get("voice_engine", "voxcpm2")),
+                    "natural_voice": True,
+                }
+            except Exception as exc:
+                failures.append(f"edge_tts:{type(exc).__name__}:{exc}")
+                with log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(f"Edge natural voice failed: {exc}\n")
+            finally:
+                edge_media.unlink(missing_ok=True)
+
+        if config.get("allow_diagnostic_sapi") is True:
             fallback = Path(__file__).resolve().parent / "sapi_tts.ps1"
             powershell = _windows_powershell_executable()
             command = [
@@ -2051,7 +2280,17 @@ class ProductionRunner:
             result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, check=True)
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write((result.stdout or "") + "\n" + (result.stderr or ""))
-            return {"engine": "windows_sapi", "fallback": True, "fallback_reason": str(exc)}
+            return {
+                "engine": "windows_sapi",
+                "fallback": True,
+                "quality_blocked": True,
+                "diagnostic_only": True,
+                "fallback_reason": "; ".join(failures),
+            }
+
+        raise RuntimeError(
+            "自然配音生成失败，已禁止静默降级到Windows SAPI：" + "; ".join(failures)
+        )
 
     @staticmethod
     def _segments(config: dict[str, Any], script: str) -> list[dict[str, str]]:
@@ -2251,7 +2490,7 @@ class ProductionRunner:
 
     @classmethod
     def _retime_engine_output(cls, folder: Path, tempo_factor: float) -> dict[str, Any]:
-        if not math.isfinite(tempo_factor) or not 0.75 <= tempo_factor <= 1.5:
+        if not math.isfinite(tempo_factor) or not VOICE_TEMPO_MINIMUM <= tempo_factor <= VOICE_TEMPO_MAXIMUM:
             raise RuntimeError("MPT安全变速系数无效")
         video = folder / "final.mp4"
         voice = folder / "voice.wav"
@@ -2468,17 +2707,17 @@ class ProductionRunner:
         if 45.0 <= duration <= 60.0:
             return {"duration_seconds": round(duration, 3), "tempo_adjusted": False}
         target = min(60.0, max(45.0, target_seconds))
-        feasible_minimum = max(45.0, duration / 1.5)
-        feasible_maximum = min(60.0, duration / 0.75)
+        feasible_minimum = max(45.0, duration / VOICE_TEMPO_MAXIMUM)
+        feasible_maximum = min(60.0, duration / VOICE_TEMPO_MINIMUM)
         if feasible_minimum > feasible_maximum:
             raise ScriptRevisionRequired(
-                f"配音时长{duration:.2f}秒，无法在0.75到1.5倍安全变速范围内达到45-60秒"
+                f"配音时长{duration:.2f}秒，无法在{VOICE_TEMPO_MINIMUM:.2f}到{VOICE_TEMPO_MAXIMUM:.2f}倍自然语速范围内达到45-60秒"
             )
         desired = min(feasible_maximum, max(feasible_minimum, target))
         tempo = duration / desired
-        if not 0.75 <= tempo <= 1.5:
+        if not VOICE_TEMPO_MINIMUM <= tempo <= VOICE_TEMPO_MAXIMUM:
             raise ScriptRevisionRequired(
-                f"配音时长{duration:.2f}秒，需要{tempo:.2f}倍变速，超出0.75到1.5的安全范围"
+                f"配音时长{duration:.2f}秒，需要{tempo:.2f}倍变速，超出{VOICE_TEMPO_MINIMUM:.2f}到{VOICE_TEMPO_MAXIMUM:.2f}的自然语速范围"
             )
         if not _tool_available(FFMPEG):
             raise FileNotFoundError("未找到FFmpeg，无法将配音调整到45-60秒")

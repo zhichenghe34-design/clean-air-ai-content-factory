@@ -3,6 +3,7 @@ from __future__ import annotations
 import html as html_lib
 import hashlib
 import json
+import math
 import re
 import shutil
 from pathlib import Path
@@ -236,6 +237,7 @@ def build_motion_plan(
     pack_mode = "legacy_clean_air" if legacy else "generic"
     registry = _registry()
     previous_block_id: str | None = None
+    used_renderer_families: set[str] = set()
     for index, (segment, scene_duration) in enumerate(zip(segments, scene_durations), start=1):
         end = duration if index == len(segments) else cursor + scene_duration
         safe_kicker = str(segment.get("kicker") or f"要点 {index:02d}").strip()
@@ -267,6 +269,7 @@ def build_motion_plan(
                 previous_block_id=previous_block_id,
                 preferred_ids=preferred,
                 excluded_ids=excluded_ids,
+                used_renderer_families=used_renderer_families,
             )
         except AnimationRegistryError as exc:
             raise MotionPlanError(f"场景{index}没有可用的可信动画积木：{exc}") from exc
@@ -307,6 +310,7 @@ def build_motion_plan(
             }
         )
         previous_block_id = visual
+        used_renderer_families.add(str(block["renderer_family"]))
         cursor = end
 
     snapshot = _pack_snapshot(capability_pack)
@@ -330,7 +334,7 @@ def build_motion_plan(
     director_rules = [
         "每个场景必须有主体运动和辅助运动",
         "下一场主体在遮罩离场前开始入场，禁止转场后空场",
-        "同一条视频至少使用三种不同视觉语法",
+        "至少八成场景使用不同renderer family，避免重复卡片语法",
         "字幕最多两行，强调词作为不可拆分短语",
         "结尾必须将分散信息汇聚为一个可执行判断原则",
         "画面只表达脚本已有信息，不把视觉隐喻当作事实证明",
@@ -433,8 +437,9 @@ def validate_motion_plan(plan: dict[str, Any]) -> dict[str, Any]:
                 or scene.get("transition") != block["motion"]["transition"]
             ):
                 errors.append(f"场景{index}运动声明与可信积木不一致")
-    if len(renderer_families) < 3:
-        errors.append("整条视频至少需要三种不同renderer family")
+    minimum_family_count = max(3, math.ceil(len(scenes) * 0.8))
+    if len(renderer_families) < minimum_family_count:
+        errors.append(f"整条视频至少需要{minimum_family_count}种不同renderer family")
     if scenes[-1].get("visual_type") != "orbit-summary":
         errors.append("结尾必须使用orbit-summary汇聚结论")
     expected_duration = float(plan.get("duration_seconds", 0))
@@ -450,6 +455,7 @@ def validate_motion_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "scene_count": len(scenes),
         "visual_family_count": len(renderer_families),
+        "minimum_visual_family_count": minimum_family_count,
         "no_static_only_scenes": True,
         "timeline_continuous": True,
         "registry_sha256": registry.summary()["sha256"],

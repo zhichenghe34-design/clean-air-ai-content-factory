@@ -233,6 +233,7 @@ class AnimationRegistry:
         previous_block_id: str | None = None,
         preferred_ids: Iterable[str] = (),
         excluded_ids: Iterable[str] = (),
+        used_renderer_families: Iterable[str] = (),
     ) -> tuple[dict[str, Any], list[str]]:
         if pack_mode not in ALLOWED_PACK_MODES:
             raise AnimationRegistryError("pack_mode无效")
@@ -248,7 +249,11 @@ class AnimationRegistry:
         duration = _bounded_number(duration_seconds, location="scene.duration", minimum=0.001, maximum=120.0)
         preferred_order = {block_id: index for index, block_id in enumerate(preferred_ids)}
         excluded = set(excluded_ids)
-        candidates: list[tuple[tuple[int, int, int, str], dict[str, Any], list[str]]] = []
+        used_families = set(used_renderer_families)
+        known_families = {family["id"] for family in self.pack["renderer_families"]}
+        if not used_families.issubset(known_families):
+            raise AnimationRegistryError("used_renderer_families包含未知renderer family")
+        candidates: list[tuple[tuple[int, int, int, int, str], dict[str, Any], list[str]]] = []
         for block in self.pack["blocks"]:
             bounds = block["duration_seconds"]
             if pack_mode not in block["allowed_pack_modes"] or not bounds["minimum"] <= duration <= bounds["maximum"]:
@@ -259,7 +264,13 @@ class AnimationRegistry:
             if not matched:
                 continue
             preference = preferred_order.get(block["id"], 10_000)
-            score = (len(matched), int("summary" in matched), -preference, block["id"])
+            score = (
+                int(block["renderer_family"] not in used_families),
+                len(matched),
+                int("summary" in matched),
+                -preference,
+                block["id"],
+            )
             candidates.append((score, block, matched))
         if not candidates:
             raise AnimationRegistryError("没有满足语义、时长和相邻去重约束的可信动画积木")

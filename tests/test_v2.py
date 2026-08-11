@@ -21,6 +21,7 @@ from core.orchestrator import (
 from core.provider import BudgetLedger, ProviderError, validate_provider_base_url, validate_provider_response_url
 from core.production import (
     ProductionRunner,
+    ScriptRevisionRequired,
     VideoVisualQualityBlocked,
     build_local_variants,
     estimate_narration_duration,
@@ -1437,27 +1438,18 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
                     caption_path, 52.0, LONG_SAFE_SCRIPT
                 )
 
-    def test_voice_duration_uses_a_feasible_safe_target_for_35_seconds(self):
+    def test_voice_duration_rejects_robotic_stretch_for_35_seconds(self):
         from core.production import ProductionRunner
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "voice.wav").write_bytes(b"RIFF" + b"\0" * 64)
 
-            def fake_ffmpeg(command, **_kwargs):
-                Path(command[-1]).write_bytes(b"RIFF" + b"\0" * 64)
-                return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+            with patch.object(ProductionRunner, "_audio_duration", return_value=35.0):
+                with self.assertRaisesRegex(ScriptRevisionRequired, "自然语速范围"):
+                    ProductionRunner._normalize_voice_duration(root, 52.0)
 
-            with patch.object(ProductionRunner, "_audio_duration", side_effect=[35.0, 46.667]), \
-                 patch("core.production._tool_available", return_value=True), \
-                 patch("core.production.subprocess.run", side_effect=fake_ffmpeg):
-                report = ProductionRunner._normalize_voice_duration(root, 52.0)
-
-            self.assertTrue(report["tempo_adjusted"])
-            self.assertAlmostEqual(report["tempo_factor"], 0.75, places=4)
-            self.assertEqual(report["duration_seconds"], 46.667)
-
-    def test_engine_retimes_video_audio_and_captions_for_44_and_61_seconds(self):
+    def test_engine_retimes_video_audio_and_captions_within_natural_tempo_bounds(self):
         from core.production import ProductionRunner
 
         class Result:
@@ -1471,7 +1463,11 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
                     "task_id": "11111111-1111-4111-8111-111111111111",
                 }
 
-        for raw_duration in (44.0, 61.0):
+        cases = (
+            (44.0, 44.0 / 0.90),
+            (61.0, 61.0 / 1.12),
+        )
+        for raw_duration, expected_duration in cases:
             with self.subTest(raw_duration=raw_duration), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
 
@@ -1556,7 +1552,11 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
                     },
                 )
                 with patch.object(ProductionRunner, "_import_engine_audio", side_effect=import_audio), \
-                     patch.object(ProductionRunner, "_audio_duration", side_effect=[raw_duration, 52.0, 52.0]), \
+                     patch.object(
+                         ProductionRunner,
+                         "_audio_duration",
+                         side_effect=[raw_duration, expected_duration, expected_duration],
+                     ), \
                      patch.object(ProductionRunner, "_probe_engine_video", return_value={
                          "ok": True,
                          "duration_seconds": 52.0,
@@ -1577,7 +1577,7 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
                 self.assertTrue(result["render"]["retiming"]["applied"])
                 self.assertEqual((root / "final.mp4").read_bytes(), b"retimed-video")
                 self.assertIn(
-                    "00:00:52,000",
+                    ProductionRunner._srt_time(expected_duration),
                     (root / "captions.srt").read_text(encoding="utf-8"),
                 )
                 engine_report = json.loads(
