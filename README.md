@@ -188,7 +188,7 @@ npm.cmd run test:flow
 .\.venv\Scripts\python.exe tools\verify_committed_media.py
 ```
 
-Python 测试由 `unittest discover` 动态发现，当前 445 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及纯动画生产模式、DeepSeek 结构化镜头导演与逐字旁白反向机械审核、36 积木/12 renderer family 注册表与选择收据、HyperFrames 固定身份、Windows-MF 补丁和离线依赖合同、可信系统 Edge 启动握手、9 文件 LGPL FFmpeg 与同 Release 源码门禁、Python SBOM/裁剪、MoviePy 2.2.1 补丁、MoneyPrinterTurbo video-only `h264_mf` 适配器、默认可迁移 Edge Neural TTS 与可选本机 Voice Workbench、自然配音 fail-closed、配音身份与音频哈希绑定、配音自然语速范围、像素级动态密度、结构化人审/代理测试/反向机械审核身份绑定、失败运行隔离、正式成片视觉门禁、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、代理测试必须进入详细页、两道门禁不静默代批、窄屏无溢出与零前端错误。CI 使用不可发布的注入式假配音/渲染适配器完成快速确定性 E2E。
+Python 测试由 `unittest discover` 动态发现，当前 446 项 Python 测试同时覆盖 v2 状态/审批/预算/并发/密钥回归，v3 通用 Agent 与纠错学习，以及纯动画生产模式、DeepSeek 结构化镜头导演与逐字旁白反向机械审核、36 积木/12 renderer family 注册表与选择收据、HyperFrames 固定身份、Windows-MF 补丁和离线依赖合同、可信系统 Edge 启动握手、9 文件 LGPL FFmpeg 与同 Release 源码门禁、Python SBOM/裁剪、MoviePy 2.2.1 补丁、MoneyPrinterTurbo video-only `h264_mf` 适配器、默认可迁移 Edge Neural TTS 与可选本机 Voice Workbench、自然配音 fail-closed、配音身份与音频哈希绑定、配音自然语速范围、像素级动态密度、结构化人审/代理测试/反向机械审核身份绑定、失败运行隔离、正式成片视觉门禁、Windows 一键启动和确定性便携包完整性。浏览器烟雾测试继续覆盖 Provider 三态、“恰好 3 个候选、恰好 1 个选中”、中文审核解释、换一批、自定义输入、代理测试必须进入详细页、两道门禁不静默代批、窄屏无溢出与零前端错误。CI 使用不可发布的注入式假配音/渲染适配器完成快速确定性 E2E。
 
 ## v2 历史比赛材料（只读基线）
 

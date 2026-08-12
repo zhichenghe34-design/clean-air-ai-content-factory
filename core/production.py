@@ -846,6 +846,11 @@ def _build_legacy_local_variants(
         safe_topic,
         flags=re.IGNORECASE,
     )
+    # The first deterministic topic card deliberately adds a UI-oriented
+    # "先讲清楚：" label.  It is not part of the subject and must not consume
+    # the fixed 180-195 character narration budget when the same card enters
+    # the fully unattended path.
+    safe_topic = re.sub(r"^(?:先讲清楚|先说明)\s*[：:]\s*", "", safe_topic).strip()
     evidence_rows = _strict_findings(approved_findings)
     if evidence_rows:
         source_priority = {"media_original": 0, "government_law": 1, "government_standard_metadata": 2}

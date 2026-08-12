@@ -25,6 +25,7 @@ from core.production import (
     VideoVisualQualityBlocked,
     build_local_variants,
     estimate_narration_duration,
+    review_narration_pacing,
     review_script,
 )
 from core.review_policy import CODEX_TEST_REVIEWER, MECHANICAL_REVIEWER
@@ -1330,6 +1331,15 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
         review = review_script("甲醛会导致白血病，买这个除醛产品就可以预防疾病。")
         self.assertEqual(review["status"], "blocked")
         self.assertTrue(any(item["type"] == "unsupported_medical_causality" for item in review["warnings"]))
+
+    def test_local_topic_card_label_does_not_break_unattended_narration_pacing(self):
+        topic = "甲醛检测仪数值低为什么不能立刻安心入住"
+        variants = build_local_variants(f"先讲清楚：{topic}", "目标客户与内容受众")
+        self.assertTrue(variants)
+        for item in variants:
+            self.assertIn(topic, item["script"])
+            self.assertNotIn("先讲清楚", item["script"])
+            self.assertFalse(review_narration_pacing(item["script"])["blocked"])
 
     def test_numeric_claim_requires_an_approved_finding(self):
         script = "某宣传写着百分之九十九，判断时仍要核对剂量、空间、作用时间、初始浓度、检测方法和报告来源。"
