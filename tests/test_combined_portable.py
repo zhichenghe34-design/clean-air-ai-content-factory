@@ -50,6 +50,23 @@ from scripts.launch_combined import LauncherError, verify_packaged_integrity
 
 
 class CombinedPortableTests(unittest.TestCase):
+    def test_builder_loads_verifier_under_isolated_cli_python(self) -> None:
+        builder = Path(__file__).resolve().parents[1] / "tools/build_combined_portable.py"
+        probe = (
+            "import runpy\n"
+            f"namespace = runpy.run_path({str(builder)!r}, run_name='isolated_builder_probe')\n"
+            "verify_folder, verify_zip = namespace['_load_portable_verifiers']()\n"
+            "assert callable(verify_folder) and callable(verify_zip)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", "-X", "utf8", "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

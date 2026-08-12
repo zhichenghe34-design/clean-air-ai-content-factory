@@ -38,6 +38,14 @@ from core.motion_runtime_contract import (
 )
 
 
+def _load_portable_verifiers():
+    """Load sibling verifiers even when the builder runs with Python ``-I``."""
+
+    from tools.verify_combined_portable import verify_folder, verify_zip
+
+    return verify_folder, verify_zip
+
+
 PACKAGE_ROOT_NAME = "Shiyi"
 PACKAGE_VERSION = "0.3.0"
 PACKAGE_MANIFEST = "PACKAGE-MANIFEST.json"
@@ -3242,10 +3250,7 @@ def build_combined_portable(inputs: BuildInputs) -> dict[str, object]:
         _write_root_launcher(package)
         manifest = _write_manifests(package, repo_commit, inputs)
 
-        try:
-            from .verify_combined_portable import verify_folder, verify_zip
-        except ImportError:
-            from verify_combined_portable import verify_folder, verify_zip
+        verify_folder, verify_zip = _load_portable_verifiers()
 
         errors = verify_folder(package)
         if errors:
