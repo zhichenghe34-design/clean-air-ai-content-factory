@@ -184,7 +184,7 @@
       const startMs = Number(scene.start) * 1000;
       const durationMs = Math.max(1200, (Number(scene.end) - Number(scene.start)) * 1000);
       node.querySelectorAll(".reveal").forEach((element, itemIndex) => finite(element, [
-        {opacity:.12, transform:"scale(.975)"},
+        {opacity:1, transform:"scale(.975)"},
         {opacity:1, transform:"scale(1)"}
       ], {duration:Math.min(360, durationMs * .08), delay:startMs + Math.min(210,itemIndex*34), easing:"cubic-bezier(.2,0,0,1)"}));
       finite(node.querySelector(".semantic-progress i"), [
