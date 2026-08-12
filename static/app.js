@@ -267,6 +267,7 @@ function switchView(viewName, { scroll = true } = {}) {
   document.getElementById("pageTitle").textContent = selected === "workbench" ? "Agent 内容工作台" : document.querySelector(`#view-${selected} h2`)?.textContent || "时宜 Agent 内容工厂";
   document.body.dataset.view = selected;
   closeMenu();
+  if (selected === "workbench") requestAnimationFrame(resizeComposer);
   if (scroll) window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -390,6 +391,7 @@ async function loadTopics(goal = state.currentGoal, { resetSeen = false } = {}) 
   document.getElementById("userGoalText").textContent = normalized;
   document.getElementById("userMessageTime").textContent = nowLabel();
   document.getElementById("goalInput").value = normalized;
+  resizeComposer();
   document.getElementById("topicChoicePanel").hidden = true;
   document.getElementById("activeJobPanel").hidden = true;
   document.getElementById("topicLoading").hidden = false;
@@ -1194,6 +1196,7 @@ document.getElementById("agentComposer").addEventListener("submit", async event 
         learned = await recordOnce();
       }
       input.value = "";
+      resizeComposer();
       if (learned.job) {
         const index = state.jobs.findIndex(item => item.id === learned.job.id);
         if (index >= 0) state.jobs[index] = learned.job;
@@ -1338,11 +1341,26 @@ document.getElementById("testProvider").addEventListener("click", async () => {
 });
 
 const composer = document.getElementById("goalInput");
+function resizeComposer() {
+  if (!composer.isConnected || composer.offsetParent === null) return;
+  composer.style.height = "auto";
+  const styles = getComputedStyle(composer);
+  const minHeight = Number.parseFloat(styles.minHeight) || 116;
+  const cssMaxHeight = Number.parseFloat(styles.maxHeight) || 240;
+  const maxHeight = Math.max(minHeight, Math.min(cssMaxHeight, window.innerHeight * 0.32));
+  const contentHeight = Math.max(minHeight, composer.scrollHeight);
+  composer.style.height = `${Math.min(contentHeight, maxHeight)}px`;
+  composer.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+}
+composer.addEventListener("input", resizeComposer);
 composer.addEventListener("keydown", event => {
+  if (event.isComposing || event.keyCode === 229) return;
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     document.getElementById("agentComposer").requestSubmit();
   }
 });
+window.addEventListener("resize", resizeComposer);
+resizeComposer();
 
 bootstrapSession().then(() => refresh()).catch(error => toast(error.message, true));

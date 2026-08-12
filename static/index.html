@@ -87,10 +87,12 @@
             </div>
 
             <form id="agentComposer" class="agent-composer">
-              <img class="ui-icon composer-icon" src="/icons/paperclip.svg" alt="">
-              <label class="sr-only" for="goalInput">告诉 Agent 你想做什么</label>
-              <textarea id="goalInput" rows="1" maxlength="200" placeholder="告诉 Agent 你的行业、受众和想完成的内容…">为除甲醛服务企业制作一条面向新房家庭的竖屏科普短视频，重点讲清检测条件、适用边界和可追溯证据。</textarea>
-              <button id="sendGoalBtn" class="send-button" type="submit" aria-label="发送给 Agent"><img class="ui-icon" src="/icons/send.svg" alt=""></button>
+              <div class="composer-field">
+                <label class="composer-label" for="goalInput">给 Agent 说明任务</label>
+                <p id="goalInputHelp" class="composer-help">写清行业、受众和内容重点。发送后 Agent 会先推荐 3 个选题；选定后才自动生成。任务进行中发送，则作为补充或修改要求。</p>
+                <textarea id="goalInput" rows="5" maxlength="200" aria-describedby="goalInputHelp" placeholder="例如：为社区咖啡店制作一条面向附近上班族的新品短视频，重点说明风味、价格和到店场景。">为除甲醛服务企业制作一条面向新房家庭的竖屏科普短视频，重点讲清检测条件、适用边界和可追溯证据。</textarea>
+              </div>
+              <button id="sendGoalBtn" class="send-button" type="submit"><img class="ui-icon" src="/icons/send.svg" alt=""><span>发送要求</span></button>
             </form>
 
             <details id="processDisclosure" class="process-disclosure">

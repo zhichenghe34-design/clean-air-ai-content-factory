@@ -158,11 +158,15 @@ button:disabled { cursor: not-allowed; opacity: .48; transform: none !important;
 .gate-actions .quiet-link { padding: 8px; border: 0; background: transparent; color: var(--green); font-weight: 700; }
 .error-card { padding: 16px; border-radius: 11px; background: #fff4ef; color: var(--danger); font-size: 12px; line-height: 1.6; }
 
-.agent-composer { width: min(100%, 880px); min-height: 72px; margin: 48px auto 0; padding: 11px 13px 11px 18px; border: 1px solid var(--line-strong); border-radius: 15px; display: grid; grid-template-columns: 22px minmax(0, 1fr) 46px; gap: 11px; align-items: center; background: var(--paper); box-shadow: var(--control-shadow); }
-.composer-icon { color: var(--green); }
-.agent-composer textarea { width: 100%; max-height: 116px; padding: 10px 0; border: 0; resize: none; background: transparent; color: var(--ink); line-height: 1.55; outline: none; }
+.agent-composer { width: min(100%, 880px); margin: 48px auto 0; padding: 18px; border: 1px solid var(--line-strong); border-radius: 15px; display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 16px; align-items: end; background: var(--paper); box-shadow: var(--control-shadow); }
+.composer-field { min-width: 0; }
+.composer-label { display: block; color: var(--ink); font-size: 14px; font-weight: 800; }
+.composer-help { max-width: 72ch; margin: 5px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.agent-composer textarea { width: 100%; min-height: 116px; max-height: min(240px, 32vh); margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; resize: none; overflow-y: hidden; background: #fffefa; color: var(--ink); line-height: 1.6; outline: none; }
+.agent-composer textarea:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(23, 99, 79, .1); }
 .agent-composer textarea::placeholder { color: #929a96; }
-.send-button { width: 42px; height: 42px; border: 1px solid #a6cf2c; border-radius: 10px; display: grid; place-items: center; background: var(--lime); }
+.send-button { min-width: 112px; height: 44px; padding: 0 16px; border: 1px solid #a6cf2c; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: var(--lime); color: var(--ink); font-weight: 800; }
+.send-button .ui-icon { width: 18px; height: 18px; }
 .send-button:hover { background: #d4f66c; }
 .process-disclosure { width: min(100%, 880px); margin: 20px auto 0; color: var(--muted); }
 .process-disclosure summary { min-height: 38px; display: grid; grid-template-columns: max-content 1fr max-content; gap: 22px; align-items: center; cursor: pointer; list-style: none; font-size: 11px; }
@@ -335,7 +339,9 @@ label.check input { width: auto; height: auto; margin: 0; }
   .topic-index { font-size: 22px; }
   .choice-actions { gap: 12px; flex-wrap: wrap; }
   .choice-primary { min-width: 150px; }
-  .agent-composer { margin-top: 28px; grid-template-columns: 18px minmax(0, 1fr) 42px; }
+  .agent-composer { margin-top: 28px; padding: 15px; grid-template-columns: 1fr; gap: 12px; }
+  .agent-composer textarea { min-height: 132px; max-height: min(220px, 34vh); }
+  .send-button { width: 100%; min-height: 44px; }
   .process-disclosure summary { grid-template-columns: 1fr max-content; gap: 8px; }
   .process-disclosure summary > span:nth-child(2) { display: none; }
   .latest-pane { padding: 32px 18px; }

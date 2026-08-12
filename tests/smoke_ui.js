@@ -169,6 +169,45 @@ const batches = [
   const refreshedScreening = await page.locator('#topicScreening').innerText();
   await page.locator('#writeOwnTopic').click();
   const composerFocused = await page.locator('#goalInput').evaluate(node => document.activeElement === node);
+  const composerSemantics = {
+    label: await page.locator('label[for="goalInput"]').innerText(),
+    help: await page.locator('#goalInputHelp').innerText(),
+    send: await page.locator('#sendGoalBtn').innerText(),
+    paperclips: await page.locator('#agentComposer img[src$="paperclip.svg"]').count(),
+  };
+  const composerIme = await page.locator('#goalInput').evaluate(node => {
+    const form = document.getElementById('agentComposer');
+    let submits = 0;
+    const capture = event => {
+      submits += 1;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    form.addEventListener('submit', capture, true);
+    node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
+    const composingSubmits = submits;
+    node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    const normalSubmits = submits;
+    form.removeEventListener('submit', capture, true);
+    return { composingSubmits, normalSubmits };
+  });
+  const originalGoal = await page.locator('#goalInput').inputValue();
+  const composerDefault = await page.locator('#goalInput').evaluate(node => ({
+    offsetHeight: node.offsetHeight,
+    clientHeight: node.clientHeight,
+    scrollHeight: node.scrollHeight,
+    overflowY: getComputedStyle(node).overflowY,
+  }));
+  await page.locator('#goalInput').fill('简短要求');
+  const composerShortHeight = await page.locator('#goalInput').evaluate(node => node.clientHeight);
+  await page.locator('#goalInput').fill('第一行要求\n第二行要求\n第三行要求\n第四行要求\n第五行要求\n第六行要求\n第七行要求');
+  const composerMulti = await page.locator('#goalInput').evaluate(node => ({ clientHeight: node.clientHeight, scrollHeight: node.scrollHeight }));
+  await page.locator('#goalInput').fill(Array.from({ length: 20 }, (_, index) => `第${index + 1}行`).join('\n'));
+  const composerCapped = await page.locator('#goalInput').evaluate(node => ({
+    clientHeight: node.clientHeight,
+    scrollHeight: node.scrollHeight,
+    overflowY: getComputedStyle(node).overflowY,
+  }));
 
   await page.locator('#appMenuButton').click();
   await page.locator('#appMenu:not([hidden])').waitFor();
@@ -191,11 +230,32 @@ const batches = [
   const providerClearedBadge = await page.locator('#providerBadge').innerText();
   await page.screenshot({ path: 'runtime/storage-settings-smoke.png', fullPage: true });
 
-  await page.setViewportSize({ width: 720, height: 900 });
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.locator('#view-settings.active .back-home').click();
   await page.locator('#view-workbench.active').waitFor();
   await page.waitForTimeout(250);
   const mobileNoOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+  const mobileRestoredComposer = await page.locator('#goalInput').evaluate(node => ({
+    clientHeight: node.clientHeight,
+    scrollHeight: node.scrollHeight,
+    overflowY: getComputedStyle(node).overflowY,
+  }));
+  await page.locator('#goalInput').fill('第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行');
+  const mobileComposer = await page.evaluate(() => {
+    const ids = ['agentComposer', 'goalInput', 'sendGoalBtn'];
+    const boxes = Object.fromEntries(ids.map(id => {
+      const rect = document.getElementById(id).getBoundingClientRect();
+      return [id, { left: rect.left, right: rect.right, width: rect.width, height: rect.height }];
+    }));
+    return {
+      boxes,
+      viewportWidth: window.innerWidth,
+      textareaScrollHeight: document.getElementById('goalInput').scrollHeight,
+      textareaClientHeight: document.getElementById('goalInput').clientHeight,
+      textareaOffsetHeight: document.getElementById('goalInput').offsetHeight,
+    };
+  });
+  await page.locator('#goalInput').fill(originalGoal);
   await page.screenshot({ path: 'runtime/ui-narrow-smoke.png', fullPage: false });
 
   const result = {
@@ -225,6 +285,14 @@ const batches = [
     selectedTitle,
     refreshedTitle,
     composerFocused,
+    composerSemantics,
+    composerIme,
+    composerDefault,
+    composerShortHeight,
+    composerMulti,
+    composerCapped,
+    mobileRestoredComposer,
+    mobileComposer,
     stageButtons: await page.locator('.stage-tab').count(),
     persistentSideRails: await page.locator('.context-rail, .utility-nav').count(),
     packageCards: await page.locator('#packageGrid .package-card').count(),
@@ -240,5 +308,25 @@ const batches = [
   };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
-  if (errors.length || !criticalRenderedBeforeAuxiliary || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 当前连接已验证' || !providerVerifiedClass || providerClearedBadge !== 'DeepSeek · 未配置' || clearKeyPayload?.provider?.clear_api_key !== true || defaultProductionMode !== 'motion' || !footageModeDisabled || !footageSelectableWhenReady || !modeFallsBackToMotion || !motionEngineText.includes('HyperFrames 0.7.86') || !footageEngineText.includes('MoneyPrinterTurbo 1.3.3') || visibleVersion !== 'v0.3.0' || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('项目启动结构含未知字段') || !initialScreening.includes('反证审核未执行') || initialScreening.includes('needs_evidence') || initialScreening.includes('候选1') || initialScreening.includes('ORIGINAL REVIEWED TITLE') || initialScreening.includes('<redacted-unknown-field>') || !refreshedScreening.includes('2/3') || !refreshedScreening.includes('项目启动结构校验通过') || !refreshedScreening.includes('被审核候选“测醛前为什么要先确认封闭时间？”') || refreshedScreening.includes('候选1') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow) process.exit(1);
+  const mobileBoxesFit = Object.values(mobileComposer.boxes).every(box => box.left >= 0 && box.right <= mobileComposer.viewportWidth + 0.5 && box.width > 0);
+  const composerContractOk = composerSemantics.label === '给 Agent 说明任务'
+    && composerSemantics.help.includes('先推荐 3 个选题')
+    && composerSemantics.help.includes('补充或修改要求')
+    && composerSemantics.send === '发送要求'
+    && composerSemantics.paperclips === 0
+    && composerIme.composingSubmits === 0
+    && composerIme.normalSubmits === 1
+    && composerDefault.offsetHeight >= 116
+    && composerDefault.scrollHeight <= composerDefault.clientHeight + 2
+    && composerMulti.clientHeight > composerShortHeight
+    && composerMulti.scrollHeight <= composerMulti.clientHeight + 2
+    && composerCapped.clientHeight <= 241
+    && composerCapped.scrollHeight > composerCapped.clientHeight
+    && composerCapped.overflowY === 'auto'
+    && (mobileRestoredComposer.scrollHeight <= mobileRestoredComposer.clientHeight + 2 || mobileRestoredComposer.overflowY === 'auto')
+    && mobileComposer.textareaOffsetHeight >= 132
+    && mobileComposer.textareaScrollHeight <= mobileComposer.textareaClientHeight + 2
+    && mobileComposer.boxes.sendGoalBtn.height >= 44
+    && mobileBoxesFit;
+  if (errors.length || !criticalRenderedBeforeAuxiliary || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 当前连接已验证' || !providerVerifiedClass || providerClearedBadge !== 'DeepSeek · 未配置' || clearKeyPayload?.provider?.clear_api_key !== true || defaultProductionMode !== 'motion' || !footageModeDisabled || !footageSelectableWhenReady || !modeFallsBackToMotion || !motionEngineText.includes('HyperFrames 0.7.86') || !footageEngineText.includes('MoneyPrinterTurbo 1.3.3') || visibleVersion !== 'v0.3.0' || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('项目启动结构含未知字段') || !initialScreening.includes('反证审核未执行') || initialScreening.includes('needs_evidence') || initialScreening.includes('候选1') || initialScreening.includes('ORIGINAL REVIEWED TITLE') || initialScreening.includes('<redacted-unknown-field>') || !refreshedScreening.includes('2/3') || !refreshedScreening.includes('项目启动结构校验通过') || !refreshedScreening.includes('被审核候选“测醛前为什么要先确认封闭时间？”') || refreshedScreening.includes('候选1') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow || !composerContractOk) process.exit(1);
 })();
