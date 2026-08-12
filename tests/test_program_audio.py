@@ -64,6 +64,7 @@ class ProgramAudioTests(unittest.TestCase):
             self.assertFalse(report["background_music_external_asset"])
             self.assertAlmostEqual(report["requested_duration_seconds"], 1.5, places=3)
             self.assertAlmostEqual(report["duration_seconds"], 1.5, places=3)
+            self.assertEqual(report["duration_seconds"], report["requested_duration_seconds"])
             self.assertEqual(report["program_audio_sha256"], _sha256(root / "program_audio.wav"))
             with wave.open(str(root / "program_audio.wav"), "rb") as audio:
                 self.assertEqual(audio.getnchannels(), 2)

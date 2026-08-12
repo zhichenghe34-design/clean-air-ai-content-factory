@@ -123,7 +123,7 @@ def build_default_program_audio(
         "[1:a]aresample=48000,aformat=channel_layouts=stereo,loudnorm=I=-29:TP=-4:LRA=4[bed];"
         "[bed][sidechain]sidechaincompress=threshold=0.025:ratio=8:attack=15:release=280[ducked];"
         f"[narration][ducked]amix=inputs=2:normalize=0:dropout_transition=0,"
-        f"loudnorm=I=-16:TP=-1.2:LRA=7,"
+        f"loudnorm=I=-16:TP=-1.2:LRA=7,asetpts=N/SR/TB,"
         f"apad=pad_dur={duration:.6f},atrim=duration={duration:.6f}[out]"
     )
     _run(
@@ -153,7 +153,12 @@ def build_default_program_audio(
     if not output_path.is_file() or output_path.stat().st_size <= 44:
         raise RuntimeError("标准节目音频生成失败")
     with wave.open(str(output_path), "rb") as audio:
-        actual_duration = audio.getnframes() / audio.getframerate()
+        actual_frames = audio.getnframes()
+        actual_rate = audio.getframerate()
+        actual_duration = actual_frames / actual_rate
+    expected_frames = round(duration * DEFAULT_SAMPLE_RATE)
+    if actual_rate != DEFAULT_SAMPLE_RATE or actual_frames != expected_frames:
+        raise RuntimeError("标准节目音频未精确覆盖逐镜头旁白时间线")
     return {
         "schema_version": 1,
         "contract": DEFAULT_AUDIO_CONTRACT,
