@@ -955,6 +955,7 @@ class CombinedPortableTests(unittest.TestCase):
         shared = "%~dp0runtime\\python\\python.exe"
         self.assertIn(f'-MptPython "{shared}"', launcher)
         self.assertIn(f'-AppPython "{shared}"', launcher)
+        self.assertIn("-MechanicalReview", launcher)
         self.assertNotIn("verify_combined_portable.py", launcher)
         powershell_launcher = (inputs.output / "scripts" / "launch_combined.ps1").read_text(encoding="utf-8-sig")
         self.assertIn('@("-I", "-S", "-B", "-X", "utf8", $launcher', powershell_launcher)

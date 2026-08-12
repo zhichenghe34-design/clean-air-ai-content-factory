@@ -2868,7 +2868,8 @@ def _write_root_launcher(package: Path) -> None:
         "-AppPython \"%~dp0runtime\\python\\python.exe\" "
         "-Ffmpeg \"%~dp0runtime\\ffmpeg\\ffmpeg.exe\" "
         "-Ffprobe \"%~dp0runtime\\ffmpeg\\ffprobe.exe\" "
-        "-MaterialRoot \"%~dp0engine\\MoneyPrinterTurbo\\storage\\local_videos\"\r\n"
+        "-MaterialRoot \"%~dp0engine\\MoneyPrinterTurbo\\storage\\local_videos\" "
+        "-MechanicalReview\r\n"
         "set \"SHIYI_EXIT_CODE=%ERRORLEVEL%\"\r\n"
         "if not \"%SHIYI_EXIT_CODE%\"==\"0\" pause\r\n"
         "exit /b %SHIYI_EXIT_CODE%\r\n",
