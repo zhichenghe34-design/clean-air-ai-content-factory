@@ -834,6 +834,85 @@ def _pad_safe_script(script: str, minimum_seconds: float = 45.0) -> str:
     return value
 
 
+def _spoken_text_edge(value: str, budget: int, *, from_end: bool = False) -> str:
+    characters = list(str(value or "").strip())
+    if from_end:
+        characters.reverse()
+    result: list[str] = []
+    spoken = 0
+    for character in characters:
+        consumes_budget = bool(re.fullmatch(r"[\u3400-\u9fffA-Za-z0-9]", character))
+        if consumes_budget and spoken >= budget:
+            break
+        result.append(character)
+        if consumes_budget:
+            spoken += 1
+    if from_end:
+        result.reverse()
+    return "".join(result).strip(" ，,；;：:")
+
+
+def _summarize_spoken_text(value: str, maximum_spoken_characters: int) -> str:
+    """Preserve ordinary subjects verbatim and keep both qualifiers of long ones."""
+
+    cleaned = str(value or "").strip()
+    if int(estimate_narration_duration(cleaned)["spoken_characters"]) <= maximum_spoken_characters:
+        return cleaned
+    tail_budget = max(8, maximum_spoken_characters * 2 // 5)
+    head_budget = maximum_spoken_characters - tail_budget
+    head = _spoken_text_edge(cleaned, head_budget)
+    tail = _spoken_text_edge(cleaned, tail_budget, from_end=True)
+    return f"{head}……{tail}".strip()
+
+
+def _compact_local_process_subject(topic: str, audience: str) -> tuple[str, str]:
+    """Bind dynamic subject fields to the fixed 45-60 second narration budget.
+
+    The local process-only fallback is deterministic, so repeating an oversized
+    topic cannot produce a better candidate. Preserve normal business inputs in
+    full and compact only unusually long values before composing the script.
+    """
+
+    # A valid topic may contain its decisive limitation or negation at the end.
+    # Keep every ordinary (<=56 spoken characters) topic byte-for-byte. Longer
+    # inputs retain both the opening subject and closing qualifier.
+    safe_topic = _summarize_spoken_text(topic, 56) or "当前业务问题"
+    safe_audience = _summarize_spoken_text(audience, 24) or "相关业务人员"
+    return safe_topic, safe_audience
+
+
+def _fit_local_process_script(script: str) -> str:
+    """Add only process safeguards until the fixed narration gate passes."""
+
+    additions = (
+        "保留原始材料",
+        "记录核验时间",
+        "标明适用对象",
+        "写清适用范围",
+        "把未知项明确标注",
+        "不拿经验替代证据",
+        "发布前再次逐项复核",
+        "发现材料变化就重新判断",
+        "让每次修改都能回查",
+        "没有依据就不补写",
+        "核对每项表达是否超出材料边界",
+        "无法确认的内容继续保持未知状态",
+    )
+    terminal = script[-1:] if script[-1:] in "。！？!?" else "。"
+    stem = script[:-1] if script[-1:] in "。！？!?" else script
+    best: tuple[tuple[int, int, int], str] | None = None
+    for mask in range(1 << len(additions)):
+        selected = [addition for index, addition in enumerate(additions) if mask & (1 << index)]
+        candidate = stem + ("；" if selected else "") + "；".join(selected) + terminal
+        pacing = review_narration_pacing(candidate)
+        if pacing["blocked"]:
+            continue
+        key = (int(pacing["spoken_characters"]) - NARRATION_TARGET_MIN_SPOKEN_CHARACTERS, len(selected), mask)
+        if best is None or key < best[0]:
+            best = (key, candidate)
+    return best[1] if best is not None else script
+
+
 def _build_legacy_local_variants(
     topic: str,
     audience: str,
@@ -927,8 +1006,10 @@ def build_local_variants(
     ):
         return _build_legacy_local_variants(topic, audience, approved_findings)
 
-    safe_topic = _sanitize_topic(topic, capability_pack, learning_rules)[:80]
-    safe_audience = audience[:24] or "相关业务人员"
+    safe_topic, safe_audience = _compact_local_process_subject(
+        _sanitize_topic(topic, capability_pack, learning_rules),
+        audience,
+    )
     evidence_rows = _strict_findings(approved_findings)
     added_bans = [phrase for phrase, _, _ in _additional_banned_phrases(capability_pack, learning_rules)]
     evidence_rows = [
@@ -970,23 +1051,23 @@ def build_local_variants(
             for item_id, hook, opening in openings
         ]
     core = (
-        f"这次要讨论的是“{safe_topic}”，主要面向{safe_audience}。"
-        "先把问题拆成目标、对象、使用场景和限制，不急着给答案。"
-        "再把现有资料分成可核验证据、待确认假设和个人经验；只有能追溯到来源、时间与适用范围的内容，才进入正文。"
-        "功效、价格、业绩数字以及保证性、证言、认证或排名说法，如果没有批准证据，就先删除。"
-        "最后列出已确认结论、仍缺材料和下一步核验动作，让每一句都能复查，也让后续修改有依据。"
+        f"这次讨论“{safe_topic}”，面向{safe_audience}。"
+        "先核对目标、对象、场景和限制。"
+        "再把资料分成证据、假设和经验。"
+        "无批准证据的功效、价格、业绩数字以及保证、证言、认证或排名，一律不写。"
+        "最后列出结论、缺失材料和核验动作，保留来源、时间、范围与修改依据。"
     )
     openings = [
-        ("A", "问题拆解", "先别急着给答案，把真正的问题说清楚。"),
-        ("B", "核验流程", "先记住一个原则：有材料才下结论，没有材料就标未知。"),
-        ("C", "风险提醒", "最容易出错的地方，是把经验或口号直接当成事实。"),
-        ("D", "行动建议", "遇到这类问题，可以按问题、证据、边界、行动四步推进。"),
+        ("A", "问题拆解", "先把问题说清楚。"),
+        ("B", "核验流程", "有材料才下结论。"),
+        ("C", "风险提醒", "别把经验当成事实。"),
+        ("D", "行动建议", "按四步核验这件事。"),
     ]
     return [
         {
             "id": item_id,
             "hook_type": hook,
-            "script": _pad_safe_script(opening + core),
+            "script": _fit_local_process_script(opening + core),
             "reason": f"围绕实际选题“{topic}”生成的通用核验流程；未补写任何行业事实。",
             "source": "local_process_only",
             "evidence_finding_ids": [],

@@ -44,18 +44,75 @@ const AGENT_TEST_IDENTITY = {
   let detailJobReads = 0;
   let detailArtifactRequests = 0;
   let detailRunRequests = 0;
+  let mechanicalRevisionJobReads = 0;
+  let mechanicalRevisionArtifactRequests = 0;
   let detailJob = {
     schema_version: 2,
     id: 'running-detail-job',
     status: 'research_running',
     created_at: '2026-08-01T14:00:00+08:00',
     production_input: { topic: '运行详情轮询测试', audience: '测试用户' },
+    review_policy: { ...AGENT_TEST_POLICY },
     approvals: { research: { status: 'pending' }, compliance: { status: 'pending' } },
     budget: { limit: 7, attempted: 1, succeeded: 1, failed: 0 },
     runs: [{ run_id: 'detail-run', stage: 'research', status: 'running' }],
     artifacts: [],
     active_run_id: 'detail-run',
     current_run_id: null,
+  };
+  const mechanicalRevisionJob = {
+    schema_version: 2,
+    id: 'mechanical-revision-job',
+    status: 'failed',
+    created_at: '2026-08-01T16:00:00+08:00',
+    updated_at: '2026-08-01T16:01:00+08:00',
+    production_input: { topic: '默认目标的脚本自动生成失败回归', audience: '潜在客户' },
+    review_policy: {
+      stage_review_mode: 'mechanical',
+      final_human_acceptance_required: true,
+    },
+    provider_provenance: {
+      created_at: '2026-08-01T16:00:00+08:00',
+      provider_state: 'unconfigured',
+      provider_name: 'DeepSeek',
+      model: 'deepseek-v4-flash',
+      connection_verified_at: null,
+      topic_source: 'local_safe_agent',
+      selection_bundle_id: 'selection-mechanical-fixture',
+      pretask_budget: { limit: 3, attempted: 0, succeeded: 0, failed: 0, remaining: 3, events: [] },
+    },
+    approvals: {
+      research: {
+        status: 'approved',
+        reviewer: '反向机械审核器',
+        actor_type: 'mechanical_reviewer',
+        review_mode: 'mechanical',
+        human_approval_claimed: false,
+      },
+      compliance: { status: 'pending' },
+    },
+    budget: { limit: 7, attempted: 0, succeeded: 0, failed: 0 },
+    runs: [
+      { run_id: 'mechanical-research-ok', stage: 'research', status: 'complete' },
+      { run_id: 'mechanical-content-failed-1', stage: 'content', status: 'failed', error: '脚本长度未通过自动门禁' },
+      { run_id: 'mechanical-content-failed-2', stage: 'content', status: 'failed', error: '脚本长度未通过自动门禁' },
+      { run_id: 'mechanical-content-failed-3', stage: 'content', status: 'failed', error: '脚本长度未通过自动门禁' },
+    ],
+    artifacts: [],
+    active_run_id: null,
+    current_run_id: null,
+    last_error: '脚本 Agent 及本地安全兜底均未生成符合自然节奏门禁的脚本',
+    automatic_controller: {
+      mode: 'mechanical',
+      status: 'retry_limit_reached',
+      stage_attempts: 4,
+      maximum_stage_attempts: 4,
+      human_intervention_required_during_generation: false,
+    },
+    automatic_controller_failure: {
+      code: 'automatic_content_recovery_exhausted',
+      reason: '脚本自动生成已达到重试上限，本次未发布不合格脚本。',
+    },
   };
 
   page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
@@ -78,7 +135,7 @@ const AGENT_TEST_IDENTITY = {
   await page.route('**/api/jobs', route => route.fulfill({
     status: 200,
     contentType: 'application/json; charset=utf-8',
-    body: JSON.stringify({ jobs: job ? [job, detailJob] : [detailJob] }),
+    body: JSON.stringify({ jobs: job ? [job, detailJob, mechanicalRevisionJob] : [detailJob, mechanicalRevisionJob] }),
   }));
   await page.route('**/api/demo-job', async route => {
     createRequests += 1;
@@ -166,6 +223,30 @@ const AGENT_TEST_IDENTITY = {
   await page.route('**/api/jobs/running-detail-job/run', route => {
     detailRunRequests += 1;
     return route.fulfill({ status: 500, contentType: 'application/json; charset=utf-8', body: JSON.stringify({ error: { message: '不应该重放 /run' } }) });
+  });
+  await page.route('**/api/jobs/mechanical-revision-job', route => {
+    mechanicalRevisionJobReads += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json; charset=utf-8',
+      body: JSON.stringify(mechanicalRevisionJob),
+    });
+  });
+  await page.route('**/api/jobs/mechanical-revision-job/review-artifacts/approved_script.json', route => {
+    mechanicalRevisionArtifactRequests += 1;
+    return route.fulfill({
+      status: 404,
+      contentType: 'application/json; charset=utf-8',
+      body: JSON.stringify({ error: { message: '内容阶段失败，没有可发布脚本' } }),
+    });
+  });
+  await page.route('**/api/jobs/mechanical-revision-job/review-artifacts/review.json', route => {
+    mechanicalRevisionArtifactRequests += 1;
+    return route.fulfill({
+      status: 404,
+      contentType: 'application/json; charset=utf-8',
+      body: JSON.stringify({ error: { message: '内容阶段失败，没有可发布审核结果' } }),
+    });
   });
   await page.route('**/api/jobs/fake-job/approve', route => {
     authorizeRequests += 1;
@@ -361,6 +442,47 @@ const AGENT_TEST_IDENTITY = {
     && document.querySelector('#researchFindings')?.textContent.includes('新的详情 finding'));
   const staleFindingAbsentAfterRecovery = !(await page.locator('#researchFindings').innerText()).includes('旧任务 finding 不应保留');
 
+  // Reproduce the real packaged-product path: a fully mechanical task exhausts
+  // bounded content retries before either approved_script.json or review.json
+  // exists, and the user opens its details.  This state is terminal until the
+  // Agent starts a new automatic attempt; a 404 here is not "still publishing".
+  await page.locator('#jobList button[data-action="open"][data-job-id="mechanical-revision-job"]').click();
+  await page.waitForFunction(() => document.querySelector('#jobDetailBadge')?.textContent === '自动生成未通过');
+  const mechanicalTaskHasNoManualRun = await page.locator('#jobList button[data-action="run"][data-job-id="mechanical-revision-job"]').count() === 0;
+  const mechanicalReviewLabel = await page.locator('#jobSummary').innerText();
+  const mechanicalReviewIsAutomatic = mechanicalReviewLabel.includes('反向机械审核（全自动）')
+    && !mechanicalReviewLabel.includes('用户本人审查');
+  const mechanicalProviderSourceIsExplicit = mechanicalReviewLabel.includes('本地安全 Agent（创建时未配置 DeepSeek）');
+  const mechanicalHumanControlsHidden = !await page.locator('#researchApprovalPanel').isVisible()
+    && !await page.locator('#complianceApprovalPanel').isVisible()
+    && !await page.locator('#approvedScriptInput').isVisible()
+    && !await page.locator('#saveScriptBtn').isVisible()
+    && !await page.locator('#submitResearchBtn').isVisible()
+    && !await page.locator('#submitComplianceBtn').isVisible();
+  const diagnosticHistory = page.locator('#runHistory details.diagnostic-history');
+  const diagnosticHistoryPresent = await diagnosticHistory.count() === 1;
+  const diagnosticHistoryCollapsed = diagnosticHistoryPresent
+    && !(await diagnosticHistory.evaluate(node => node.open));
+  const diagnosticHistorySummary = diagnosticHistoryPresent
+    ? await diagnosticHistory.locator('summary').innerText()
+    : '';
+  const diagnosticHistoryExplainsFailures = diagnosticHistorySummary.includes('内部诊断记录')
+    && diagnosticHistorySummary.includes('3')
+    && /失败|未通过/.test(diagnosticHistorySummary);
+  const failedRunDetailsHidden = await page.locator('#runHistory .run-row').count() === 3
+    && await page.locator('#runHistory .run-row:visible').count() === 0;
+
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await page.waitForFunction(() => window.scrollY > 0);
+  const mechanicalScrollBefore = await page.evaluate(() => window.scrollY);
+  const mechanicalReadsBeforeWait = mechanicalRevisionJobReads;
+  const mechanicalArtifactsBeforeWait = mechanicalRevisionArtifactRequests;
+  await page.waitForTimeout(2500);
+  const mechanicalScrollAfter = await page.evaluate(() => window.scrollY);
+  const mechanicalScrollStable = Math.abs(mechanicalScrollAfter - mechanicalScrollBefore) <= 1;
+  const mechanicalTerminalPollingStopped = mechanicalRevisionJobReads === mechanicalReadsBeforeWait
+    && mechanicalRevisionArtifactRequests === mechanicalArtifactsBeforeWait;
+
   const expectedCalls = ['create-network-uncertain', 'create-replay', 'authorize-network-uncertain', 'run-long', 'research-approval', 'run-2-failed', 'run-3', 'compliance-approval', 'run-4'];
   const createReplayReusedKey = createKeys[0] && createKeys[0] === createKeys[1];
   const noAutomaticRunReplay = runRequests === 4;
@@ -374,8 +496,8 @@ const AGENT_TEST_IDENTITY = {
     && job.approvals.research?.human_approval_claimed === false
     && job.approvals.compliance?.human_approval_claimed === false;
   const unexpectedErrors = errors.filter(message => !/net::ERR_CONNECTION_FAILED|status of 404 \(Not Found\)|status of 500 \(Internal Server Error\)/.test(message));
-  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, createProductionMode, latestDownloadAvailable, authorizeRequests, runKeys, noAutomaticRunReplay, logicalAttemptKeysAreUnique, maxConcurrentRunRequests, pollsDuringLongRun, injectedPollFailures, recoveredPolls, researchArtifactRequests, detailJobReads, detailArtifactRequests, detailRunRequests, staleFindingClearedDuringPending, staleFindingAbsentAfterRecovery, completedOpenEnabled, completedDetailUpdated, emptyResearchBoundaryConfirmed, researchHomeRequiresDetails, researchHomeDidNotApprove, researchReviewerLocked, researchNotePrefilled, researchApprovalDidNotAutoRun, researchApprovalIsAgentTest, explicitResearchAdvance, complianceHomeRequiresDetails, complianceHomeDidNotApprove, complianceReviewerLocked, complianceNotePrefilled, complianceApprovalDidNotAutoRun, complianceApprovalIsAgentTest, explicitComplianceAdvance, humanImpersonationAbsent, expectedFailureSignals: errors, unexpectedErrors };
+  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, createProductionMode, latestDownloadAvailable, authorizeRequests, runKeys, noAutomaticRunReplay, logicalAttemptKeysAreUnique, maxConcurrentRunRequests, pollsDuringLongRun, injectedPollFailures, recoveredPolls, researchArtifactRequests, detailJobReads, detailArtifactRequests, detailRunRequests, staleFindingClearedDuringPending, staleFindingAbsentAfterRecovery, mechanicalRevisionJobReads, mechanicalRevisionArtifactRequests, mechanicalTaskHasNoManualRun, mechanicalReviewIsAutomatic, mechanicalProviderSourceIsExplicit, mechanicalHumanControlsHidden, diagnosticHistoryPresent, diagnosticHistoryCollapsed, diagnosticHistorySummary, diagnosticHistoryExplainsFailures, failedRunDetailsHidden, mechanicalScrollBefore, mechanicalScrollAfter, mechanicalScrollStable, mechanicalTerminalPollingStopped, completedOpenEnabled, completedDetailUpdated, emptyResearchBoundaryConfirmed, researchHomeRequiresDetails, researchHomeDidNotApprove, researchReviewerLocked, researchNotePrefilled, researchApprovalDidNotAutoRun, researchApprovalIsAgentTest, explicitResearchAdvance, complianceHomeRequiresDetails, complianceHomeDidNotApprove, complianceReviewerLocked, complianceNotePrefilled, complianceApprovalDidNotAutoRun, complianceApprovalIsAgentTest, explicitComplianceAdvance, humanImpersonationAbsent, expectedFailureSignals: errors, unexpectedErrors };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
-  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || createProductionMode !== 'motion' || !latestDownloadAvailable || authorizeRequests !== 1 || !noAutomaticRunReplay || !logicalAttemptKeysAreUnique || maxConcurrentRunRequests !== 1 || pollsDuringLongRun < 2 || injectedPollFailures !== 1 || recoveredPolls < 1 || researchArtifactRequests < 2 || detailJobReads < 3 || detailArtifactRequests < 2 || detailRunRequests !== 0 || !staleFindingClearedDuringPending || !staleFindingAbsentAfterRecovery || !completedOpenEnabled || !completedDetailUpdated || !emptyResearchBoundaryConfirmed || !researchHomeRequiresDetails || !researchHomeDidNotApprove || !researchReviewerLocked || !researchNotePrefilled || !researchApprovalDidNotAutoRun || !researchApprovalIsAgentTest || !explicitResearchAdvance || !complianceHomeRequiresDetails || !complianceHomeDidNotApprove || !complianceReviewerLocked || !complianceNotePrefilled || !complianceApprovalDidNotAutoRun || !complianceApprovalIsAgentTest || !explicitComplianceAdvance || !humanImpersonationAbsent) process.exit(1);
+  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || createProductionMode !== 'motion' || !latestDownloadAvailable || authorizeRequests !== 1 || !noAutomaticRunReplay || !logicalAttemptKeysAreUnique || maxConcurrentRunRequests !== 1 || pollsDuringLongRun < 2 || injectedPollFailures !== 1 || recoveredPolls < 1 || researchArtifactRequests < 2 || detailJobReads < 3 || detailArtifactRequests < 2 || detailRunRequests !== 0 || !staleFindingClearedDuringPending || !staleFindingAbsentAfterRecovery || !mechanicalTaskHasNoManualRun || !mechanicalReviewIsAutomatic || !mechanicalProviderSourceIsExplicit || !mechanicalHumanControlsHidden || !diagnosticHistoryPresent || !diagnosticHistoryCollapsed || !diagnosticHistoryExplainsFailures || !failedRunDetailsHidden || !mechanicalScrollStable || !mechanicalTerminalPollingStopped || !completedOpenEnabled || !completedDetailUpdated || !emptyResearchBoundaryConfirmed || !researchHomeRequiresDetails || !researchHomeDidNotApprove || !researchReviewerLocked || !researchNotePrefilled || !researchApprovalDidNotAutoRun || !researchApprovalIsAgentTest || !explicitResearchAdvance || !complianceHomeRequiresDetails || !complianceHomeDidNotApprove || !complianceReviewerLocked || !complianceNotePrefilled || !complianceApprovalDidNotAutoRun || !complianceApprovalIsAgentTest || !explicitComplianceAdvance || !humanImpersonationAbsent) process.exit(1);
 })();

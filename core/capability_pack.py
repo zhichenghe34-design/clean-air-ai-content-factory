@@ -352,9 +352,15 @@ def _infer_industry(goal: str) -> str:
 def _infer_audience(goal: str) -> str:
     """Keep an explicit audience from the user's goal instead of a UI placeholder."""
 
-    match = re.search(r"(?:^|[，。；;])(?:主要)?面向([^，。；;]{2,24})", goal)
-    if not match:
-        match = re.search(r"^(?:主要)?面向([^，。；;]{2,24})", goal)
+    # A normal brief often embeds the audience in the middle of a sentence,
+    # for example "制作一条面向新房家庭的竖屏短视频".  Requiring punctuation
+    # before 面向 discarded that audience and produced the meaningless UI
+    # placeholder "目标客户与内容受众".  Stop before common deliverable words
+    # so the media format itself is not mistaken for part of the audience.
+    match = re.search(
+        r"(?:主要)?面向([^，。；;]{2,24}?)(?=(?:制作|创作|生成|的?(?:竖屏|短视频|视频)|[，。；;]|$))",
+        goal,
+    )
     if match:
         audience = _clean_space(match.group(1)).strip("，。；;:：")
         if audience:

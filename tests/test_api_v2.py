@@ -533,7 +533,32 @@ class ApiV2Tests(unittest.TestCase):
         replay_status, _, replay_body = self.request("POST", "/api/demo-job", create_body, create_headers)
         self.assertEqual(first_status, 201)
         self.assertEqual(replay_status, 200)
-        self.assertEqual(json.loads(first_body)["id"], json.loads(replay_body)["id"])
+        created = json.loads(first_body)
+        self.assertEqual(created["id"], json.loads(replay_body)["id"])
+        self.assertEqual(
+            created["provider_provenance"],
+            {
+                "created_at": created["provider_provenance"]["created_at"],
+                "provider_state": "unconfigured",
+                "provider_name": "DeepSeek",
+                "model": "deepseek-v4-flash",
+                "connection_verified_at": None,
+                "topic_source": "direct_input",
+                "selection_bundle_id": None,
+                "pretask_budget": {
+                    "limit": 3,
+                    "attempted": 0,
+                    "succeeded": 0,
+                    "failed": 0,
+                    "remaining": 3,
+                    "events": [],
+                },
+            },
+        )
+        persisted = json.loads(
+            (Path(self.temp.name) / "jobs" / created["id"] / "job.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(persisted["provider_provenance"], created["provider_provenance"])
         conflict_status, _, conflict_body = self.request(
             "POST",
             "/api/demo-job",
@@ -542,6 +567,349 @@ class ApiV2Tests(unittest.TestCase):
         )
         self.assertEqual(conflict_status, 409)
         self.assertEqual(json.loads(conflict_body)["error"]["code"], "idempotency_conflict")
+
+        forged_status, _, forged_body = self.request(
+            "POST",
+            "/api/demo-job",
+            {
+                "production_input": {
+                    "topic": "来源字段不能由浏览器伪造",
+                    "audience": "普通用户",
+                },
+                "provider_provenance": {
+                    "provider_state": "verified",
+                    "topic_source": "deepseek",
+                },
+            },
+            self.secure_headers(**{"Idempotency-Key": "forged-provider-provenance-0001"}),
+        )
+        self.assertEqual(forged_status, 422)
+        self.assertEqual(json.loads(forged_body)["error"]["code"], "unprocessable")
+
+    def test_configured_model_must_exist_before_connection_is_verified(self):
+        status, _, _ = self.request(
+            "POST",
+            "/api/config",
+            {
+                "provider": {
+                    "base_url": "https://api.deepseek.com",
+                    "model": "missing-model",
+                    "api_key": "session-key",
+                    "persist_api_key": False,
+                }
+            },
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+        with mock.patch.object(
+            app.OpenAICompatibleProvider,
+            "test_connection",
+            return_value={
+                "ok": True,
+                "models": ["deepseek-v4-flash"],
+                "configured_model_available": False,
+            },
+        ):
+            status, _, body = self.request(
+                "POST", "/api/provider/test", {}, self.secure_headers(),
+            )
+        self.assertEqual(status, 502)
+        self.assertEqual(json.loads(body)["error"]["code"], "provider_error")
+        status, _, body = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        provider_status = json.loads(body)
+        self.assertEqual(provider_status["provider_state"], "configured")
+        self.assertFalse(provider_status["provider_connection_verified"])
+
+    def test_job_store_rejects_malformed_server_provider_provenance(self):
+        plan = local_fallback_plan("验证任务来源快照", [])
+        with self.assertRaisesRegex(app.UnprocessableError, "connection_verified_at"):
+            app.job_store.create(
+                plan,
+                production_input={"topic": "任务来源快照必须严格校验", "audience": "普通用户"},
+                provider_provenance={
+                    "created_at": "2026-08-12T20:00:00+08:00",
+                    "provider_state": "verified",
+                    "provider_name": "DeepSeek",
+                    "model": "deepseek-v4-flash",
+                    "connection_verified_at": None,
+                    "topic_source": "direct_input",
+                    "selection_bundle_id": None,
+                    "pretask_budget": {
+                        "limit": 3,
+                        "attempted": 0,
+                        "succeeded": 0,
+                        "failed": 0,
+                        "remaining": 3,
+                        "events": [],
+                    },
+                },
+            )
+        self.assertEqual(app.job_store.list(), [])
+
+    def test_verified_selection_persists_server_owned_provider_provenance(self):
+        status, _, _ = self.request(
+            "POST",
+            "/api/config",
+            {
+                "provider": {
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-v4-flash",
+                    "api_key": "session-key",
+                    "persist_api_key": False,
+                }
+            },
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+        with mock.patch.object(
+            app.OpenAICompatibleProvider,
+            "test_connection",
+            return_value={
+                "ok": True,
+                "models": ["deepseek-v4-flash"],
+                "configured_model_available": True,
+            },
+        ):
+            status, _, _ = self.request(
+                "POST", "/api/provider/test", {}, self.secure_headers(),
+            )
+        self.assertEqual(status, 200)
+
+        class TopicProvider:
+            def __init__(self, budget):
+                self.budget = budget
+
+            def suggest_topics(self, _goal, _excluded, _pack, _rules):
+                token = self.budget.begin("topic_suggestion")
+                self.budget.finish(token, ok=True)
+                return [
+                    {
+                        "title": f"顾客决策前要核对的资料{index}",
+                        "reason": "把待核验信息说清楚",
+                        "audience": "潜在顾客",
+                    }
+                    for index in range(1, 4)
+                ]
+
+        goal = "为本地服务企业制作一条顾客决策科普视频"
+        with mock.patch.dict(os.environ, {"SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS": ""}), mock.patch.object(
+            app.AppHandler,
+            "_provider",
+            new=lambda _handler, budget=None: TopicProvider(budget),
+        ):
+            status, _, body = self.request(
+                "POST", "/api/agent/topics", {"goal": goal, "excluded_topics": []}, self.secure_headers(),
+            )
+        self.assertEqual(status, 200)
+        topics = json.loads(body)
+        self.assertEqual(topics["source"], "deepseek")
+        self.assertEqual(topics["pretask_provider_budget"]["attempted"], 1)
+        candidate = topics["candidates"][0]
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {
+                "selection_bundle_id": topics["selection_bundle_id"],
+                "candidate_id": candidate["id"],
+                "production_options": {},
+            },
+            self.secure_headers(**{"Idempotency-Key": "verified-provenance-create-0001"}),
+        )
+        self.assertEqual(status, 201)
+        job = json.loads(body)
+        provenance = job["provider_provenance"]
+        self.assertEqual(provenance["provider_state"], "verified")
+        self.assertEqual(provenance["provider_name"], "DeepSeek")
+        self.assertEqual(provenance["model"], "deepseek-v4-flash")
+        self.assertTrue(provenance["connection_verified_at"])
+        self.assertEqual(provenance["topic_source"], "deepseek")
+        self.assertEqual(provenance["selection_bundle_id"], topics["selection_bundle_id"])
+        self.assertEqual(provenance["pretask_budget"], topics["pretask_provider_budget"])
+        persisted = json.loads(
+            (Path(self.temp.name) / "jobs" / job["id"] / "job.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(persisted["provider_provenance"], provenance)
+        status, _, body = self.request("GET", f"/api/jobs/{job['id']}")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["provider_provenance"], provenance)
+
+    def test_semantic_topic_failure_fallback_can_still_create_a_job(self):
+        status, _, _ = self.request(
+            "POST",
+            "/api/config",
+            {
+                "provider": {
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-v4-flash",
+                    "api_key": "session-key",
+                    "persist_api_key": False,
+                }
+            },
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+
+        class SemanticallyInvalidTopicProvider:
+            def __init__(self, budget):
+                self.budget = budget
+
+            def suggest_topics(self, *_args, **_kwargs):
+                token = self.budget.begin("topic_suggestion")
+                self.budget.finish(token, ok=True)
+                self.budget.correct_semantic_failure(token, "invalid_topic_schema")
+                raise app.ProviderError("invalid topic payload")
+
+        goal = "为本地服务企业制作一条顾客决策科普视频"
+        with mock.patch.dict(os.environ, {"SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS": ""}), mock.patch.object(
+            app.AppHandler,
+            "_provider",
+            new=lambda _handler, budget=None: SemanticallyInvalidTopicProvider(budget),
+        ):
+            status, _, body = self.request(
+                "POST", "/api/agent/topics", {"goal": goal, "excluded_topics": []}, self.secure_headers(),
+            )
+        self.assertEqual(status, 200)
+        topics = json.loads(body)
+        self.assertEqual(topics["source"], "local_safe_agent")
+        self.assertEqual(topics["pretask_provider_budget"]["attempted"], 1)
+        self.assertEqual(topics["pretask_provider_budget"]["failed"], 1)
+        event = topics["pretask_provider_budget"]["events"][0]
+        self.assertEqual(event["status"], "failed")
+        self.assertEqual(event["error_type"], "invalid_topic_schema")
+        self.assertTrue(event["semantic_failed_at"])
+
+        candidate = topics["candidates"][0]
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {
+                "selection_bundle_id": topics["selection_bundle_id"],
+                "candidate_id": candidate["id"],
+                "production_options": {},
+            },
+            self.secure_headers(**{"Idempotency-Key": "semantic-fallback-create-0001"}),
+        )
+        self.assertEqual(status, 201)
+        job = json.loads(body)
+        provenance = job["provider_provenance"]
+        self.assertEqual(provenance["provider_state"], "configured")
+        self.assertEqual(provenance["topic_source"], "local_safe_agent")
+        self.assertEqual(provenance["pretask_budget"], topics["pretask_provider_budget"])
+        persisted = json.loads(
+            (Path(self.temp.name) / "jobs" / job["id"] / "job.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(persisted["provider_provenance"], provenance)
+
+    def test_provider_config_change_invalidates_selection_and_resets_pretask_budget(self):
+        status, _, _ = self.request(
+            "POST",
+            "/api/config",
+            {
+                "provider": {
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-v4-flash",
+                    "api_key": "session-key",
+                    "persist_api_key": False,
+                }
+            },
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+
+        class FailingTopicProvider:
+            def __init__(self, budget):
+                self.budget = budget
+
+            def suggest_topics(self, *_args, **_kwargs):
+                token = self.budget.begin("topic_suggestion")
+                self.budget.finish(token, ok=False, error_type="timeout")
+                raise app.ProviderError("test timeout")
+
+        goal = "为本地门店制作配置切换选题测试视频"
+        responses = []
+        with mock.patch.dict(os.environ, {"SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS": ""}), mock.patch.object(
+            app.AppHandler,
+            "_provider",
+            new=lambda _handler, budget=None: FailingTopicProvider(budget),
+        ):
+            for _ in range(3):
+                status, _, body = self.request(
+                    "POST", "/api/agent/topics", {"goal": goal, "excluded_topics": []}, self.secure_headers(),
+                )
+                self.assertEqual(status, 200)
+                responses.append(json.loads(body))
+        self.assertEqual(responses[-1]["pretask_provider_budget"]["attempted"], 3)
+        self.assertEqual(responses[-1]["pretask_provider_budget"]["remaining"], 0)
+        old_bundle = responses[0]
+
+        status, _, _ = self.request(
+            "POST",
+            "/api/config",
+            {"provider": {"base_url": "https://api.deepseek.com", "model": "another-model"}},
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(app.topic_selection_bundles), 0)
+        self.assertEqual(len(app.pretask_provider_budgets), 0)
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {
+                "selection_bundle_id": old_bundle["selection_bundle_id"],
+                "candidate_id": old_bundle["candidates"][0]["id"],
+                "production_options": {},
+            },
+            self.secure_headers(**{"Idempotency-Key": "stale-selection-create-0001"}),
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(json.loads(body)["error"]["code"], "unprocessable")
+
+        with mock.patch.dict(os.environ, {"SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS": ""}), mock.patch.object(
+            app.AppHandler,
+            "_provider",
+            new=lambda _handler, budget=None: FailingTopicProvider(budget),
+        ):
+            status, _, body = self.request(
+                "POST", "/api/agent/topics", {"goal": goal, "excluded_topics": []}, self.secure_headers(),
+            )
+        self.assertEqual(status, 200)
+        refreshed = json.loads(body)
+        self.assertEqual(refreshed["pretask_provider_budget"]["attempted"], 1)
+        self.assertEqual(refreshed["pretask_provider_budget"]["remaining"], 2)
+
+    def test_inflight_old_provider_topic_cannot_publish_after_config_revision(self):
+        goal = "为本地门店制作并发配置变更测试视频"
+        pack = app.capability_registry.publish(local_capability_pack(goal))
+        candidates = [
+            {
+                "id": f"topic-{index}",
+                "title": f"配置变更时必须废弃的旧选题{index}",
+                "reason": "并发安全回归",
+                "audience": "普通用户",
+            }
+            for index in range(1, 4)
+        ]
+        with app.state_lock:
+            old_revision = int(app.provider_session_state["revision"])
+        app.invalidate_provider_configuration()
+        with self.assertRaisesRegex(app.ConflictError, "生成选题期间发生变化"):
+            app.store_topic_selection_bundle(
+                goal,
+                pack,
+                candidates,
+                source="local_safe_agent",
+                pretask_budget={
+                    "limit": 3,
+                    "attempted": 0,
+                    "succeeded": 0,
+                    "failed": 0,
+                    "remaining": 3,
+                    "events": [],
+                },
+                provider_revision=old_revision,
+            )
+        self.assertEqual(len(app.topic_selection_bundles), 0)
 
     def test_mechanical_job_plan_has_no_intermediate_human_gate(self):
         app.job_store = JobStore(Path(self.temp.name), stage_review_mode="mechanical")

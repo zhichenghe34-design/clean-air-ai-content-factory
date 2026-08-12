@@ -12,6 +12,7 @@ from core.production import (
     ProductionRunner,
     build_local_variants,
     estimate_narration_duration,
+    review_narration_pacing,
     review_script,
 )
 
@@ -89,6 +90,30 @@ class GenericProductionTests(unittest.TestCase):
             estimate = estimate_narration_duration(item["script"])
             self.assertGreaterEqual(estimate["estimated_seconds"], 35)
             self.assertLessEqual(estimate["estimated_seconds"], 75)
+
+    def test_default_generic_topic_is_mechanically_paced_without_human_rewrite(self):
+        topic = "目标客户与内容受众最容易忽略的三个判断点"
+        audience = "目标客户与内容受众"
+        variants = build_local_variants(topic, audience, [], GENERIC_PACK, [])
+
+        self.assertEqual(len(variants), 4)
+        for item in variants:
+            self.assertEqual(item["source"], "local_process_only")
+            self.assertIn(topic, item["script"])
+            self.assertIn(audience, item["script"])
+            self.assertEqual(review_narration_pacing(item["script"])["status"], "passed")
+            self.assertEqual(review_script(item["script"], [], GENERIC_PACK, [])["status"], "passed")
+
+    def test_normal_topic_keeps_negative_qualifier_at_the_end_verbatim(self):
+        topic = "宣传数据看似亮眼但缺少完整来源与使用边界时不能直接当作结果"
+        self.assertEqual(len(topic), 29)
+        variants = build_local_variants(topic, "潜在企业客户", [], GENERIC_PACK, [])
+
+        for item in variants:
+            self.assertIn(topic, item["script"])
+            self.assertIn("不能直接当作结果", item["script"])
+            self.assertEqual(review_narration_pacing(item["script"])["status"], "passed")
+            self.assertEqual(review_script(item["script"], [], GENERIC_PACK, [])["status"], "passed")
 
     def test_evidence_fallback_uses_strict_claim_not_freeform_review_summary(self):
         finding = {

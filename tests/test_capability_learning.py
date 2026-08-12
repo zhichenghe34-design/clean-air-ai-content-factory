@@ -49,6 +49,15 @@ class CapabilityPackTests(unittest.TestCase):
         self.assertNotIn("99%", rendered)
         self.assertEqual({"id", "title", "reason", "audience"}, set(candidates[0]))
 
+    def test_embedded_audience_is_not_replaced_by_generic_placeholder(self):
+        goal = "帮我为一家本地服务企业制作一条面向潜在客户的竖屏短视频。"
+        pack = local_capability_pack(goal)
+        candidates = local_topic_candidates(goal, pack, [])
+
+        self.assertEqual(pack["snapshot"]["audience"], "潜在客户")
+        self.assertTrue(all(item["audience"] == "潜在客户" for item in candidates))
+        self.assertNotIn("目标客户与内容受众", json.dumps(candidates, ensure_ascii=False))
+
     def test_high_risk_and_malicious_goals_are_blocked(self):
         blocked = (
             "根据我的胸痛症状告诉我吃什么药",

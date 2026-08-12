@@ -78,6 +78,14 @@ PUBLIC_ARTIFACTS = [
 REVIEW_ARTIFACTS = {"research.json", "approved_script.json", "review.json"}
 LEGACY_CLEAN_AIR_MARKERS = ("甲醛", "除醛", "测醛", "室内空气", "装修污染")
 RUNNING_STATES = {"research_running", "content_running", "rendering"}
+PROVIDER_STATES = {"unconfigured", "configured", "verified"}
+TOPIC_SOURCES = {
+    "direct_input",
+    "deepseek",
+    "deepseek_bootstrap",
+    "deepseek_filtered_with_local_fallback",
+    "local_safe_agent",
+}
 IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 PRODUCTION_INPUT_FIELDS = {
     "topic", "audience", "target_duration_seconds", "pattern_card_ids", "voice_engine", "voice_chunk_max_chars",
@@ -365,6 +373,133 @@ def validate_topic_input(
     return normalized
 
 
+def validate_provider_provenance(value: dict[str, Any]) -> dict[str, Any]:
+    """Validate the server-owned Provider snapshot persisted with a new job."""
+
+    if not isinstance(value, dict):
+        raise UnprocessableError("provider_provenance必须是JSON对象")
+    allowed = {
+        "created_at",
+        "provider_state",
+        "provider_name",
+        "model",
+        "connection_verified_at",
+        "topic_source",
+        "selection_bundle_id",
+        "pretask_budget",
+    }
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise UnprocessableError("provider_provenance包含不允许的字段", details={"fields": unknown})
+
+    def timestamp(raw: Any, field: str, *, optional: bool = False) -> str | None:
+        if raw is None and optional:
+            return None
+        text = str(raw or "").strip()
+        try:
+            datetime.fromisoformat(text)
+        except (TypeError, ValueError) as exc:
+            raise UnprocessableError(f"provider_provenance.{field}时间格式无效") from exc
+        return text
+
+    created_at = timestamp(value.get("created_at"), "created_at")
+    provider_state = str(value.get("provider_state") or "").strip()
+    if provider_state not in PROVIDER_STATES:
+        raise UnprocessableError("provider_provenance.provider_state无效")
+    provider_name = str(value.get("provider_name") or "").strip()
+    if provider_name != "DeepSeek":
+        raise UnprocessableError("provider_provenance.provider_name无效")
+    model = str(value.get("model") or "").strip()
+    if not 1 <= len(model) <= 120:
+        raise UnprocessableError("provider_provenance.model长度无效")
+    verified_at = timestamp(
+        value.get("connection_verified_at"), "connection_verified_at", optional=True,
+    )
+    if provider_state == "verified" and verified_at is None:
+        raise UnprocessableError("已验证Provider必须记录connection_verified_at")
+    if provider_state != "verified" and verified_at is not None:
+        raise UnprocessableError("未验证Provider不能记录connection_verified_at")
+
+    topic_source = str(value.get("topic_source") or "").strip()
+    if topic_source not in TOPIC_SOURCES:
+        raise UnprocessableError("provider_provenance.topic_source无效")
+    selection_bundle_id = value.get("selection_bundle_id")
+    if selection_bundle_id is not None:
+        selection_bundle_id = str(selection_bundle_id).strip()
+        if (
+            not selection_bundle_id.startswith("selection-")
+            or len(selection_bundle_id) > 96
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", selection_bundle_id)
+        ):
+            raise UnprocessableError("provider_provenance.selection_bundle_id无效")
+    if topic_source == "direct_input" and selection_bundle_id is not None:
+        raise UnprocessableError("直接输入任务不能绑定selection_bundle_id")
+    if topic_source != "direct_input" and selection_bundle_id is None:
+        raise UnprocessableError("选题任务必须绑定selection_bundle_id")
+
+    budget = value.get("pretask_budget")
+    if not isinstance(budget, dict):
+        raise UnprocessableError("provider_provenance.pretask_budget必须是JSON对象")
+    budget_allowed = {"limit", "attempted", "succeeded", "failed", "remaining", "events"}
+    budget_unknown = sorted(set(budget) - budget_allowed)
+    if budget_unknown:
+        raise UnprocessableError(
+            "provider_provenance.pretask_budget包含不允许的字段",
+            details={"fields": budget_unknown},
+        )
+    counts: dict[str, int] = {}
+    for field in ("limit", "attempted", "succeeded", "failed", "remaining"):
+        raw = budget.get(field)
+        if type(raw) is not int or raw < 0:
+            raise UnprocessableError(f"provider_provenance.pretask_budget.{field}无效")
+        counts[field] = raw
+    if counts["limit"] > 7 or counts["attempted"] > counts["limit"]:
+        raise UnprocessableError("provider_provenance.pretask_budget超出上限")
+    if counts["succeeded"] + counts["failed"] > counts["attempted"]:
+        raise UnprocessableError("provider_provenance.pretask_budget计数不一致")
+    if counts["remaining"] != counts["limit"] - counts["attempted"]:
+        raise UnprocessableError("provider_provenance.pretask_budget.remaining不一致")
+    events = budget.get("events")
+    if not isinstance(events, list) or len(events) > counts["limit"]:
+        raise UnprocessableError("provider_provenance.pretask_budget.events无效")
+    safe_events = []
+    event_allowed = {
+        "stage", "status", "started_at", "finished_at", "semantic_failed_at", "error_type",
+    }
+    for event in events:
+        if not isinstance(event, dict) or set(event) - event_allowed:
+            raise UnprocessableError("provider_provenance.pretask_budget.events包含无效记录")
+        stage = str(event.get("stage") or "").strip()
+        status = str(event.get("status") or "").strip()
+        if not 1 <= len(stage) <= 120 or status not in {"attempted", "succeeded", "failed"}:
+            raise UnprocessableError("provider_provenance.pretask_budget.events内容无效")
+        safe_event = {"stage": stage, "status": status}
+        for field in ("started_at", "finished_at", "semantic_failed_at"):
+            if event.get(field) is not None:
+                safe_event[field] = timestamp(event[field], f"pretask_budget.events.{field}")
+        if event.get("error_type") is not None:
+            error_type = str(event["error_type"]).strip()
+            if not 1 <= len(error_type) <= 120:
+                raise UnprocessableError("provider_provenance.pretask_budget.events.error_type无效")
+            safe_event["error_type"] = error_type
+        safe_events.append(safe_event)
+    if topic_source.startswith("deepseek") and counts["attempted"] == 0:
+        raise UnprocessableError("DeepSeek选题来源必须有预任务调用记录")
+    if topic_source == "direct_input" and counts["attempted"] != 0:
+        raise UnprocessableError("直接输入任务不能继承预任务调用记录")
+
+    return {
+        "created_at": created_at,
+        "provider_state": provider_state,
+        "provider_name": provider_name,
+        "model": model,
+        "connection_verified_at": verified_at,
+        "topic_source": topic_source,
+        "selection_bundle_id": selection_bundle_id,
+        "pretask_budget": {**counts, "events": safe_events},
+    }
+
+
 def validate_plan(plan: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(plan, dict):
         raise UnprocessableError("plan必须是JSON对象")
@@ -458,6 +593,7 @@ class JobStore:
         *,
         creation_request: dict[str, str] | None = None,
         trusted_learning_rules: list[dict[str, Any]] | None = None,
+        provider_provenance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         safe_plan = validate_plan(plan)
         steps = safe_plan["steps"]
@@ -481,6 +617,11 @@ class JobStore:
         safe_creation_request = (
             self._validate_creation_request(creation_request)
             if creation_request is not None
+            else None
+        )
+        safe_provider_provenance = (
+            validate_provider_provenance(provider_provenance)
+            if provider_provenance is not None
             else None
         )
         job_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
@@ -522,6 +663,8 @@ class JobStore:
         }
         if safe_creation_request is not None:
             job["creation_request"] = safe_creation_request
+        if safe_provider_provenance is not None:
+            job["provider_provenance"] = safe_provider_provenance
         folder = self.jobs_dir / job_id
         folder.mkdir(parents=True, exist_ok=False)
         try:
@@ -555,6 +698,7 @@ class JobStore:
         idempotency_key: str,
         fingerprint: str,
         trusted_learning_rules: list[dict[str, Any]] | None = None,
+        provider_provenance: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         request = self._validate_creation_request({
             "idempotency_key": idempotency_key,
@@ -571,6 +715,7 @@ class JobStore:
                     production_input=production_input,
                     creation_request=request,
                     trusted_learning_rules=trusted_learning_rules,
+                    provider_provenance=provider_provenance,
                 ), False
             finally:
                 self._release_creation_lock(disk_lock)
@@ -806,6 +951,7 @@ class JobStore:
 
         runnable = {
             "authorized",
+            "awaiting_research_revision",
             "research_approved",
             "compliance_approved",
             "awaiting_script_revision",
@@ -820,7 +966,9 @@ class JobStore:
             )
 
         attempts = 0
+        previous_revision_signature: tuple[str, str] | None = None
         while automatically_runnable(job) and attempts < max_stage_attempts:
+            provider_attempted_before_stage = int(job.get("budget", {}).get("attempted", 0))
             stage_fingerprint = {
                 "controller_key": idempotency_key,
                 "job_id": job_id,
@@ -842,13 +990,80 @@ class JobStore:
                     getattr(exc, "workflow_status", None) == "awaiting_script_revision"
                     and job.get("status") == "awaiting_script_revision"
                 ):
+                    latest_run = job.get("runs", [])[-1] if job.get("runs") else {}
+                    failed_stage = str(latest_run.get("stage", ""))
+                    revision_signature = (failed_stage, str(exc))
+                    provider_attempted_in_stage = max(
+                        0,
+                        int(job.get("budget", {}).get("attempted", 0))
+                        - provider_attempted_before_stage,
+                    )
+                    # A content-stage fallback with no Provider calls is fully
+                    # deterministic. Re-running it cannot repair its output.
+                    # A Provider-backed rewrite gets one bounded fresh attempt;
+                    # the same failure twice is likewise terminal. Never leave a
+                    # mechanical job waiting for a browser editor.
+                    deterministic_local_failure = (
+                        failed_stage == "content" and provider_attempted_in_stage == 0
+                    )
+                    repeated_revision_failure = revision_signature == previous_revision_signature
+                    if deterministic_local_failure or repeated_revision_failure:
+                        stop_reason = (
+                            "自动脚本恢复已安全停止：本地确定性脚本未通过自然节奏门禁，"
+                            "重复运行不会产生不同结果"
+                            if deterministic_local_failure
+                            else "自动脚本恢复已安全停止：连续两次得到相同的自然节奏失败"
+                        )
+                        job = self._stop_automatic_controller(
+                            job_id,
+                            expected_status="awaiting_script_revision",
+                            failure_code="automatic_script_revision_exhausted",
+                            reason=stop_reason,
+                            source_error=str(exc),
+                            stage=failed_stage or "content",
+                            stage_attempts=attempts,
+                            maximum_stage_attempts=max_stage_attempts,
+                        )
+                        break
+                    previous_revision_signature = revision_signature
+                    continue
+                # ``advance`` has already persisted ordinary runner failures as
+                # a failed job with the exact retryable stage.  Mechanical mode
+                # owns that retry decision: transient adapter/process errors
+                # must not escape as HTTP 500 and turn into a browser button.
+                # Pre-run validation/conflict errors do not create this durable
+                # state and therefore still fail closed to the caller.
+                if (
+                    job.get("status") == "failed"
+                    and job.get("last_failed_stage") in {"research", "content", "render"}
+                ):
                     continue
                 raise
             attempts += 1
             if job.get("status") == "complete":
                 break
 
+        if automatically_runnable(job):
+            latest_run = job.get("runs", [])[-1] if job.get("runs") else {}
+            exhausted_status = str(job.get("status", ""))
+            job = self._stop_automatic_controller(
+                job_id,
+                expected_status=exhausted_status,
+                failure_code="automatic_stage_attempts_exhausted",
+                reason=(
+                    "自动生产已安全停止：达到自动推进上限后仍未完成当前阶段，"
+                    "系统不会转交浏览器人工审批或改稿"
+                ),
+                source_error=str(job.get("last_error", "")),
+                stage=str(latest_run.get("stage", "workflow")) or "workflow",
+                stage_attempts=attempts,
+                maximum_stage_attempts=max_stage_attempts,
+            )
+
         controller_status = "complete" if job.get("status") == "complete" else (
+            "failed"
+            if job.get("automatic_controller_failure")
+            else
             "retry_limit_reached"
             if automatically_runnable(job) and attempts >= max_stage_attempts
             else "safe_stop"
@@ -862,6 +1077,60 @@ class JobStore:
             "human_intervention_required_during_generation": False,
         }
         return result
+
+    def _stop_automatic_controller(
+        self,
+        job_id: str,
+        *,
+        expected_status: str,
+        failure_code: str,
+        reason: str,
+        source_error: str,
+        stage: str,
+        stage_attempts: int,
+        maximum_stage_attempts: int,
+    ) -> dict[str, Any]:
+        """Persist a terminal mechanical failure instead of leaving a UI breakpoint."""
+
+        lock = self._job_lock(job_id)
+        with lock:
+            job, folder = self._load_v2(job_id)
+            if job.get("status") != expected_status:
+                return self._public(job)
+            job["status"] = "failed"
+            job["last_error"] = reason
+            # This is an exhausted controller decision, not a manually
+            # recoverable stage failure. A later click must not restart the same
+            # deterministic content attempt.
+            job["last_failed_stage"] = None
+            job["automatic_controller_failure"] = {
+                "code": failure_code,
+                "stage": stage,
+                "reason": reason,
+                "source_error": source_error[:1000],
+                "stage_attempts": int(stage_attempts),
+                "maximum_stage_attempts": int(maximum_stage_attempts),
+                "human_intervention_required_during_generation": False,
+                "failed_at": now_iso(),
+            }
+            job["automatic_controller"] = {
+                "mode": "mechanical",
+                "status": "failed",
+                "stage_attempts": int(stage_attempts),
+                "maximum_stage_attempts": int(maximum_stage_attempts),
+                "human_intervention_required_during_generation": False,
+            }
+            job["updated_at"] = now_iso()
+            self._sync_steps(job)
+            self._write(folder / "job.json", job)
+            self._event(folder, "automatic_script_revision_stopped", {
+                "code": failure_code,
+                "stage": stage,
+                "reason": reason,
+                "source_error": source_error[:1000],
+                "stage_attempts": int(stage_attempts),
+            })
+            return self._public(job)
 
     def approve_research(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         job, folder = self._load_v2(job_id)

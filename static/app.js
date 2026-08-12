@@ -1,4 +1,4 @@
-const DEFAULT_GOAL = "帮我为一家本地服务企业制作一条面向潜在客户的竖屏短视频。";
+const DEFAULT_GOAL = "为除甲醛服务企业制作一条面向新房家庭的竖屏科普短视频，重点讲清检测条件、适用边界和可追溯证据。";
 
 const state = {
   config: null,
@@ -34,7 +34,7 @@ const statusLabels = {
   content_running: "脚本生成中",
   blocked_compliance: "合规阻断",
   awaiting_compliance_approval: "待审查最终脚本",
-  awaiting_script_revision: "待浏览器改稿",
+  awaiting_script_revision: "自动生成未通过",
   compliance_approved: "脚本已确认",
   rendering: "成片装配中",
   complete: "已完成",
@@ -92,6 +92,34 @@ function reviewerForJob(job = null) {
   if (isAgentTestReview(job)) return AGENT_TEST_REVIEWER;
   if (isMechanicalReview(job)) return MECHANICAL_REVIEWER;
   return "本机会话用户";
+}
+
+function isTerminalMechanicalGenerationFailure(job) {
+  return isMechanicalReview(job)
+    && job?.status === "failed"
+    && Boolean(job?.automatic_controller_failure);
+}
+
+function statusLabelForJob(job) {
+  if (isTerminalMechanicalGenerationFailure(job)) return "自动生成未通过";
+  if (job?.status === "awaiting_script_revision" && !isMechanicalReview(job)) return "待浏览器改稿";
+  return statusLabels[job?.status] || job?.status || "状态未知";
+}
+
+function providerSourceLabelForJob(job) {
+  const provenance = job?.provider_provenance;
+  if (!provenance) return "旧任务未记录选题来源";
+  const source = provenance.topic_source;
+  if (source === "deepseek") return `DeepSeek（${provenance.model || "已配置模型"}）`;
+  if (source === "deepseek_bootstrap") return `DeepSeek 动态能力包（${provenance.model || "已配置模型"}）`;
+  if (source === "deepseek_filtered_with_local_fallback") return "DeepSeek 与本地安全 Agent 混合";
+  if (source === "local_safe_agent") {
+    if (provenance.provider_state === "unconfigured") return "本地安全 Agent（创建时未配置 DeepSeek）";
+    return "本地安全 Agent（本任务未采用 DeepSeek 选题）";
+  }
+  return provenance.provider_state === "verified"
+    ? "用户直接输入（创建时 DeepSeek 已验证）"
+    : "用户直接输入（未使用 DeepSeek 选题）";
 }
 
 async function bootstrapSession() {
@@ -233,13 +261,13 @@ function setHomeJobId(value) {
   else sessionStorage.removeItem("shiyi_home_job_id");
 }
 
-function switchView(viewName) {
+function switchView(viewName, { scroll = true } = {}) {
   const selected = document.getElementById(`view-${viewName}`) ? viewName : "workbench";
   document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === `view-${selected}`));
   document.getElementById("pageTitle").textContent = selected === "workbench" ? "Agent 内容工作台" : document.querySelector(`#view-${selected} h2`)?.textContent || "时宜 Agent 内容工厂";
   document.body.dataset.view = selected;
   closeMenu();
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  if (scroll) window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function openMenu() {
@@ -302,7 +330,7 @@ function renderStatus() {
   const labels = {
     unconfigured: "DeepSeek · 未配置",
     configured: "DeepSeek · Key 已就绪",
-    verified: "DeepSeek · 本次连接已验证",
+    verified: "DeepSeek · 当前连接已验证",
   };
   const button = document.getElementById("providerQuickButton");
   document.getElementById("providerBadge").textContent = labels[providerState] || labels.unconfigured;
@@ -641,10 +669,10 @@ async function renderHomeJob(job, { managePolling = true } = {}) {
   const mechanicalReview = isMechanicalReview(job);
   const progress = statusProgress[status] ?? 18;
   document.getElementById("processBudget").textContent = `请求 ${job.budget?.attempted || 0} / ${job.budget?.limit || 7}`;
-  document.getElementById("processDetails").innerHTML = `<p>当前状态：${escapeHtml(statusLabels[status] || status)}。失败重跑不会覆盖上一份成功产物；详细证据、脚本和哈希仍可在任务记录中查看。</p>`;
+  document.getElementById("processDetails").innerHTML = `<p>当前状态：${escapeHtml(statusLabelForJob(job))}。失败重跑不会覆盖上一份成功产物；详细证据、脚本和哈希仍可在任务记录中查看。</p>`;
 
   if (runningStates.has(status)) {
-    panel.innerHTML = renderRunningCard(title, statusLabels[status], progress, job);
+    panel.innerHTML = renderRunningCard(title, statusLabelForJob(job), progress, job);
     if (managePolling) schedulePoll(job.id);
     return true;
   }
@@ -655,7 +683,7 @@ async function renderHomeJob(job, { managePolling = true } = {}) {
     return true;
   }
 
-  const head = `<div class="job-chat-head"><div><h2>${escapeHtml(title)}</h2><p>其余步骤由 Agent 自动完成。</p></div><span class="status-pill ${statusClass(status)}">${escapeHtml(statusLabels[status] || status)}</span></div>`;
+  const head = `<div class="job-chat-head"><div><h2>${escapeHtml(title)}</h2><p>其余步骤由 Agent 自动完成。</p></div><span class="status-pill ${statusClass(status)}">${escapeHtml(statusLabelForJob(job))}</span></div>`;
   if (status === "awaiting_research_approval") {
     let research;
     try {
@@ -696,13 +724,19 @@ async function renderHomeJob(job, { managePolling = true } = {}) {
       /* detailed view will surface a missing review artifact */
     }
     const blocked = !review || review.data.status === "blocked" || review.data.blocked || status !== "awaiting_compliance_approval";
-    const warnings = review?.data?.warnings?.map(item => item.message).filter(Boolean).join("；") || "脚本仍需人工修改或重新检查。";
+    const warnings = review?.data?.warnings?.map(item => item.message).filter(Boolean).join("；") || (mechanicalReview
+      ? job.last_error || "Agent 已在安全边界停止，本次没有生成可放行脚本。"
+      : "脚本仍需人工修改或重新检查。");
     const approvalAction = agentTestReview ? "show-details" : "approve-compliance";
     const approvalLabel = agentTestReview ? "进入代理测试审查" : "确认脚本并渲染";
     const readyText = agentTestReview
       ? "没有发现阻断项。Codex 测试代理查看脚本与合规依据后，才可提交测试审查。"
       : "没有发现阻断项。你确认后，Agent 将直接开始配音和成片装配。";
-    panel.innerHTML = `${head}<div class="gate-card"><h3>${blocked ? "最终脚本暂时不能放行" : "最终脚本已通过自动合规检查"}</h3><p>${escapeHtml(blocked ? warnings : readyText)}</p><div class="gate-actions">${blocked ? "" : `<button class="primary" type="button" data-home-action="${approvalAction}">${approvalLabel}</button>`}<button class="quiet-link" type="button" data-home-action="show-details">${blocked ? "打开脚本修改" : "查看脚本与合规依据"}</button></div>${blocked || agentTestReview ? "" : '<p class="reply-hint">也可以直接回复：继续</p>'}</div>`;
+    if (mechanicalReview && blocked) {
+      panel.innerHTML = `${head}<div class="gate-card"><h3>自动生成未通过，已安全停止</h3><p>${escapeHtml(warnings)}</p><p>反向机械审核没有把不合格脚本交给你修改，也没有冒充人工批准。可以让 Agent 自动重试，或返回选题重新开始。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="advance">让 Agent 自动重试</button><button class="quiet-link" type="button" data-home-action="new-task">返回选题</button><button class="quiet-link" type="button" data-home-action="show-details">查看内部诊断</button></div></div>`;
+    } else {
+      panel.innerHTML = `${head}<div class="gate-card"><h3>${blocked ? "最终脚本暂时不能放行" : "最终脚本已通过自动合规检查"}</h3><p>${escapeHtml(blocked ? warnings : readyText)}</p><div class="gate-actions">${blocked ? "" : `<button class="primary" type="button" data-home-action="${approvalAction}">${approvalLabel}</button>`}<button class="quiet-link" type="button" data-home-action="show-details">${blocked ? "打开脚本修改" : "查看脚本与合规依据"}</button></div>${blocked || agentTestReview ? "" : '<p class="reply-hint">也可以直接回复：继续</p>'}</div>`;
+    }
     if (managePolling) stopPoll(job.id);
     return false;
   }
@@ -720,6 +754,11 @@ async function renderHomeJob(job, { managePolling = true } = {}) {
   }
   if (status === "planned") {
     panel.innerHTML = `${head}<div class="gate-card"><h3>已选好角度</h3><p>点击一次即可同时记录任务执行授权，并开始研究。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="authorize">授权并开始</button></div></div>`;
+    if (managePolling) stopPoll(job.id);
+    return false;
+  }
+  if (isTerminalMechanicalGenerationFailure(job)) {
+    panel.innerHTML = `${head}<div class="gate-card"><h3>自动生成未通过，已安全停止</h3><p>${escapeHtml(job.last_error || "Agent 已停止重复无效尝试，没有发布不合格结果。")}</p><p>这不是人工审核，也不需要你改稿。请返回选题重新开始，或查看内部诊断了解停止原因。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="new-task">返回选题</button><button class="quiet-link" type="button" data-home-action="show-details">查看内部诊断</button></div></div>`;
     if (managePolling) stopPoll(job.id);
     return false;
   }
@@ -836,7 +875,9 @@ function renderSettings() {
   warning.textContent = config.provider.secret_warning || "";
   document.getElementById("reviewModeState").textContent = isAgentTestReview()
     ? "Codex 浏览器审查（仅测试）"
-    : "用户本人审查";
+    : isMechanicalReview()
+      ? "反向机械审核（全自动）"
+      : "用户本人审查";
   document.getElementById("storageRoot").value = config.storage.root || "";
   const names = { tools: "工具", models: "模型", downloads: "下载暂存", cache: "缓存", temp: "临时文件", logs: "日志", projects: "剪辑与生成项目" };
   document.getElementById("storageDirectories").innerHTML = Object.entries(config.storage.directories || {}).filter(([key]) => key !== "root").map(([key, path]) => `<div><span>${escapeHtml(names[key] || key)}</span><code>${escapeHtml(path)}</code></div>`).join("");
@@ -878,9 +919,13 @@ function renderJobs() {
   list.innerHTML = state.jobs.map(job => {
     const title = job.production_input?.topic || job.plan?.goal || job.id;
     const busy = state.busyJobs.has(job.id);
+    const mechanicalReview = isMechanicalReview(job);
     const busyAttribute = busy ? 'disabled aria-busy="true"' : "";
-    const runButton = runnableStates.has(job.status) && job.production_input && !job.legacy_read_only ? `<button class="primary" data-action="run" data-job-id="${job.id}" ${busyAttribute}>${busy ? "执行中…" : "推进下一阶段"}</button>` : "";
-    return `<div class="job"><div class="job-head"><div><h3>${escapeHtml(title)}</h3><small>${escapeHtml(job.id)} · ${escapeHtml(job.created_at)}</small></div><span class="pill ${statusClass(job.status)}">${escapeHtml(statusLabels[job.status] || job.status)}</span></div>${job.last_error ? `<div class="notice">${escapeHtml(job.last_error)}</div>` : ""}<div class="job-facts"><span>预算 ${job.budget?.attempted || 0}/${job.budget?.limit || 7}</span><span>尝试 ${job.runs?.length || 0}</span><span>当前成功 ${escapeHtml(job.current_run_id || "无")}</span></div><div class="action-row">${job.status === "planned" && !job.legacy_read_only ? `<button class="secondary" data-action="authorize" data-job-id="${job.id}" ${busyAttribute}>${busy ? "处理中…" : "批准任务执行"}</button>` : ""}${runButton}${job.production_input || job.legacy_read_only ? `<button class="secondary" data-action="open" data-job-id="${job.id}" ${busyAttribute}>查看/精修</button>` : ""}</div></div>`;
+    const runButton = runnableStates.has(job.status) && !isTerminalMechanicalGenerationFailure(job) && job.production_input && !job.legacy_read_only ? `<button class="primary" data-action="run" data-job-id="${job.id}" ${busyAttribute}>${busy ? "执行中…" : "推进下一阶段"}</button>` : "";
+    const runFacts = mechanicalReview
+      ? `<span>请求 ${job.budget?.attempted || 0}/${job.budget?.limit || 7}</span><span>内部记录 ${job.runs?.length || 0}</span><span>${job.current_run_id ? "已有成片" : "尚无成片"}</span><span>选题来源：${escapeHtml(providerSourceLabelForJob(job))}</span>`
+      : `<span>预算 ${job.budget?.attempted || 0}/${job.budget?.limit || 7}</span><span>尝试 ${job.runs?.length || 0}</span><span>当前成功 ${escapeHtml(job.current_run_id || "无")}</span>`;
+    return `<div class="job"><div class="job-head"><div><h3>${escapeHtml(title)}</h3><small>${escapeHtml(job.id)} · ${escapeHtml(job.created_at)}</small></div><span class="pill ${statusClass(job.status)}">${escapeHtml(statusLabelForJob(job))}</span></div>${job.last_error ? `<div class="notice">${escapeHtml(job.last_error)}</div>` : ""}<div class="job-facts">${runFacts}</div><div class="action-row">${job.status === "planned" && !job.legacy_read_only ? `<button class="secondary" data-action="authorize" data-job-id="${job.id}" ${busyAttribute}>${busy ? "处理中…" : "批准任务执行"}</button>` : ""}${runButton}${job.production_input || job.legacy_read_only ? `<button class="secondary" data-action="open" data-job-id="${job.id}" ${busyAttribute}>${mechanicalReview ? "查看诊断" : "查看/精修"}</button>` : ""}</div></div>`;
   }).join("");
 }
 
@@ -915,12 +960,20 @@ function renderResearchFindings(findings, strictAudit = null, researchStatus = "
 function renderRunHistory(job) {
   const target = document.getElementById("runHistory");
   if (!job.runs?.length) { target.innerHTML = `<p class="lead">暂无运行尝试。</p>`; return; }
-  target.innerHTML = [...job.runs].reverse().map(run => {
+  const currentRun = job.runs.find(run => run.run_id === job.current_run_id && ["render", "report_rebuild"].includes(run.stage) && run.status === "complete");
+  const diagnostics = job.runs.filter(run => run !== currentRun && run.status !== "complete");
+  const failedCount = diagnostics.length;
+  const currentSummary = currentRun
+    ? `<div class="run-summary"><div><strong>当前成片已完成</strong><small>${escapeHtml(currentRun.finished_at || currentRun.run_id)}</small></div><a href="/api/jobs/${job.id}/runs/${currentRun.run_id}/artifacts/final.mp4" download="shiyi-${escapeHtml(job.id)}-${escapeHtml(currentRun.run_id)}-final.mp4">下载成片</a></div>`
+    : `<div class="run-summary run-summary-empty"><strong>本次尚未产生成片</strong><small>${failedCount ? `Agent 已记录 ${failedCount} 次未通过诊断，未发布不合格结果。` : "Agent 尚未进入成片阶段。"}</small></div>`;
+  if (!diagnostics.length) { target.innerHTML = currentSummary; return; }
+  const rows = [...diagnostics].reverse().map(run => {
     const current = run.run_id === job.current_run_id;
-    const publishableStage = ["render", "report_rebuild"].includes(run.stage);
-    const links = publishableStage && run.status === "complete" ? `<a href="/api/jobs/${job.id}/runs/${run.run_id}/artifacts/manifest.json" target="_blank" rel="noreferrer">查看清单</a> <a href="/api/jobs/${job.id}/runs/${run.run_id}/artifacts/final.mp4" download="shiyi-${escapeHtml(job.id)}-${escapeHtml(run.run_id)}-final.mp4">下载成片</a>` : "不可公开";
-    return `<div class="run-row ${current ? "current" : ""}"><div><strong>${escapeHtml(run.stage)} · ${escapeHtml(run.status)}</strong><small>${escapeHtml(run.run_id)}${current ? " · 当前成功" : ""}</small></div><div>${links}</div></div>`;
+    const stageLabels = { research: "资料研究", content: "脚本生成", render: "成片装配", report_rebuild: "报告重建" };
+    const statusText = run.status === "complete" ? "完成" : "未通过";
+    return `<div class="run-row ${current ? "current" : ""}"><div><strong>${escapeHtml(stageLabels[run.stage] || run.stage)} · ${statusText}</strong><small>${escapeHtml(run.finished_at || run.started_at || run.run_id)}</small></div>${run.error ? `<small class="run-error">${escapeHtml(run.error)}</small>` : ""}</div>`;
   }).join("");
+  target.innerHTML = `${currentSummary}<details class="diagnostic-history"><summary>内部诊断记录（${diagnostics.length} 次${failedCount ? `，${failedCount} 次未通过` : ""}）</summary><div class="diagnostic-runs">${rows}</div></details>`;
 }
 
 function syncApprovalButton(kind) {
@@ -932,23 +985,27 @@ function syncApprovalButton(kind) {
 }
 
 async function openJob(id, { job: suppliedJob = null, scroll = true, managePolling = true } = {}) {
+  const preservedScrollY = scroll ? null : window.scrollY;
   const job = suppliedJob || await api(`/api/jobs/${id}`);
   state.selectedJob = job;
   state.reviewFiles = {};
   let artifactPending = false;
-  switchView("jobs");
+  switchView("jobs", { scroll });
   const panel = document.getElementById("jobDetailPanel");
   panel.hidden = false;
   const badge = document.getElementById("jobDetailBadge");
-  badge.textContent = statusLabels[job.status] || job.status;
+  badge.textContent = statusLabelForJob(job);
   badge.className = `pill ${statusClass(job.status)}`;
   const agentTestReview = isAgentTestReview(job);
-  const reviewModeLabel = agentTestReview ? "Codex 代理测试审查" : "用户本人审查";
-  document.getElementById("jobSummary").innerHTML = `<div><span>选题</span><strong>${escapeHtml(job.production_input?.topic || "旧任务")}</strong></div><div><span>预算</span><strong>${job.budget?.attempted || 0}/${job.budget?.limit || 7}</strong></div><div><span>阶段审查</span><strong>${escapeHtml(reviewModeLabel)}</strong></div><div><span>当前成功运行</span><strong>${escapeHtml(job.current_run_id || "无")}</strong></div>`;
+  const mechanicalReview = isMechanicalReview(job);
+  const reviewModeLabel = agentTestReview
+    ? "Codex 代理测试审查"
+    : mechanicalReview ? "反向机械审核（全自动）" : "用户本人审查";
+  document.getElementById("jobSummary").innerHTML = `<div><span>选题</span><strong>${escapeHtml(job.production_input?.topic || "旧任务")}</strong></div><div><span>${mechanicalReview ? "请求" : "预算"}</span><strong>${job.budget?.attempted || 0}/${job.budget?.limit || 7}</strong></div><div><span>阶段审查</span><strong>${escapeHtml(reviewModeLabel)}</strong></div><div><span>本任务选题来源</span><strong>${escapeHtml(providerSourceLabelForJob(job))}</strong></div><div><span>${mechanicalReview ? "成片状态" : "当前成功运行"}</span><strong>${mechanicalReview ? (job.current_run_id ? "已完成" : "尚无成片") : escapeHtml(job.current_run_id || "无")}</strong></div>`;
   const researchPanel = document.getElementById("researchApprovalPanel");
   const compliancePanel = document.getElementById("complianceApprovalPanel");
-  researchPanel.hidden = job.status !== "awaiting_research_approval";
-  compliancePanel.hidden = !["awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision", "compliance_approved"].includes(job.status);
+  researchPanel.hidden = mechanicalReview || job.status !== "awaiting_research_approval";
+  compliancePanel.hidden = mechanicalReview || !["awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision", "compliance_approved"].includes(job.status);
   const researchFindings = document.getElementById("researchFindings");
   const complianceSummary = document.getElementById("complianceSummary");
   const researchSubmit = document.getElementById("submitResearchBtn");
@@ -987,7 +1044,8 @@ async function openJob(id, { job: suppliedJob = null, scroll = true, managePolli
       researchSubmit.disabled = false;
     }
   } catch (error) {
-    if (researchMayExist && (error.networkUncertain || error.httpStatus === 404)) {
+    const researchIsStillPublishing = job.status === "research_running" || job.status === "awaiting_research_approval";
+    if (researchMayExist && (error.networkUncertain || (error.httpStatus === 404 && researchIsStillPublishing))) {
       artifactPending = true;
       if (!researchPanel.hidden) researchFindings.innerHTML = '<p class="lead">产物发布中，页面会自动重试。</p>';
     } else if (researchMayExist && !researchPanel.hidden) {
@@ -1010,18 +1068,30 @@ async function openJob(id, { job: suppliedJob = null, scroll = true, managePolli
     syncApprovalButton("compliance");
     complianceSubmit.disabled = false;
   } catch (error) {
-    if (contentMayExist && (error.networkUncertain || error.httpStatus === 404)) {
+    const contentIsStillPublishing = runningStates.has(job.status) || job.status === "awaiting_compliance_approval";
+    if (contentMayExist && (error.networkUncertain || (error.httpStatus === 404 && contentIsStillPublishing))) {
       artifactPending = true;
       if (!compliancePanel.hidden) complianceSummary.textContent = "产物发布中，页面会自动重试。";
+    } else if (contentMayExist && error.httpStatus === 404 && mechanicalReview) {
+      complianceSummary.textContent = job.last_error || "Agent 未生成可供人工修改的脚本；不合格候选已保留为内部诊断。";
     } else if (contentMayExist && !compliancePanel.hidden) {
       complianceSummary.textContent = `合规产物读取失败：${error.message}`;
     }
   }
-  document.getElementById("approvedScriptInput").value = script;
-  document.getElementById("approvedScriptInput").disabled = job.legacy_read_only || !script;
-  document.getElementById("saveScriptBtn").disabled = job.legacy_read_only || !script;
-  document.getElementById("rerunJobBtn").disabled = job.legacy_read_only || !runnableStates.has(job.status) || state.busyJobs.has(job.id);
-  document.getElementById("durationEstimate").textContent = script ? `当前 ${script.length} 字；保存时按标点加权校验 35–75 秒，配音后只允许 0.75–1.5 倍安全变速。` : "内容阶段完成后才能在浏览器中改稿。";
+  const scriptField = document.getElementById("approvedScriptInput");
+  const scriptLabel = scriptField.closest("label");
+  const durationEstimate = document.getElementById("durationEstimate");
+  const saveScriptButton = document.getElementById("saveScriptBtn");
+  const rerunJobButton = document.getElementById("rerunJobBtn");
+  scriptField.value = script;
+  scriptLabel.hidden = mechanicalReview;
+  durationEstimate.hidden = mechanicalReview;
+  saveScriptButton.hidden = mechanicalReview;
+  rerunJobButton.hidden = mechanicalReview;
+  scriptField.disabled = mechanicalReview || job.legacy_read_only || !script;
+  saveScriptButton.disabled = mechanicalReview || job.legacy_read_only || !script;
+  rerunJobButton.disabled = mechanicalReview || job.legacy_read_only || !runnableStates.has(job.status) || state.busyJobs.has(job.id);
+  durationEstimate.textContent = script ? `当前 ${script.length} 字；保存时按标点加权校验 35–75 秒，配音后只允许 0.75–1.5 倍安全变速。` : "内容阶段完成后才能在浏览器中改稿。";
   renderRunHistory(job);
   const artifactLinks = (job.artifacts || []).map(name => name === "final.mp4"
     ? `<a href="/api/jobs/${id}/artifacts/final.mp4" download="shiyi-${escapeHtml(id)}-final.mp4">下载成片</a>`
@@ -1037,6 +1107,7 @@ async function openJob(id, { job: suppliedJob = null, scroll = true, managePolli
     schedulePoll(job.id, { immediate: runningStates.has(job.status) });
   } else if (managePolling) stopPoll(job.id);
   if (scroll) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  else if (window.scrollY !== preservedScrollY) window.scrollTo({ top: preservedScrollY, behavior: "auto" });
   return artifactPending;
 }
 

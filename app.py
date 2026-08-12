@@ -580,23 +580,36 @@ def bootstrap_failure_screening(failure_kind: str, diagnostic: dict | None) -> s
     return "项目启动结构诊断未执行"
 
 
-def store_topic_selection_bundle(goal: str, pack: dict, candidates: list[dict]) -> str:
+def store_topic_selection_bundle(
+    goal: str,
+    pack: dict,
+    candidates: list[dict],
+    *,
+    source: str,
+    pretask_budget: dict,
+    provider_revision: int,
+) -> str:
     bundle_id = f"selection-{secrets.token_urlsafe(24)}"
     record = {
         "goal": goal,
         "pack_id": pack["id"],
         "pack_sha256": pack["sha256"],
         "candidates": {str(item["id"]): json.loads(json.dumps(item, ensure_ascii=False)) for item in candidates},
+        "topic_source": str(source),
+        "pretask_budget": json.loads(json.dumps(pretask_budget, ensure_ascii=False)),
         "created_monotonic": time.monotonic(),
     }
     with state_lock:
+        if int(provider_revision) != int(provider_session_state["revision"]):
+            raise ConflictError("Provider配置在生成选题期间发生变化，请重新获取三个候选")
+        record["provider_revision"] = int(provider_revision)
         topic_selection_bundles[bundle_id] = record
         while len(topic_selection_bundles) > 128:
             topic_selection_bundles.popitem(last=False)
     return bundle_id
 
 
-def resolve_topic_selection_bundle(bundle_id: object, candidate_id: object) -> tuple[dict, dict]:
+def resolve_topic_selection_bundle(bundle_id: object, candidate_id: object) -> tuple[dict, dict, dict]:
     if not isinstance(bundle_id, str) or not bundle_id.startswith("selection-") or len(bundle_id) > 96:
         raise UnprocessableError("selection_bundle_id格式无效")
     if not isinstance(candidate_id, str) or not 1 <= len(candidate_id) <= 80:
@@ -605,6 +618,9 @@ def resolve_topic_selection_bundle(bundle_id: object, candidate_id: object) -> t
         record = topic_selection_bundles.get(bundle_id)
         if record is None:
             raise UnprocessableError("选题凭证不存在或已失效，请重新获取三个候选")
+        if int(record.get("provider_revision", -1)) != int(provider_session_state["revision"]):
+            topic_selection_bundles.pop(bundle_id, None)
+            raise UnprocessableError("Provider配置已变化，请重新获取三个候选")
         if time.monotonic() - float(record["created_monotonic"]) > SELECTION_BUNDLE_TTL_SECONDS:
             topic_selection_bundles.pop(bundle_id, None)
             raise UnprocessableError("选题凭证已过期，请重新获取三个候选")
@@ -617,7 +633,12 @@ def resolve_topic_selection_bundle(bundle_id: object, candidate_id: object) -> t
         pack = capability_registry.get(record["pack_id"], record["pack_sha256"])
     except (TypeError, ValueError) as exc:
         raise UnprocessableError("选题关联的行业能力包已失效，请重新生成") from exc
-    return candidate, pack
+    selection_context = {
+        "topic_source": record["topic_source"],
+        "pretask_budget": json.loads(json.dumps(record["pretask_budget"], ensure_ascii=False)),
+        "provider_revision": int(record["provider_revision"]),
+    }
+    return candidate, pack, selection_context
 
 
 def infer_correction_kind(message: str, requested: object = None) -> str:
@@ -826,6 +847,58 @@ def provider_configuration_signature() -> str | None:
     return provider_snapshot_signature(config_store.load()["provider"], config_store.get_api_key())
 
 
+def _provider_runtime_snapshot_unlocked() -> dict[str, Any]:
+    config = config_store.public_config()
+    signature = provider_configuration_signature()
+    verified = bool(signature and provider_session_state["verified_signature"] == signature)
+    verified_at = provider_session_state["verified_at"] if verified else None
+    configured = bool(config["provider"]["has_api_key"])
+    return {
+        "provider_state": "verified" if verified else "configured" if configured else "unconfigured",
+        "provider_name": str(config["provider"]["name"]),
+        "model": str(config["provider"]["model"]),
+        "connection_verified_at": verified_at,
+    }
+
+
+def provider_runtime_snapshot() -> dict[str, Any]:
+    """Return one atomic Provider snapshot without exposing its signature or Key."""
+
+    with state_lock:
+        return _provider_runtime_snapshot_unlocked()
+
+
+def job_provider_provenance(
+    *,
+    topic_source: str,
+    selection_bundle_id: str | None,
+    pretask_budget: dict | None = None,
+    expected_provider_revision: int | None = None,
+) -> dict[str, Any]:
+    with state_lock:
+        if (
+            expected_provider_revision is not None
+            and int(expected_provider_revision) != int(provider_session_state["revision"])
+        ):
+            raise UnprocessableError("Provider配置已变化，请重新获取三个候选")
+        snapshot = _provider_runtime_snapshot_unlocked()
+    budget = pretask_budget or {
+        "limit": PRETASK_PROVIDER_LIMIT,
+        "attempted": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "remaining": PRETASK_PROVIDER_LIMIT,
+        "events": [],
+    }
+    return {
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        **snapshot,
+        "topic_source": topic_source,
+        "selection_bundle_id": selection_bundle_id,
+        "pretask_budget": json.loads(json.dumps(budget, ensure_ascii=False)),
+    }
+
+
 def provider_test_snapshot() -> tuple[OpenAICompatibleProvider, str | None, int]:
     with state_lock:
         revision = int(provider_session_state["revision"])
@@ -859,12 +932,29 @@ def clear_provider_connection_verified() -> None:
         provider_session_state["verified_at"] = None
 
 
+def _invalidate_provider_configuration_unlocked() -> None:
+    provider_session_state["revision"] = int(provider_session_state["revision"]) + 1
+    provider_session_state["verified_signature"] = None
+    provider_session_state["verified_at"] = None
+    topic_selection_bundles.clear()
+    pretask_provider_budgets.clear()
+
+
 def invalidate_provider_configuration() -> None:
-    """Clear verification and advance the generation before any Provider save."""
+    """Invalidate every volatile object bound to the previous Provider config."""
     with state_lock:
-        provider_session_state["revision"] = int(provider_session_state["revision"]) + 1
-        provider_session_state["verified_signature"] = None
-        provider_session_state["verified_at"] = None
+        _invalidate_provider_configuration_unlocked()
+
+
+def save_configuration(body: dict[str, Any]) -> dict[str, Any]:
+    """Serialize Provider saves with every Provider snapshot and volatile binding."""
+
+    if "provider" not in body:
+        return config_store.save(body)
+    with state_lock:
+        result = config_store.save(body)
+        _invalidate_provider_configuration_unlocked()
+        return result
 
 
 class AppHandler(BaseHTTPRequestHandler):
@@ -947,9 +1037,7 @@ class AppHandler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             body = self.read_json()
             if path == "/api/config":
-                if "provider" in body:
-                    invalidate_provider_configuration()
-                self.json_response(config_store.save(body))
+                self.json_response(save_configuration(body))
             elif path == "/api/discover":
                 self.json_response(self._discover(body))
             elif path == "/api/provider/test":
@@ -958,6 +1046,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 result = provider.test_connection()
                 if result.get("ok") is not True:
                     raise ProviderError("Provider连通性测试没有返回成功状态")
+                if result.get("configured_model_available") is not True:
+                    raise ProviderError("当前配置的模型不在Provider可用模型列表中")
                 verified_at = mark_provider_connection_verified(tested_signature, tested_revision)
                 if verified_at is None:
                     error = WorkflowError("Provider配置在连接测试期间发生变化，请重新测试")
@@ -976,11 +1066,14 @@ class AppHandler(BaseHTTPRequestHandler):
                 plan = body.get("plan")
                 if not isinstance(plan, dict):
                     raise UnprocessableError("缺少有效计划")
-                production_input, rules = self._prepare_production_input(body, include_defaults=False)
+                production_input, rules, provider_provenance = self._prepare_production_input(
+                    body, include_defaults=False,
+                )
                 job = job_store.create(
                     plan,
                     production_input=production_input,
                     trusted_learning_rules=rules or None,
+                    provider_provenance=provider_provenance,
                 )
                 self.json_response(job, HTTPStatus.CREATED)
             elif path == "/api/demo-job":
@@ -1191,10 +1284,18 @@ class AppHandler(BaseHTTPRequestHandler):
         return report
 
     def _provider(self, budget: BudgetLedger | None = None) -> OpenAICompatibleProvider:
-        return OpenAICompatibleProvider(config_store.load()["provider"], config_store.get_api_key(), budget=budget)
+        with state_lock:
+            provider_config = dict(config_store.load()["provider"])
+            api_key = config_store.get_api_key()
+        return OpenAICompatibleProvider(provider_config, api_key, budget=budget)
 
-    def _prepare_production_input(self, body: dict, *, include_defaults: bool) -> tuple[dict | None, list[dict]]:
+    def _prepare_production_input(
+        self, body: dict, *, include_defaults: bool,
+    ) -> tuple[dict | None, list[dict], dict[str, Any]]:
+        if "provider_provenance" in body:
+            raise UnprocessableError("provider_provenance只能由服务端在创建任务时绑定")
         selection_bundle_id = body.get("selection_bundle_id")
+        selection_context: dict[str, Any] | None = None
         if selection_bundle_id is not None:
             unknown = sorted(set(body) - {"plan", "selection_bundle_id", "candidate_id", "production_options"})
             if unknown:
@@ -1209,7 +1310,9 @@ class AppHandler(BaseHTTPRequestHandler):
             option_unknown = sorted(set(options) - allowed_options)
             if option_unknown:
                 raise UnprocessableError("production_options包含不允许的字段", details={"fields": option_unknown})
-            candidate, pack = resolve_topic_selection_bundle(selection_bundle_id, body.get("candidate_id"))
+            candidate, pack, selection_context = resolve_topic_selection_bundle(
+                selection_bundle_id, body.get("candidate_id"),
+            )
             production_input = dict(DEFAULT_INPUT) if include_defaults else {}
             production_input.update({
                 "topic": candidate["title"],
@@ -1222,7 +1325,9 @@ class AppHandler(BaseHTTPRequestHandler):
             production_input.update(options)
         else:
             if "production_input" not in body and not include_defaults:
-                return None, []
+                return None, [], job_provider_provenance(
+                    topic_source="direct_input", selection_bundle_id=None,
+                )
             supplied = {} if "production_input" not in body else body["production_input"]
             if not isinstance(supplied, dict):
                 raise UnprocessableError("production_input必须是JSON对象")
@@ -1255,7 +1360,13 @@ class AppHandler(BaseHTTPRequestHandler):
             pack = registered
         normalized["capability_pack"] = pack
         rules = learning_store.rules_for(pack["id"])
-        return normalized, rules
+        provenance = job_provider_provenance(
+            topic_source=(selection_context or {}).get("topic_source", "direct_input"),
+            selection_bundle_id=str(selection_bundle_id) if selection_context is not None else None,
+            pretask_budget=(selection_context or {}).get("pretask_budget"),
+            expected_provider_revision=(selection_context or {}).get("provider_revision"),
+        )
+        return normalized, rules, provenance
 
     def _create_demo_job(self, body: dict) -> tuple[dict, bool]:
         request_key = self.headers.get("Idempotency-Key", "").strip()
@@ -1275,7 +1386,9 @@ class AppHandler(BaseHTTPRequestHandler):
             if replay is not None:
                 return replay, True
 
-        production_input, rules = self._prepare_production_input(body, include_defaults=True)
+        production_input, rules, provider_provenance = self._prepare_production_input(
+            body, include_defaults=True,
+        )
         assert production_input is not None
         plan = local_fallback_plan(f"制作样片：{production_input['topic']}", [])
         review_mode = job_store.review_policy["stage_review_mode"]
@@ -1306,12 +1419,14 @@ class AppHandler(BaseHTTPRequestHandler):
                 idempotency_key=request_key,
                 fingerprint=fingerprint,
                 trusted_learning_rules=rules or None,
+                provider_provenance=provider_provenance,
             )
         else:
             job = job_store.create(
                 plan,
                 production_input=production_input,
                 trusted_learning_rules=rules or None,
+                provider_provenance=provider_provenance,
             )
             replayed = False
         return job, replayed
@@ -1404,6 +1519,8 @@ class AppHandler(BaseHTTPRequestHandler):
             return self._suggest_topics_experimental_dynamic(body)
 
         goal = self._validate_topic_goal(body.get("goal"))
+        with state_lock:
+            provider_revision = int(provider_session_state["revision"])
         pretask_budget = pretask_budget_for(goal)
         excluded = [] if "excluded_topics" not in body else body["excluded_topics"]
         if not isinstance(excluded, list) or len(excluded) > 24:
@@ -1488,7 +1605,14 @@ class AppHandler(BaseHTTPRequestHandler):
             "候选仍须在后续研究阶段逐条核验，不代表事实已证实"
         )
         notice = f"{status_notice.rstrip('。')}；{release_boundary_note}；{budget_note}。"
-        selection_bundle_id = store_topic_selection_bundle(goal, pack, candidates)
+        selection_bundle_id = store_topic_selection_bundle(
+            goal,
+            pack,
+            candidates,
+            source=source,
+            pretask_budget=budget,
+            provider_revision=provider_revision,
+        )
         return {
             "goal": goal,
             "source": source,
@@ -1521,6 +1645,8 @@ class AppHandler(BaseHTTPRequestHandler):
     def _suggest_topics_experimental_dynamic(self, body: dict) -> dict:
         """Retained dynamic bootstrap/review path for explicit offline experiments."""
         goal = self._validate_topic_goal(body.get("goal"))
+        with state_lock:
+            provider_revision = int(provider_session_state["revision"])
         pretask_budget = pretask_budget_for(goal)
         excluded = [] if "excluded_topics" not in body else body["excluded_topics"]
         if not isinstance(excluded, list) or len(excluded) > 24:
@@ -1707,7 +1833,14 @@ class AppHandler(BaseHTTPRequestHandler):
             bootstrap_failure_kind,
             bootstrap_schema_diagnostic,
         )
-        selection_bundle_id = store_topic_selection_bundle(goal, pack, candidates)
+        selection_bundle_id = store_topic_selection_bundle(
+            goal,
+            pack,
+            candidates,
+            source=source,
+            pretask_budget=budget,
+            provider_revision=provider_revision,
+        )
         return {
             "goal": goal,
             "source": source,

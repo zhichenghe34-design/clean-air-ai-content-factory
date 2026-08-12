@@ -230,6 +230,49 @@ class MechanicalVoiceRevisionRunner(MechanicalStageRunner):
         return super().run_render_stage(output, production_input, approvals)
 
 
+class MechanicalDeterministicContentRevisionRunner(MechanicalStageRunner):
+    def __init__(self):
+        super().__init__()
+        self.content_calls = 0
+
+    def run_content_stage(self, output, production_input, research_approval):
+        self.content_calls += 1
+        raise ScriptRevisionRequired("本地确定性脚本未通过自然节奏门禁")
+
+
+class MechanicalResearchBudgetThenDeterministicContentRunner(
+    MechanicalDeterministicContentRevisionRunner
+):
+    def run_research_stage(self, output, production_input):
+        token = self.budget.begin("research_model")
+        self.budget.finish(token, ok=True)
+        return super().run_research_stage(output, production_input)
+
+
+class MechanicalRejectedResearchRunner(MechanicalStageRunner):
+    def __init__(self):
+        super().__init__()
+        self.research_calls = 0
+
+    def run_research_stage(self, output, production_input):
+        self.research_calls += 1
+        (output / "research.json").write_text(
+            json.dumps({
+                "status": "complete",
+                "findings": [{
+                    "claim": "缺少可追溯证据的待核验表述",
+                    "source_urls": [],
+                    "script_eligible": True,
+                }],
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (output / "insight.json").write_text(
+            json.dumps({"topic": production_input["topic"]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
 class ReportRebuildRunner:
     def __init__(self):
         self.budget = BudgetLedger(limit=7)
@@ -515,6 +558,88 @@ class V2WorkflowTests(unittest.TestCase):
             self.assertEqual(len({row["idempotency_key"] for row in durable["runs"]}), 3)
             self.assertNotIn("waiting_human", {row["status"] for row in result["step_states"]})
 
+    def test_mechanical_controller_recovers_from_one_transient_stage_failure(self):
+        class FailOnceResearchRunner(MechanicalStageRunner):
+            def __init__(self):
+                super().__init__()
+                self.research_calls = 0
+
+            def run_research_stage(self, output, production_input):
+                self.research_calls += 1
+                if self.research_calls == 1:
+                    raise RuntimeError("temporary research adapter failure")
+                return super().run_research_stage(output, production_input)
+
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            job = jobs.approve(job["id"])
+            runner = FailOnceResearchRunner()
+            result = jobs.advance_automatically(
+                job["id"], lambda _current: runner, "transient-stage-recovery"
+            )
+
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["automatic_controller"]["status"], "complete")
+            self.assertEqual(result["automatic_controller"]["stage_attempts"], 4)
+            self.assertEqual(runner.research_calls, 2)
+            self.assertEqual(
+                [(row["stage"], row["status"]) for row in result["runs"]],
+                [
+                    ("research", "failed"),
+                    ("research", "complete"),
+                    ("content", "complete"),
+                    ("render", "complete"),
+                ],
+            )
+            self.assertNotIn("automatic_controller_failure", result)
+
+    def test_mechanical_controller_exhausts_ordinary_stage_failures_without_browser_retry(self):
+        class AlwaysFailResearchRunner(MechanicalStageRunner):
+            def __init__(self):
+                super().__init__()
+                self.research_calls = 0
+
+            def run_research_stage(self, output, production_input):
+                self.research_calls += 1
+                raise RuntimeError("persistent research adapter failure")
+
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            job = jobs.approve(job["id"])
+            runner = AlwaysFailResearchRunner()
+            result = jobs.advance_automatically(
+                job["id"],
+                lambda _current: runner,
+                "ordinary-stage-exhaustion",
+                max_stage_attempts=3,
+            )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["automatic_controller"]["status"], "failed")
+            self.assertEqual(result["automatic_controller"]["stage_attempts"], 3)
+            self.assertEqual(runner.research_calls, 3)
+            self.assertEqual(
+                [(row["stage"], row["status"]) for row in result["runs"]],
+                [("research", "failed")] * 3,
+            )
+            self.assertIsNone(result["last_failed_stage"])
+            self.assertEqual(
+                result["automatic_controller_failure"]["code"],
+                "automatic_stage_attempts_exhausted",
+            )
+            durable = jobs.get(job["id"])
+            self.assertEqual(durable["status"], "failed")
+            self.assertIsNone(durable["last_failed_stage"])
+            self.assertEqual(durable["automatic_controller"]["status"], "failed")
+
     def test_mechanical_controller_stops_after_bounded_content_retries(self):
         with tempfile.TemporaryDirectory() as folder:
             jobs = JobStore(Path(folder), stage_review_mode="mechanical")
@@ -530,11 +655,14 @@ class V2WorkflowTests(unittest.TestCase):
                 "one-click-warning-0001",
                 max_stage_attempts=3,
             )
-            self.assertEqual(result["status"], "research_approved")
-            self.assertEqual(
-                result["automatic_controller"]["status"], "retry_limit_reached"
-            )
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["automatic_controller"]["status"], "failed")
             self.assertEqual(result["automatic_controller"]["stage_attempts"], 3)
+            self.assertEqual(
+                result["automatic_controller_failure"]["code"],
+                "automatic_stage_attempts_exhausted",
+            )
+            self.assertIsNone(result["last_failed_stage"])
             self.assertNotIn("waiting_human", {row["status"] for row in result["step_states"]})
 
     def test_mechanical_controller_rewrites_script_after_natural_voice_gate(self):
@@ -557,6 +685,95 @@ class V2WorkflowTests(unittest.TestCase):
             )
             self.assertEqual(result["runs"][2]["status"], "failed")
             self.assertEqual(runner.render_calls, 2)
+
+    def test_mechanical_controller_does_not_repeat_deterministic_content_revision(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            job = jobs.approve(job["id"])
+            runner = MechanicalDeterministicContentRevisionRunner()
+            result = jobs.advance_automatically(
+                job["id"], lambda _current: runner, "one-click-deterministic-revision"
+            )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["automatic_controller"]["status"], "failed")
+            self.assertEqual(result["automatic_controller"]["stage_attempts"], 2)
+            self.assertEqual(runner.content_calls, 1)
+            self.assertEqual([row["stage"] for row in result["runs"]], ["research", "content"])
+            self.assertIsNone(result["last_failed_stage"])
+            self.assertEqual(
+                result["automatic_controller_failure"]["code"],
+                "automatic_script_revision_exhausted",
+            )
+            self.assertFalse(
+                result["automatic_controller_failure"]["human_intervention_required_during_generation"]
+            )
+            durable = jobs.get(job["id"])
+            self.assertEqual(durable["status"], "failed")
+            self.assertEqual(durable["automatic_controller"], {
+                "mode": "mechanical",
+                "status": "failed",
+                "stage_attempts": 2,
+                "maximum_stage_attempts": 8,
+                "human_intervention_required_during_generation": False,
+            })
+            with self.assertRaises(ConflictError):
+                jobs.advance(job["id"], runner, "must-not-restart-same-content")
+
+    def test_local_content_failure_uses_stage_budget_delta_not_prior_research_budget(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            job = jobs.approve(job["id"])
+            runner = MechanicalResearchBudgetThenDeterministicContentRunner()
+            result = jobs.advance_automatically(
+                job["id"], lambda _current: runner, "research-budget-local-content"
+            )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["budget"]["attempted"], 1)
+            self.assertEqual(runner.content_calls, 1)
+            self.assertEqual([row["stage"] for row in result["runs"]], ["research", "content"])
+            self.assertEqual(
+                result["automatic_controller_failure"]["code"],
+                "automatic_script_revision_exhausted",
+            )
+
+    def test_mechanical_controller_exhausts_research_revision_without_human_breakpoint(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            job = jobs.approve(job["id"])
+            runner = MechanicalRejectedResearchRunner()
+            result = jobs.advance_automatically(
+                job["id"], lambda _current: runner, "bounded-research-revision", max_stage_attempts=2
+            )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["automatic_controller"]["status"], "failed")
+            self.assertEqual(result["automatic_controller"]["stage_attempts"], 2)
+            self.assertEqual(runner.research_calls, 2)
+            self.assertEqual([row["stage"] for row in result["runs"]], ["research", "research"])
+            self.assertEqual(
+                result["automatic_controller_failure"]["code"],
+                "automatic_stage_attempts_exhausted",
+            )
+            self.assertFalse(
+                result["automatic_controller"]["human_intervention_required_during_generation"]
+            )
+            durable = jobs.get(job["id"])
+            self.assertEqual(durable["status"], "failed")
+            self.assertEqual(durable["automatic_controller"]["status"], "failed")
 
     def test_mechanical_review_falls_back_from_weak_research_and_rejects_warning_content(self):
         with tempfile.TemporaryDirectory() as folder:
