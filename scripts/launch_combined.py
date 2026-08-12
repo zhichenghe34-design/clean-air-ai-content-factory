@@ -203,7 +203,7 @@ def _looks_like_packaged_root(project_root: Path) -> bool:
 
 def _launcher_runtime_dir(project_root: Path) -> Path:
     if _looks_like_packaged_root(project_root):
-        return _local_product_root() / "Launcher"
+        return _packaged_product_paths(project_root)[1]
     return project_root / "runtime" / "combined-launcher"
 
 
@@ -240,6 +240,20 @@ def _local_product_root(base: Mapping[str, str] | None = None) -> Path:
     if not local_app_data or not root.is_absolute():
         raise LauncherError("LOCAL_APP_DATA_MISSING", "无法定位当前 Windows 用户的数据目录。")
     return (root / "ShiyiContentFactory").resolve()
+
+
+def _packaged_product_paths(
+    project_root: Path,
+    base: Mapping[str, str] | None = None,
+) -> tuple[Path, Path, Path]:
+    package = project_root.resolve()
+    product = _local_product_root(base)
+    user_data = (product / "UserData").resolve()
+    launcher = (product / "Launcher").resolve()
+    for destination in (product, user_data, launcher):
+        if destination == package or package in destination.parents:
+            raise LauncherError("LOCAL_APP_DATA_UNSAFE", "当前用户数据目录不得位于便携包内部。")
+    return user_data, launcher, product
 
 
 def _is_reparse_path(path: Path) -> bool:
@@ -320,6 +334,7 @@ def import_legacy_runtime(
     source_runtime: Path,
     *,
     environment: Mapping[str, str] | None = None,
+    project_root: Path | None = None,
 ) -> dict[str, object]:
     if not source_runtime.expanduser().is_absolute():
         raise LauncherError("MIGRATION_SOURCE_INVALID", "旧版 runtime 必须使用完整绝对路径。")
@@ -327,7 +342,11 @@ def import_legacy_runtime(
         source = source_runtime.expanduser().resolve(strict=True)
     except OSError as exc:
         raise LauncherError("MIGRATION_SOURCE_INVALID", "指定的旧版 runtime 不存在。") from exc
-    destination = (_local_product_root(environment) / "UserData").resolve()
+    destination = (
+        _packaged_product_paths(project_root, environment)[0]
+        if project_root is not None and _looks_like_packaged_root(project_root)
+        else (_local_product_root(environment) / "UserData").resolve()
+    )
     if source == destination:
         return {"status": "already_current", "message": "该目录已经是当前用户数据目录。", "file_count": 0}
     if source in destination.parents or destination in source.parents:
@@ -461,8 +480,17 @@ def _query_windows_process(pid: int, *, runner: Callable[..., subprocess.Complet
     command = (
         f"$p=Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue;"
         "if ($null -eq $p) { exit 4 };"
-        "[ordered]@{pid=$p.Id;path=$p.Path;started_at=$p.StartTime.ToUniversalTime().ToString('o')}"
-        "|ConvertTo-Json -Compress"
+        "$json=([ordered]@{pid=$p.Id;path=$p.Path;started_at=$p.StartTime.ToUniversalTime().ToString('o')}"
+        "|ConvertTo-Json -Compress);"
+        # Windows PowerShell 5.1 otherwise serializes redirected text with the
+        # inherited console code page.  A package living below a Chinese path
+        # can therefore return GBK bytes while the launcher correctly expects
+        # UTF-8.  Write the JSON bytes explicitly so process identity checks do
+        # not depend on the terminal, shortcut, or caller code page.
+        "$bytes=[System.Text.UTF8Encoding]::new($false).GetBytes($json);"
+        "$stdout=[Console]::OpenStandardOutput();"
+        "$stdout.Write($bytes,0,$bytes.Length);"
+        "$stdout.Flush()"
     )
     completed = runner(
         [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
@@ -831,7 +859,7 @@ def stop_recorded_processes(
     recorded_root = Path(str(state.get("project_root", ""))).expanduser()
     if not recorded_root.is_absolute():
         raise LauncherError("LAUNCHER_STATE_ROOT_MISMATCH", "停止状态缺少有效的原始包路径。")
-    if not (root / "PACKAGE-MANIFEST.json").is_file() and not _same_windows_path(str(recorded_root), str(root)):
+    if not _same_windows_path(str(recorded_root), str(root)):
         raise LauncherError("LAUNCHER_STATE_ROOT_MISMATCH", "停止状态不属于当前便携包。")
     try:
         baseline = dt.datetime.fromisoformat(str(state["started_at"]).replace("Z", "+00:00"))
@@ -1618,7 +1646,13 @@ def build_app_environment(
         }
     )
     if (config.project_root / "PACKAGE-MANIFEST.json").is_file():
-        environment["SHIYI_RUNTIME_DIR"] = str(_local_product_root(base) / "UserData")
+        user_data, launcher_dir, _product_root = _packaged_product_paths(config.project_root, base)
+        environment["SHIYI_RUNTIME_DIR"] = str(user_data)
+        chrome_log = (launcher_dir / "chrome-debug.log").resolve()
+        # CHROME_* is broadly removed above. Restore only this launcher-owned
+        # log path outside the immutable package so Edge/HyperFrames probes and
+        # later renders cannot create runtime/browser/debug.log.
+        environment["CHROME_LOG_FILE"] = str(chrome_log)
     if config.motion_runtime_required:
         assert config.node_executable is not None
         assert config.hyperframes_cli is not None
@@ -2355,7 +2389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.import_runtime:
             project_root = Path(args.project_root).expanduser().resolve()
-            result = import_legacy_runtime(Path(args.import_runtime))
+            result = import_legacy_runtime(Path(args.import_runtime), project_root=project_root)
             _emit(result)
             return 0
         project_root = Path(args.project_root).expanduser().resolve()

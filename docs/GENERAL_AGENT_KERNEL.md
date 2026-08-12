@@ -6,7 +6,7 @@
 
 原净界除甲醛项目没有被改写成通用项目。它作为 `legacy-clean-air-v2` 行业能力包和历史比赛证据继续保留，旧成片、审批和哈希不能证明新行业已经完成真实联调。
 
-v2 的 13 个本地工具能力包是冻结目录事实；v3 的行业能力包只保存声明式约束，不能与前者混为同一数量或作为联调证据。正式发布主链使用本地确定性安全能力包，动态生成与启动反证只保留为实验路径。视频生产默认采用本地纯动画：DeepSeek Agent 只输出受约束的镜头结构、卡片布局和逐字旁白短语，反向机械审核通过后才由固定 HyperFrames 0.7.86 与 36 积木/12 renderer family 的可信动画注册表执行；MoneyPrinterTurbo 的 video-only `h264_mf` 子集保留为实拍支线。这两种生产引擎不能与行业能力包混为一谈。默认配音采用不携带私人参考音频或本地大模型的 Edge Neural TTS；本机 Voice Workbench 只作为显式可选增强。自然配音不能静默降级到诊断用 Windows SAPI，旧配音没有脚本/音频哈希和自然配音身份就不能复用，音频大幅变速和像素级动态密度不足都必须 fail-closed。当前 465 项 Python 测试由 `unittest discover` 动态发现，这个当前数不回写 v2 PDF 或历史比赛说明。
+v2 的 13 个本地工具能力包是冻结目录事实；v3 的行业能力包只保存声明式约束，不能与前者混为同一数量或作为联调证据。正式发布主链使用本地确定性安全能力包，动态生成与启动反证只保留为实验路径。视频生产默认采用本地纯动画：DeepSeek Agent 只输出受约束的镜头结构、卡片布局和逐字旁白短语，反向机械审核通过后才由固定 HyperFrames 0.7.86 与 36 积木/12 renderer family 的可信动画注册表执行；MoneyPrinterTurbo 的 video-only `h264_mf` 子集保留为实拍支线。这两种生产引擎不能与行业能力包混为一谈。默认配音采用不携带私人参考音频或本地大模型的 Edge Neural TTS；本机 Voice Workbench 只作为显式可选增强。自然配音不能静默降级到诊断用 Windows SAPI，旧配音没有脚本/音频哈希和自然配音身份就不能复用，音频大幅变速和像素级动态密度不足都必须 fail-closed。当前 471 项 Python 测试由 `unittest discover` 动态发现，这个当前数不回写 v2 PDF 或历史比赛说明。
 
 v0.3 正式便携运行时合同不携带浏览器，只信任机器级 Microsoft Edge 151+ 并在就绪前运行真实 strict canary；视频编码统一使用仓库锁定的 9 文件 LGPL FFmpeg 共享运行时。Python 运行时先执行精确依赖裁剪和 MoviePy 2.2.1 Windows-MF/RECORD 补丁，再生成逐文件 SBOM。源码 companion 已在本地冻结，但对象 ZIP、同一 GitHub Release 上传、冷启动和正式 E2E 仍属于每个发布候选的后续门禁。
 

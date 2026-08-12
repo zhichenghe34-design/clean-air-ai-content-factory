@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -25,6 +26,8 @@ from scripts.launch_combined import (
     build_app_command,
     build_app_environment,
     _claim_launcher_state,
+    _query_windows_process,
+    _same_windows_path,
     _write_launcher_state,
     build_parser,
     build_engine_command,
@@ -472,7 +475,11 @@ class CombinedLauncherTests(unittest.TestCase):
         (self.project / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
         local_app_data = self.root / "LocalAppData"
         environment = build_app_environment(
-            {"LOCALAPPDATA": str(local_app_data), "SYSTEMROOT": "C:\\Windows"},
+            {
+                "LOCALAPPDATA": str(local_app_data),
+                "SYSTEMROOT": "C:\\Windows",
+                "CHROME_LOG_FILE": str(self.project / "runtime" / "browser" / "debug.log"),
+            },
             self.config,
             app_port=18765,
             mpt_port=19080,
@@ -481,6 +488,37 @@ class CombinedLauncherTests(unittest.TestCase):
             str((local_app_data / "ShiyiContentFactory" / "UserData").resolve()),
             environment["SHIYI_RUNTIME_DIR"],
         )
+        self.assertEqual(
+            str((local_app_data / "ShiyiContentFactory" / "Launcher" / "chrome-debug.log").resolve()),
+            environment["CHROME_LOG_FILE"],
+        )
+        self.assertNotIn(str(self.project / "runtime" / "browser"), environment["CHROME_LOG_FILE"])
+
+    def test_packaged_app_rejects_local_app_data_inside_package(self):
+        (self.project / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
+        with self.assertRaises(LauncherError) as context:
+            build_app_environment(
+                {"LOCALAPPDATA": str(self.project / "host-data"), "SYSTEMROOT": "C:\\Windows"},
+                self.config,
+                app_port=18765,
+                mpt_port=19080,
+            )
+        self.assertEqual("LOCAL_APP_DATA_UNSAFE", context.exception.code)
+
+    def test_packaged_single_instance_rejects_local_app_data_inside_package_before_writing(self):
+        (self.project / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
+        unsafe_root = self.project / "host-data"
+        with (
+            patch.dict(os.environ, {"LOCALAPPDATA": str(unsafe_root)}, clear=False),
+            self.assertRaises(LauncherError) as context,
+        ):
+            _claim_launcher_state(
+                self.project,
+                started_at="2026-08-10T00:00:00+00:00",
+                query_process=lambda _pid: None,
+            )
+        self.assertEqual("LOCAL_APP_DATA_UNSAFE", context.exception.code)
+        self.assertFalse(unsafe_root.exists())
 
     def test_stop_entry_validates_identity_then_kills_only_recorded_trees(self):
         state_dir = self.project / "runtime" / "combined-launcher"
@@ -558,6 +596,46 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertEqual("PROCESS_IDENTITY_MISMATCH", context.exception.code)
         self.assertTrue(state_path.exists())
 
+    def test_stop_entry_rejects_state_owned_by_another_packaged_root_before_query(self):
+        local_app_data = self.root / "LocalAppData"
+        (self.project / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
+        other = self.root / "other-package"
+        other.mkdir()
+        (other / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
+        state_path = local_app_data / "ShiyiContentFactory" / "Launcher" / "launcher-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "phase": "ready",
+                    "project_root": str(other.resolve()),
+                    "started_at": "2026-08-10T00:00:00+00:00",
+                    "app_port": 8765,
+                    "mpt_port": 19080,
+                    "launcher": {
+                        "pid": 42001,
+                        "executable": str(Path(os.sys.executable).resolve()),
+                        "started_at": "2026-08-10T00:00:00+00:00",
+                    },
+                    "app": None,
+                    "mpt": None,
+                }
+            ) + "\n",
+            encoding="utf-8",
+        )
+        with (
+            patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False),
+            self.assertRaises(LauncherError) as context,
+        ):
+            stop_recorded_processes(
+                self.project,
+                query_process=lambda _pid: self.fail("foreign package state must not query a process"),
+                runner=lambda *_args, **_kwargs: self.fail("foreign package state must not kill a process"),
+            )
+        self.assertEqual("LAUNCHER_STATE_ROOT_MISMATCH", context.exception.code)
+        self.assertTrue(state_path.exists())
+
     def test_stop_entry_refuses_same_executable_with_reused_later_pid(self):
         state_dir = self.project / "runtime" / "combined-launcher"
         state_dir.mkdir(parents=True)
@@ -624,6 +702,73 @@ class CombinedLauncherTests(unittest.TestCase):
                 query_process=lambda pid: {"pid": pid, "path": executable, "started_at": "2026-08-10T00:00:00+00:00"},
             )
         self.assertEqual("WORKBENCH_ALREADY_RUNNING", context.exception.code)
+
+    @unittest.skipUnless(os.name == "nt", "Windows process identity is Windows-only")
+    def test_process_identity_query_writes_utf8_bytes_without_trusting_console_code_page(self):
+        captured: dict[str, object] = {}
+        payload = {
+            "pid": 42001,
+            "path": str(self.root / "中文目录" / "runtime" / "python" / "python.exe"),
+            "started_at": "2026-08-10T00:00:00.0000000Z",
+        }
+
+        def runner(command, **kwargs):
+            captured["command"] = list(command)
+            captured["kwargs"] = dict(kwargs)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                b"",
+            )
+
+        result = _query_windows_process(42001, runner=runner)
+
+        self.assertEqual(payload, result)
+        powershell_command = captured["command"][-1]
+        self.assertIn("[System.Text.UTF8Encoding]::new($false).GetBytes($json)", powershell_command)
+        self.assertIn("[Console]::OpenStandardOutput()", powershell_command)
+        self.assertEqual(subprocess.PIPE, captured["kwargs"]["stdout"])
+        self.assertEqual(subprocess.PIPE, captured["kwargs"]["stderr"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows process identity is Windows-only")
+    def test_process_identity_query_survives_cp936_and_chinese_executable_path(self):
+        helper_dir = self.root / "中文 空格 & path"
+        helper_dir.mkdir()
+        helper = helper_dir / "process-helper.exe"
+        ping = Path(os.environ["SYSTEMROOT"]) / "System32" / "ping.exe"
+        shutil.copy2(ping, helper)
+        process = subprocess.Popen(
+            [str(helper), "-n", "20", "127.0.0.1"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
+        def cp936_runner(command, **kwargs):
+            forced = list(command)
+            forced[-1] = (
+                "[Console]::OutputEncoding=[System.Text.Encoding]::GetEncoding(936);"
+                + str(forced[-1])
+            )
+            return subprocess.run(forced, **kwargs)
+
+        try:
+            self.assertIsNone(process.poll())
+            identity = _query_windows_process(process.pid, runner=cp936_runner)
+            self.assertIsNotNone(identity)
+            self.assertEqual(process.pid, identity["pid"])
+            self.assertTrue(_same_windows_path(str(helper), str(identity["path"])))
+            self.assertIsInstance(identity["started_at"], str)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
 
     def test_single_instance_claim_replaces_stale_record(self):
         state_dir = self.project / "runtime" / "combined-launcher"
@@ -746,6 +891,26 @@ class CombinedLauncherTests(unittest.TestCase):
             )
         self.assertEqual("MIGRATION_FILE_TYPE_REJECTED", context.exception.code)
         self.assertFalse((self.root / "LocalAppData" / "ShiyiContentFactory" / "UserData").exists())
+
+    def test_packaged_legacy_migration_rejects_local_app_data_inside_package_before_writing(self):
+        (self.project / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
+        source = self.root / "legacy-runtime"
+        source.mkdir()
+        original = b'{"provider":"deepseek"}\n'
+        source_file = source / "config.json"
+        source_file.write_bytes(original)
+        unsafe_root = self.project / "host-data"
+
+        with self.assertRaises(LauncherError) as context:
+            import_legacy_runtime(
+                source,
+                environment={"LOCALAPPDATA": str(unsafe_root)},
+                project_root=self.project,
+            )
+
+        self.assertEqual("LOCAL_APP_DATA_UNSAFE", context.exception.code)
+        self.assertFalse(unsafe_root.exists())
+        self.assertEqual(original, source_file.read_bytes())
 
     def test_runtime_probe_uses_preinstalled_interpreters_and_never_installs(self):
         commands = []
