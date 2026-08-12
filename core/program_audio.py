@@ -123,7 +123,8 @@ def build_default_program_audio(
         "[1:a]aresample=48000,aformat=channel_layouts=stereo,loudnorm=I=-29:TP=-4:LRA=4[bed];"
         "[bed][sidechain]sidechaincompress=threshold=0.025:ratio=8:attack=15:release=280[ducked];"
         f"[narration][ducked]amix=inputs=2:normalize=0:dropout_transition=0,"
-        f"loudnorm=I=-16:TP=-1.2:LRA=7,atrim=duration={duration:.6f}[out]"
+        f"loudnorm=I=-16:TP=-1.2:LRA=7,"
+        f"apad=pad_dur={duration:.6f},atrim=duration={duration:.6f}[out]"
     )
     _run(
         [

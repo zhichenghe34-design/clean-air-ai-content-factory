@@ -63,11 +63,12 @@ class ProgramAudioTests(unittest.TestCase):
             self.assertEqual(report["background_music"], "deterministic_builtin_synthesis")
             self.assertFalse(report["background_music_external_asset"])
             self.assertAlmostEqual(report["requested_duration_seconds"], 1.5, places=3)
-            self.assertGreater(report["duration_seconds"], 1.4)
+            self.assertAlmostEqual(report["duration_seconds"], 1.5, places=3)
             self.assertEqual(report["program_audio_sha256"], _sha256(root / "program_audio.wav"))
             with wave.open(str(root / "program_audio.wav"), "rb") as audio:
                 self.assertEqual(audio.getnchannels(), 2)
                 self.assertEqual(audio.getframerate(), 48_000)
+                self.assertEqual(audio.getnframes(), 72_000)
 
     def test_invalid_script_identity_fails_before_writing_outputs(self):
         with tempfile.TemporaryDirectory() as folder_name:
