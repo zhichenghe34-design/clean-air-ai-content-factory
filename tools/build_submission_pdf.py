@@ -184,7 +184,7 @@ def build(output: Path = OUTPUT) -> Path:
         paragraph("旧任务", h2), paragraph("旧 job 不改写，统一显示 legacy_read_only；旧报告不通过 v2 正式产物接口公开。", body), PageBreak(),
 
         section_tag("03 Agent 工作台"), Spacer(1, 4 * mm), paragraph("三选一，把复杂流程收进 Agent", h1),
-        paragraph("首页只要求用户描述目标、从三个经领域与安全筛选的角度中选择一个，或换一批。选定即完成执行授权；Agent 自动推进研究、脚本和合规，只在研究证据与最终脚本两处暂停。详细记录、预算、当前成功 run 和失败尝试仍可按需追溯。", body),
+        paragraph("首页只要求用户描述目标、从三个经领域与安全筛选的角度中选择一个，或换一批。选定即完成本次内部候选生产授权；Agent 自动推进研究、反向机械证据审核、脚本、合规、配音和成片，不在中途转交人工审查或改稿。详细记录、预算、当前成功 run 和失败诊断仍可按需追溯；对外发布仍由企业负责人最终确认。", body),
         fit_image(ASSETS / "agent-workbench-pdf.jpg", 174 * mm, 112 * mm), Spacer(1, 5 * mm),
         metric_table([(str(package_count), "当前能力包"), ("7", "任务硬预算"), (str(test_count), "Python 测试"), ("2", "人工暂停")]), PageBreak(),
 

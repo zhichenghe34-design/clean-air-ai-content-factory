@@ -973,6 +973,11 @@ class CombinedPortableTests(unittest.TestCase):
         self.assertIn("LocalAppData\\ShiyiContentFactory\\UserData", usage)
         self.assertIn(STOP_LAUNCHER_NAME, usage)
         self.assertIn(MIGRATION_LAUNCHER_NAME, usage)
+        self.assertIn("反向机械证据审核", usage)
+        self.assertIn("不要求中途人工审查或改稿", usage)
+        self.assertIn("不会降级成诊断语音或发布无声成片", usage)
+        self.assertNotIn("两处暂停", usage)
+        self.assertNotIn("Microsoft Huihui", usage)
         self.assertEqual(
             {
                 "user_data_root": "%LOCALAPPDATA%/ShiyiContentFactory/UserData",
