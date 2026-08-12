@@ -43,10 +43,10 @@ def raw_storyboard() -> dict:
             {
                 "caption": CAPTIONS[0],
                 "kicker": "数值较低",
-                "title": "并不等于",
+                "title": "检测仪显示数值较低",
                 "summary": "所有条件都已满足",
                 "layout": "claim_contrast",
-                "items": ["数值较低", "并不等于所有条件都已满足"],
+                "items": ["检测仪显示数值较低", "所有条件都已满足"],
                 "focus_order": [0, 1],
             },
             {
@@ -81,6 +81,81 @@ def raw_storyboard() -> dict:
 
 
 class StoryboardMechanicalReviewTests(unittest.TestCase):
+    def test_local_storyboard_keeps_a_quoted_question_as_one_visual_phrase(self):
+        script = (
+            "对于“甲醛检测数值低，就能安心入住吗？”，不能只凭一个低数值下结论。"
+            "先分清气味线索和仪器读数，再核对室内甲醛证据。"
+            "先核对检测时的门窗状态、仪器位置和持续时间。"
+            "气味和体感只是线索，不能替代规范检测。"
+            "再看剂量、空间体积、作用时间、初始浓度、检测方法和报告来源。"
+            "实验条件与真实房间不同，结论不能直接照搬；缺少来源和适用边界，也不能理解成入住保证。"
+            "对新房家庭，建议保留报告、持续通风，重要决定前结合房屋情况请专业人员判断。"
+        )
+
+        storyboard = build_local_storyboard("甲醛检测数值低，就能安心入住吗？", script)
+        first = storyboard["scenes"][0]
+
+        self.assertEqual(first["title"], "甲醛检测数值低，就能安心入住吗？")
+        self.assertEqual(first["kicker"], "甲醛检测数值低")
+        self.assertEqual(
+            first["items"],
+            ["甲醛检测数值低，就能安心入住吗？", "不能只凭一个低数值下结论"],
+        )
+        self.assertNotIn("对于“甲醛检测数值低", first.values())
+        self.assertNotEqual(first["layout"], "claim_contrast")
+        self.assertNotEqual(storyboard["scenes"][3]["layout"], "claim_contrast")
+        motion_scene = storyboard_to_motion_segments(storyboard)[0]
+        self.assertEqual(motion_scene["title"], first["title"])
+        self.assertEqual(motion_scene["visual_content"]["headline"], first["title"])
+        self.assertEqual(motion_scene["visual_content"]["items"], first["items"])
+
+    def test_local_storyboard_preserves_a_cross_industry_quoted_question(self):
+        script = (
+            "对于“新品价格低，就一定适合所有顾客吗？”，不能只凭价格下结论。"
+            "先核对目标顾客和实际需求，再比较产品条件。"
+            "先记录使用场景、预算范围和售后条件。"
+            "价格只是线索，不能替代完整比较。"
+            "再看材料、规格、使用周期、服务范围和信息来源。"
+            "展示条件与实际使用不同，结论不能直接照搬；缺少来源和适用边界，也不能理解成购买保证。"
+            "对普通顾客，建议保留资料、逐项核对，重要决定前结合实际情况判断。"
+        )
+
+        first = build_local_storyboard("新品价格怎么判断", script)["scenes"][0]
+
+        self.assertEqual(first["title"], "新品价格低，就一定适合所有顾客吗？")
+        self.assertEqual(first["summary"], "不能只凭价格下结论")
+
+    def test_long_conclusion_after_quoted_question_remains_in_one_caption(self):
+        first_sentence = (
+            "对于“新品价格低，就一定适合所有顾客吗？”，不能只凭价格下结论，"
+            "因为还要核对售后服务、交付周期和真实适用场景。"
+        )
+        script = first_sentence + (
+            "先核对目标顾客和实际需求。再比较产品条件和服务范围。"
+            "价格只是线索，不能替代完整比较。再查看材料规格和信息来源。"
+            "展示条件与实际使用不同，结论不能直接照搬。"
+            "对普通顾客，建议保留资料、逐项核对，重要决定前结合实际情况判断。"
+        )
+
+        storyboard = build_local_storyboard("新品价格怎么判断", script)
+
+        self.assertEqual(storyboard["scenes"][0]["caption"], first_sentence)
+        self.assertTrue(all(scene["caption"].count("“") == scene["caption"].count("”") for scene in storyboard["scenes"]))
+
+    def test_provider_storyboard_rejects_an_unclosed_quoted_heading(self):
+        value = raw_storyboard()
+        value["scenes"][0].update({
+            "caption": "对于“新品价格低，就一定适合所有顾客吗？”，不能只凭价格下结论。",
+            "kicker": "新品价格低",
+            "title": "对于“新品价格低",
+            "summary": "不能只凭价格下结论",
+            "items": ["新品价格低，就一定适合所有顾客吗？", "不能只凭价格下结论"],
+        })
+        script = "".join(scene["caption"] for scene in value["scenes"])
+
+        with self.assertRaisesRegex(StoryboardError, "引号或括号不成对"):
+            validate_storyboard(value, script, source="DeepSeek")
+
     def test_valid_provider_storyboard_is_normalized_and_bound_to_script(self):
         provider_value = raw_storyboard()
         provider_value.pop("narrative_arc")

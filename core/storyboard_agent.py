@@ -4,7 +4,7 @@ import hashlib
 import re
 from typing import Any, Mapping
 
-from core.motion_director import derive_motion_segments
+from core.motion_director import NARRATION_PAIRS, derive_motion_segments, split_narration_units
 
 
 STORYBOARD_SCHEMA_VERSION = 1
@@ -60,11 +60,58 @@ def _safe_text(value: Any, *, field: str, maximum: int) -> str:
     text = str(value or "").strip()
     if not text or len(text) > maximum or re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", text):
         raise StoryboardError(f"{field}无效")
+    closing = set(NARRATION_PAIRS.values())
+    stack: list[str] = []
+    for character in text:
+        if stack and character == stack[-1]:
+            stack.pop()
+        elif character in NARRATION_PAIRS:
+            stack.append(NARRATION_PAIRS[character])
+        elif character in closing:
+            raise StoryboardError(f"{field}引号或括号不成对")
+    if stack:
+        raise StoryboardError(f"{field}引号或括号不成对")
     return text
 
 
 def _script_sha256(script: str) -> str:
     return hashlib.sha256(str(script).encode("utf-8")).hexdigest().upper()
+
+
+def _narration_clauses(caption: str) -> list[str]:
+    """Split narration without cutting punctuation inside paired quotes.
+
+    A question such as ``对于“数值低，就能入住吗？”，不能只凭……``
+    contains the visual headline inside Chinese quotation marks.  A plain
+    punctuation split turns it into the broken card ``对于“数值低``.  Keep a
+    quoted span together, then remove only the surrounding discourse wrapper
+    when the whole clause is a quoted subject.
+    """
+
+    clauses: list[str] = []
+    for unit in split_narration_units(
+        caption,
+        punctuation="，。！？；：,!?;:",
+        keep_punctuation=False,
+    ):
+        raw = unit.strip("，。！？；：,!?;: ")
+        if not raw:
+            continue
+        quoted = re.fullmatch(r"(?:对于|关于)?[“‘\"'](.+)[”’\"']", raw)
+        value = quoted.group(1).strip() if quoted else raw
+        if value:
+            clauses.append(value)
+    return clauses
+
+
+def _local_kicker(title: str) -> str:
+    """Return a complete narration phrase; never slice at a character count."""
+
+    for phrase in re.split(r"[，。！？；：,!?;:]", title):
+        value = phrase.strip("“”‘’\"' ")
+        if 4 <= len(_phrase_key(value)) <= 18:
+            return value
+    return title
 
 
 def validate_storyboard(
@@ -137,13 +184,19 @@ def validate_storyboard(
         # Provider output does not need to invent another wording layer.  The
         # visible header is derived from narration-bound phrases.  Stored
         # normalized artifacts may carry those fields, but they are rechecked.
-        kicker = _safe_text(raw.get("kicker") or caption[:8], field=f"场景{index}.kicker", maximum=18)
+        kicker = _safe_text(raw.get("kicker") or _local_kicker(items[0]), field=f"场景{index}.kicker", maximum=30)
         title = _safe_text(raw.get("title") or items[0], field=f"场景{index}.title", maximum=30)
         summary_source = items[1] if len(items) > 1 else items[0]
         summary = _safe_text(raw.get("summary") or summary_source, field=f"场景{index}.summary", maximum=30)
         for field_name, field_value in (("kicker", kicker), ("title", title), ("summary", summary)):
             if not _phrase_key(field_value) or _phrase_key(field_value) not in phrase_caption:
                 raise StoryboardError(f"场景{index}.{field_name}不是当前旁白的逐字短语")
+        if layout == "claim_contrast":
+            primary, secondary = items[:2]
+            if any(mark in primary + secondary for mark in "!?！？") or re.match(
+                r"^(?:不能|不可|无法|并不|不等于|未必|不是)", secondary,
+            ):
+                raise StoryboardError(f"场景{index}.claim_contrast两端不是可直接对比的完整主张")
         focus_order = raw.get("focus_order")
         expected_order = list(range(len(items)))
         if not isinstance(focus_order, list) or sorted(focus_order) != expected_order:
@@ -186,8 +239,7 @@ def validate_storyboard(
 
 def _verbatim_items(caption: str) -> list[str]:
     pieces: list[str] = []
-    for clause in re.split(r"[，。！？；：,!?;:]", caption):
-        clause = clause.strip("，。！？；：,!?;: ")
+    for clause in _narration_clauses(caption):
         if len(re.sub(r"[^0-9A-Za-z\u3400-\u9fff]", "", clause)) < 4:
             continue
         # Preserve complete, narration-bound phrases.  The former fallback
@@ -220,6 +272,11 @@ def _verbatim_items(caption: str) -> list[str]:
                     list_parts = expanded
                 pieces.extend(list_parts[:5])
                 continue
+        if "、" in clause and len(clause.split("、")) >= 4 and len(clause) <= 30:
+            members = clause.split("、")
+            pivot = (len(members) + 1) // 2
+            pieces.extend(("、".join(members[:pivot]), "、".join(members[pivot:])))
+            continue
         if len(clause) <= 30:
             pieces.append(clause)
             continue
@@ -248,7 +305,7 @@ def _verbatim_items(caption: str) -> list[str]:
             compact.append(value)
         if len(compact) == 5:
             break
-    return compact or [caption[:30]]
+    return compact or [caption]
 
 
 def build_local_storyboard(
@@ -256,7 +313,30 @@ def build_local_storyboard(
     script: str,
     capability_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    segments = derive_motion_segments(topic, script, target_count=7, capability_pack=capability_pack)
+    segments = list(derive_motion_segments(topic, script, target_count=7, capability_pack=capability_pack))
+
+    # A one-phrase scene has only one safe renderer.  Merge it with a nearby
+    # non-final scene when the combined narration still fits the frozen caption
+    # contract; otherwise consecutive sparse sentences would either repeat the
+    # same empty-looking layout or force an unrelated A ≠ B diagram.
+    while len(segments) > 4:
+        candidates: list[tuple[int, int, int]] = []
+        for sparse_index, segment in enumerate(segments[:-1]):
+            if len(_verbatim_items(str(segment["caption"]))) != 1:
+                continue
+            for neighbour in (sparse_index - 1, sparse_index + 1):
+                if neighbour < 0 or neighbour >= len(segments) - 1:
+                    continue
+                left, right = sorted((sparse_index, neighbour))
+                caption = str(segments[left]["caption"]) + str(segments[right]["caption"])
+                items = _verbatim_items(caption)
+                if len(caption) <= 62 and 2 <= len(items) <= 5:
+                    candidates.append((len(items), left, right))
+        if not candidates:
+            break
+        _, left, right = min(candidates)
+        segments[left] = {**segments[left], "caption": str(segments[left]["caption"]) + str(segments[right]["caption"])}
+        del segments[right]
     raw_scenes: list[dict[str, Any]] = []
     previous_layout = ""
 
@@ -287,7 +367,11 @@ def build_local_storyboard(
             raise StoryboardError("本地兜底最后一幕需要2到4项旁白短语，不能生成空清单")
         candidates = {
             1: ["explain_points"],
-            2: ["claim_contrast", "condition_map", "explain_points"],
+            # Two narration phrases do not automatically form an A ≠ B claim.
+            # The renderer labels the right side as “cannot directly infer”, so
+            # blindly choosing claim_contrast reverses negated sentences such as
+            # “只是线索，不能替代规范检测”.
+            2: ["explain_points", "condition_map"],
             3: ["condition_map", "boundary_list", "process_flow", "evidence_cards", "explain_points"],
             4: ["process_flow", "claim_contrast", "condition_map", "boundary_list", "explain_points"],
             5: ["boundary_list", "explain_points"],
@@ -305,9 +389,9 @@ def build_local_storyboard(
         previous_layout = layout
         raw_scenes.append({
             "caption": caption,
-            "kicker": caption[: min(8, len(caption))],
+            "kicker": _local_kicker(items[0]),
             "title": items[0],
-            "summary": (items[1] if len(items) > 1 else items[0])[:30],
+            "summary": items[1] if len(items) > 1 else items[0],
             "layout": layout,
             "items": items,
             "focus_order": list(range(len(items))),

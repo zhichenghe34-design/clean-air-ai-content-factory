@@ -132,6 +132,74 @@ class MotionPlanError(ValueError):
     pass
 
 
+NARRATION_PAIRS = {"“": "”", "‘": "’", '"': '"', "（": "）", "(": ")", "【": "】", "[": "]", "《": "》"}
+
+
+def split_narration_units(
+    text: str,
+    *,
+    punctuation: str,
+    keep_punctuation: bool,
+) -> list[str]:
+    """Split only on punctuation outside paired quotes and brackets."""
+
+    units: list[str] = []
+    buffer: list[str] = []
+    stack: list[str] = []
+
+    def flush() -> None:
+        value = "".join(buffer)
+        buffer.clear()
+        if value:
+            units.append(value)
+
+    for character in str(text or ""):
+        if stack and character == stack[-1]:
+            stack.pop()
+            buffer.append(character)
+            continue
+        if character in NARRATION_PAIRS:
+            stack.append(NARRATION_PAIRS[character])
+            buffer.append(character)
+            continue
+        if character in punctuation and not stack:
+            if keep_punctuation:
+                buffer.append(character)
+            flush()
+            continue
+        buffer.append(character)
+    flush()
+    return units
+
+
+def _safe_punctuation_positions(text: str, punctuation: frozenset[str]) -> list[int]:
+    positions: list[int] = []
+    stack: list[str] = []
+    for index, character in enumerate(text, start=1):
+        if stack and character == stack[-1]:
+            stack.pop()
+            continue
+        if character in NARRATION_PAIRS:
+            stack.append(NARRATION_PAIRS[character])
+            continue
+        if character in punctuation and not stack:
+            positions.append(index)
+    return positions
+
+
+def _outside_pair_positions(text: str) -> list[int]:
+    positions: list[int] = []
+    stack: list[str] = []
+    for index, character in enumerate(text, start=1):
+        if stack and character == stack[-1]:
+            stack.pop()
+        elif character in NARRATION_PAIRS:
+            stack.append(NARRATION_PAIRS[character])
+        if not stack:
+            positions.append(index)
+    return positions
+
+
 def _balanced_caption_units(text: str, target_count: int, max_chars: int = 62) -> list[str]:
     """Split every script character across 4-8 bounded motion captions."""
     value = str(text or "")
@@ -144,6 +212,8 @@ def _balanced_caption_units(text: str, target_count: int, max_chars: int = 62) -
         raise MotionPlanError("脚本超出8幕动画的完整字幕容量，请先缩短脚本")
     scene_count = min(scene_count, len(value))
     punctuation = frozenset("，。！？；：,!?;:")
+    safe_positions = set(_safe_punctuation_positions(value, punctuation))
+    outside_pair_positions = set(_outside_pair_positions(value))
     units: list[str] = []
     cursor = 0
     for index in range(scene_count):
@@ -158,9 +228,18 @@ def _balanced_caption_units(text: str, target_count: int, max_chars: int = 62) -
             candidates = [
                 position
                 for position in range(lower, upper + 1)
-                if value[cursor + position - 1] in punctuation
+                if cursor + position in safe_positions
             ]
-            cut = min(candidates, key=lambda position: (abs(position - ideal), position)) if candidates else ideal
+            if candidates:
+                cut = min(candidates, key=lambda position: (abs(position - ideal), position))
+            else:
+                safe_cuts = [
+                    position for position in range(lower, upper + 1)
+                    if cursor + position in outside_pair_positions
+                ]
+                if not safe_cuts:
+                    raise MotionPlanError("动画字幕不能在成对引号或括号中间截断")
+                cut = min(safe_cuts, key=lambda position: (abs(position - ideal), position))
         unit = value[cursor : cursor + cut]
         if not unit or len(unit) > max_chars:
             raise MotionPlanError("动画字幕分段超出可信积木文字限制")
@@ -174,7 +253,11 @@ def _balanced_caption_units(text: str, target_count: int, max_chars: int = 62) -
 def _semantic_caption_units(text: str, target_count: int, max_chars: int = 62) -> list[str]:
     """Prefer complete spoken sentences; never cut a usable argument by character count."""
 
-    sentences = [value for value in re.findall(r"[^。！？!?]+[。！？!?]?", text) if value]
+    sentences = split_narration_units(
+        text,
+        punctuation="。！？!?",
+        keep_punctuation=True,
+    )
     merged: list[str] = []
     cursor = 0
     while cursor < len(sentences):
