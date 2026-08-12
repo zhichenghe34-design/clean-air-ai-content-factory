@@ -26,7 +26,7 @@ Provider 地址经过规范化。正式模式只允许 DeepSeek 官方 HTTPS 域
 
 合规审查同时绑定 `review.json` 与 `approved_script.json` SHA-256。浏览器改稿会重算本地审核和预计朗读时长、撤销旧合规审查，但研究文件未变化时保留研究审查。编辑身份不信任浏览器自报，而由任务固定的 `review_policy` 在服务端生成结构化 `editor_identity`；代理测试只记录为 `agent/test`，不得写成“人工精修”。
 
-每个新任务在创建时固定 `review_policy`，之后不能由浏览器载荷切换身份。普通启动使用 `human/formal`；只有组合启动器显式传入 `-AgentTestReview` 时使用 `agent/test`。代理测试模式的执行者由服务端固定为 `Codex 测试代理`，并写入 `test_only=true`、`human_approval_claimed=false`；它可以推进受控测试，但不构成用户本人签署，成功 manifest 仍等待用户最终成片验收。旧任务缺少该字段时只按历史正式人审口径兼容读取。
+每个新任务在创建时固定 `review_policy`，之后不能由浏览器载荷切换身份。普通源码启动和便携包双击入口使用 `mechanical` 反向机械审核；只有组合启动器显式传入 `-AgentTestReview` 时使用 `agent/test`。代理测试模式的执行者由服务端固定为 `Codex 测试代理`，并写入 `test_only=true`、`human_approval_claimed=false`；它可以推进受控测试，但不构成用户本人签署。机械审核可以无人值守推进阶段，但最终公开发布、品牌、科学和广告合规仍由负责人确认。旧任务缺少该字段时只按历史正式人审口径兼容读取。
 
 ## 预算与并发
 

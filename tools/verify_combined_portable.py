@@ -2402,9 +2402,10 @@ def _verify_mpt_and_launchers(
         '-Ffmpeg "%~dp0runtime\\ffmpeg\\ffmpeg.exe"',
         '-Ffprobe "%~dp0runtime\\ffmpeg\\ffprobe.exe"',
         '-MaterialRoot "%~dp0engine\\MoneyPrinterTurbo\\storage\\local_videos"',
+        '-MechanicalReview',
     )
     if any(fragment not in launcher for fragment in required_launcher_fragments):
-        errors.append("根启动 BAT 未把工作台和 MPT 固定到同一便携 Python 或固定素材目录")
+        errors.append("根启动 BAT 未固定便携运行时、素材目录或反向机械审核模式")
     stop_launcher = _decode_text(read(STOP_LAUNCHER_NAME))
     required_stop_fragments = (
         f'set "SHIYI_LAUNCHER_PYTHON={shared_python}"',

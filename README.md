@@ -88,7 +88,7 @@ npm.cmd ci
 
 这条命令只启动工作台源码，不会自动启动动画或实拍引擎。v0.3 组合开发环境使用 `scripts/launch_combined.ps1`：固定动画运行时通过探针后成为默认生产引擎；MPT 可作为实拍支线启动，缺失或崩溃时只撤销实拍健康状态，不阻断动画工作台。最终便携候选会封装 Node/HyperFrames、字体、9 文件 FFmpeg、裁剪后的 Python/MPT 子集和根目录双击入口，但浏览器继续使用经过验证的系统 Edge；运行时不会下载依赖。
 
-受控测试时显式增加 `-AgentTestReview`。启动器默认清除父进程遗留的测试开关，只有本次显式参数才会把 `SHIYI_AGENT_TEST_REVIEW=1` 传给工作台；MoneyPrinterTurbo 不会收到这个标志。新任务会固定 `review_policy.stage_review_mode=agent_test`，两道记录均写明 `actor_type=agent`、`review_mode=test`、`human_approval_claimed=false`，最终 manifest 标为 `test_only_pending_human_acceptance`。普通启动仍固定为正式人审模式。
+受控测试时显式增加 `-AgentTestReview`。启动器默认清除父进程遗留的测试开关，只有本次显式参数才会把 `SHIYI_AGENT_TEST_REVIEW=1` 传给工作台；MoneyPrinterTurbo 不会收到这个标志。新任务会固定 `review_policy.stage_review_mode=agent_test`，两道记录均写明 `actor_type=agent`、`review_mode=test`、`human_approval_claimed=false`，最终 manifest 标为 `test_only_pending_human_acceptance`。普通源码启动和便携包双击入口默认使用 `mechanical` 反向机械审核，不要求中途人工审查或改稿；最终公开发布、品牌、科学与广告合规仍由负责人确认。
 
 ```powershell
 .\scripts\launch_combined.ps1 -AgentTestReview
