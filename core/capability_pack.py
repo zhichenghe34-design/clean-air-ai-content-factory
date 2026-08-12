@@ -349,6 +349,19 @@ def _infer_industry(goal: str) -> str:
     return "通用企业与内容服务"
 
 
+def _infer_audience(goal: str) -> str:
+    """Keep an explicit audience from the user's goal instead of a UI placeholder."""
+
+    match = re.search(r"(?:^|[，。；;])(?:主要)?面向([^，。；;]{2,24})", goal)
+    if not match:
+        match = re.search(r"^(?:主要)?面向([^，。；;]{2,24})", goal)
+    if match:
+        audience = _clean_space(match.group(1)).strip("，。；;:：")
+        if audience:
+            return audience
+    return "目标客户与内容受众"
+
+
 def _infer_platforms(goal: str) -> list[str]:
     known = ("抖音", "TikTok", "小红书", "视频号", "快手", "B站", "YouTube")
     selected = [platform for platform in known if platform.casefold() in goal.casefold()]
@@ -686,6 +699,7 @@ def local_capability_pack(goal: object, memory_rules: list[Any] | None = None) -
     raw = {
         "industry": _infer_industry(normalized_goal),
         "goal": normalized_goal,
+        "audience": _infer_audience(normalized_goal),
         "platforms": _infer_platforms(normalized_goal),
         "content_purpose": _infer_purpose(normalized_goal),
         "risk_level": _infer_risk(normalized_goal),

@@ -1335,18 +1335,20 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
 
     def test_local_topic_card_label_does_not_break_unattended_narration_pacing(self):
         topic = "甲醛检测仪数值低为什么不能立刻安心入住"
-        pack = local_capability_pack(
-            "为上海装修后家庭制作一条除甲醛科普短视频，重点解释检测条件和适用边界"
-        )
+        goal = f"面向上海装修后家庭，讲清{topic}"
+        pack = local_capability_pack(goal)
+        self.assertEqual(pack["snapshot"]["audience"], "上海装修后家庭")
         variants = build_local_variants(
-            f"先讲清楚：{topic}",
-            "目标客户与内容受众",
+            f"先讲清楚：{goal}",
+            pack["snapshot"]["audience"],
             capability_pack=pack,
         )
         self.assertTrue(variants)
         for item in variants:
             self.assertIn(topic, item["script"])
             self.assertNotIn("先讲清楚", item["script"])
+            self.assertNotIn("面向上海装修后家庭", item["script"])
+            self.assertIn("对上海装修后家庭", item["script"])
             self.assertFalse(review_narration_pacing(item["script"])["blocked"])
 
     def test_numeric_claim_requires_an_approved_finding(self):

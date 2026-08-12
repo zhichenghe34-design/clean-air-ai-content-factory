@@ -221,7 +221,7 @@ class StoryboardMechanicalReviewTests(unittest.TestCase):
                 capability_pack=capability_pack,
             )
             html = (project_dir / "index.html").read_text(encoding="utf-8")
-            self.assertIn("height: 540px", html)
+            self.assertIn("height: 660px", html)
             self.assertIn("font-size: 58px", html)
             self.assertIn("overflow-wrap: anywhere", html)
             self.assertIn(".point-row b { color: #748d0f", html)

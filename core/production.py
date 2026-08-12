@@ -851,6 +851,13 @@ def _build_legacy_local_variants(
     # the fixed 180-195 character narration budget when the same card enters
     # the fully unattended path.
     safe_topic = re.sub(r"^(?:先讲清楚|先说明)\s*[：:]\s*", "", safe_topic).strip()
+    # An explicit audience belongs to the separate audience field.  Remove
+    # only the leading UI phrasing and keep the actual question verbatim.
+    safe_topic = re.sub(
+        r"^(?:主要)?面向[^，。；;]{2,24}[，,]\s*(?:讲清|说明|解释)",
+        "",
+        safe_topic,
+    ).strip()
     evidence_rows = _strict_findings(approved_findings)
     if evidence_rows:
         source_priority = {"media_original": 0, "government_law": 1, "government_standard_metadata": 2}
