@@ -1393,7 +1393,9 @@ class OpenAICompatibleProvider:
             '{"id":"v2","hook_type":"反常识","script":"完整口播","reason":"选择理由"},'
             '{"id":"v3","hook_type":"清单式","script":"完整口播","reason":"选择理由"},'
             '{"id":"v4","hook_type":"场景式","script":"完整口播","reason":"选择理由"}]}。'
-            "每条脚本适合45-60秒中文口播；行动建议必须符合能力包范围，不能暗示未证实的商业结果。"
+            "每条脚本必须控制在180到195个中文口播字，写成6到8个有明确句号的完整句子；"
+            "产品固定使用zh-CN-YunxiNeural的-15%普通播报速度，这个字数用于保证45到60秒且留出停顿。"
+            "不得用长串并列项塞满一句话，不得为了凑时长重复观点。行动建议必须符合能力包范围，不能暗示未证实的商业结果。"
         )
         data = self._chat_json(system, {"production_input": production_input, "insight": insight}, stage="script_generation")
         variants = data.get("variants")
@@ -1433,6 +1435,11 @@ class OpenAICompatibleProvider:
             "问题、依据、边界、行动等脱离旁白的通用占位词。屏幕标题与摘要由本地机械层从items生成，禁止另写。"
             "layout只能从claim_contrast,condition_map,boundary_list,process_flow,evidence_cards,"
             "final_checklist,explain_points中选择；相邻两幕不得使用相同layout。"
+            "布局必须与items数量匹配：claim_contrast需要2到4项，condition_map需要2到4项，"
+            "boundary_list需要3到5项，process_flow需要3到4项，evidence_cards必须恰好3项，"
+            "final_checklist需要2到4项，explain_points允许1到5项。"
+            "禁止把两项内容塞进三格或四格结构；每幕必须选择能铺满主要视觉区的结构，不得留下整排、"
+            "整列或下半屏大面积空白。信息不足时应换布局或重新划分相邻caption，不能编造新文字。"
             "focus_order必须是items下标0到N-1的不重复完整排列，代表旁白讲解时依次高亮，不代表自由动画。"
             "educational最后一幕必须使用final_checklist。"
             "只输出JSON对象，字段严格为schema_version,content_mode,narrative_arc,scenes。schema_version固定为1。"
@@ -1498,7 +1505,8 @@ class OpenAICompatibleProvider:
             "删除或改写所有没有已批准证据支持的数字、功效、价格、优惠、销量、业绩、收益、对比、因果、"
             "企业结论、用户证言、案例、认证、奖项和排名。删除医疗疗效、投资收益、保本或胜诉保证以及绝对化承诺。"
             "不得通过换同义词保留被local_review阻断的含义，也不得从模型记忆补充新事实。若某项信息无法安全保留，"
-            "改成核验步骤、问题式表达或直接删除。只输出JSON对象，字段为script和changes；script必须是45至60秒中文口播。"
+            "改成核验步骤、问题式表达或直接删除。只输出JSON对象，字段为script和changes；"
+            "script必须是180到195个中文口播字、6到8个有明确句号的完整句子，适配固定-15%普通播报声的45至60秒节奏。"
         )
         result = self._chat_json(
             system,

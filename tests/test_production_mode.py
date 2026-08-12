@@ -5,6 +5,7 @@ import hashlib
 import os
 import tempfile
 import unittest
+import wave
 from copy import deepcopy
 from pathlib import Path
 from unittest import mock
@@ -34,8 +35,18 @@ from core.voice_contract import (
     DEFAULT_VOICE_CHUNK_MAX_CHARS,
     DEFAULT_VOICE_ENGINE,
     DEFAULT_VOICE_NAME,
+    DEFAULT_VOICE_RATE,
     normalize_voice_engine,
 )
+
+
+def _write_pcm_wav(path: Path, duration_seconds: float) -> None:
+    frames = round(48000 * duration_seconds)
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(48000)
+        audio.writeframes(b"\0" * frames * 2)
 
 
 SAFE_SCRIPT = (
@@ -193,6 +204,11 @@ class ProductionModeDispatchTests(unittest.TestCase):
 
             with (
                 mock.patch.object(ProductionRunner, "_audio_duration", return_value=52.0),
+                mock.patch.object(
+                    ProductionRunner,
+                    "_validate_delivered_voice_pacing",
+                    return_value={"pacing_status": "passed"},
+                ),
                 mock.patch.object(
                     ProductionRunner,
                     "_render_animated_video",
@@ -499,7 +515,7 @@ class VoiceFallbackContractTests(unittest.TestCase):
             root = Path(folder_name)
             _prepare_stage(root)
 
-            def synthesize(folder: Path, _script: str, _config: dict):
+            def synthesize(folder: Path, _script: str, _config: dict, **_kwargs):
                 (folder / "voice.wav").write_bytes(b"RIFF" + b"natural-render" * 8)
                 return {
                     "engine": "edge_tts",
@@ -521,6 +537,11 @@ class VoiceFallbackContractTests(unittest.TestCase):
                     return_value={"duration_seconds": 52.0, "tempo_adjusted": False},
                 ),
                 mock.patch.object(ProductionRunner, "_audio_duration", return_value=52.0),
+                mock.patch.object(
+                    ProductionRunner,
+                    "_validate_delivered_voice_pacing",
+                    return_value={"pacing_status": "passed"},
+                ),
             ):
                 report = runner.run_render_stage(
                     root,
@@ -562,12 +583,16 @@ class VoiceFallbackContractTests(unittest.TestCase):
             (job / "voice.wav").write_bytes(voice)
             (job / "voice_identity.json").write_text(
                 json.dumps({
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "engine": "edge_tts",
                     "requested_engine": "edge_tts",
                     "voice": DEFAULT_VOICE_NAME,
+                    "voice_rate": DEFAULT_VOICE_RATE,
                     "voice_selection_exposed": False,
                     "voice_chunk_max_chars": DEFAULT_VOICE_CHUNK_MAX_CHARS,
+                    "segment_contract_version": 1,
+                    "segment_aligned": False,
+                    "segments_sha256": ProductionRunner._voice_segments_digest(None),
                     "natural_voice": True,
                     "quality_eligible": True,
                     "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest().upper(),
@@ -605,12 +630,16 @@ class VoiceFallbackContractTests(unittest.TestCase):
             (job / "voice.wav").write_bytes(voice)
             (job / "voice_identity.json").write_text(
                 json.dumps({
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "engine": "edge_tts",
                     "requested_engine": "edge_tts",
                     "voice": DEFAULT_VOICE_NAME,
+                    "voice_rate": DEFAULT_VOICE_RATE,
                     "voice_selection_exposed": False,
                     "voice_chunk_max_chars": 260,
+                    "segment_contract_version": 1,
+                    "segment_aligned": False,
+                    "segments_sha256": ProductionRunner._voice_segments_digest(None),
                     "natural_voice": True,
                     "quality_eligible": True,
                     "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest().upper(),
@@ -649,7 +678,9 @@ class VoiceFallbackContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder_name:
             job = Path(folder_name) / "job"
             job.mkdir()
-            with mock.patch("core.production.subprocess.run", side_effect=RuntimeError("edge unavailable")) as run:
+            with mock.patch("core.production._tool_available", return_value=True), mock.patch(
+                "core.production.subprocess.run", side_effect=RuntimeError("edge unavailable")
+            ) as run:
                 with self.assertRaisesRegex(RuntimeError, "禁止切换其他音色"):
                     ProductionRunner._synthesize_voice(
                         job, "固定路径语音测试", {"allow_diagnostic_sapi": True}
@@ -715,6 +746,102 @@ class VoiceFallbackContractTests(unittest.TestCase):
             self.assertEqual(commands[0][1:3], ["-m", "edge_tts"])
             self.assertNotIn("sapi_tts.ps1", " ".join(commands[0]))
             self.assertFalse((job / "voice.edge.mp3").exists())
+
+    def test_scene_voice_segments_are_synthesized_separately_and_drive_caption_timing(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            root = Path(folder_name)
+            job = root / "job"
+            job.mkdir()
+            segments = [
+                {"caption": "第一幕先解释检测条件。"},
+                {"caption": "第二幕再核对检测位置。"},
+                {"caption": "第三幕保留完整检测记录。"},
+                {"caption": "第四幕最后给出复测行动。"},
+            ]
+            script = "".join(item["caption"] for item in segments)
+            commands: list[list[str]] = []
+
+            def fake_run(command: list[str], **_kwargs):
+                commands.append(command)
+                if "edge_tts" in command:
+                    Path(command[command.index("--write-media") + 1]).write_bytes(b"edge-mp3")
+                else:
+                    _write_pcm_wav(Path(command[-1]), 12.0)
+                return mock.Mock(stdout="", stderr="")
+
+            with (
+                mock.patch("core.production.FFMPEG", root / "ffmpeg.exe"),
+                mock.patch("core.production._tool_available", return_value=True),
+                mock.patch("core.production.subprocess.run", side_effect=fake_run),
+            ):
+                report = ProductionRunner._synthesize_voice(
+                    job, script, {}, segments=segments
+                )
+
+            self.assertTrue(report["segment_aligned"])
+            self.assertEqual(report["segment_count"], 4)
+            self.assertEqual(len(report["scene_segments"]), 4)
+            self.assertEqual(len(commands), 8)
+            edge_commands = [command for command in commands if "edge_tts" in command]
+            self.assertEqual(len(edge_commands), 4)
+            self.assertTrue(all("--rate=-15%" in command for command in edge_commands))
+            self.assertAlmostEqual(
+                ProductionRunner._pcm_wave_duration(job / "voice.wav"), 49.05, places=2
+            )
+            self.assertEqual(report["scene_segments"][0]["start_seconds"], 0.0)
+            self.assertEqual(report["scene_segments"][0]["end_seconds"], 12.35)
+            self.assertEqual(report["scene_segments"][-1]["end_seconds"], 49.05)
+            self.assertFalse(any((job / "voice_segments").glob("*.edge.mp3")))
+
+            captions = ProductionRunner()._write_captions(
+                job,
+                segments,
+                49.05,
+                scene_timings=report["scene_segments"],
+            )
+            self.assertEqual(
+                [(item["start"], item["end"]) for item in captions],
+                [(0.0, 12.35), (12.35, 24.7), (24.7, 37.05), (37.05, 49.05)],
+            )
+
+    def test_scene_voice_identity_is_not_reused_for_different_scene_boundaries(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            job = Path(folder_name) / "job"
+            job.mkdir()
+            script = "第一幕说明条件。第二幕给出行动。"
+            (job / "narration.txt").write_text(script, encoding="utf-8")
+            voice = b"RIFF" + b"bound-voice" * 8
+            (job / "voice.wav").write_bytes(voice)
+            old_segments = [{"caption": "第一幕说明条件。"}, {"caption": "第二幕给出行动。"}]
+            (job / "voice_identity.json").write_text(
+                json.dumps({
+                    "schema_version": 3,
+                    "engine": "edge_tts",
+                    "requested_engine": "edge_tts",
+                    "voice": DEFAULT_VOICE_NAME,
+                    "voice_rate": DEFAULT_VOICE_RATE,
+                    "voice_selection_exposed": False,
+                    "voice_chunk_max_chars": DEFAULT_VOICE_CHUNK_MAX_CHARS,
+                    "natural_voice": True,
+                    "quality_eligible": True,
+                    "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest().upper(),
+                    "voice_sha256": hashlib.sha256(voice).hexdigest().upper(),
+                    "segment_contract_version": 1,
+                    "segment_aligned": True,
+                    "segments_sha256": ProductionRunner._voice_segments_digest(old_segments),
+                }),
+                encoding="utf-8",
+            )
+            changed_segments = [
+                {"caption": "第一幕说明"},
+                {"caption": "条件。第二幕给出行动。"},
+            ]
+            with mock.patch("core.production.subprocess.run", side_effect=RuntimeError("offline")):
+                with self.assertRaisesRegex(RuntimeError, "禁止切换其他音色"):
+                    ProductionRunner._synthesize_voice(
+                        job, script, {}, segments=changed_segments
+                    )
+            self.assertFalse((job / "voice.wav").exists())
 
 
 class ProductionEngineSummaryTests(unittest.TestCase):

@@ -14,7 +14,7 @@ from core.motion_director import (
     build_motion_project,
     validate_motion_plan,
 )
-from core.production import ProductionRunner
+from core.production import ProductionRunner, build_local_variants
 from core.provider import OpenAICompatibleProvider, ProviderError
 from core.storyboard_agent import (
     StoryboardError,
@@ -31,6 +31,7 @@ CAPTIONS = [
     "最后结合材料来源和适用边界，再决定下一步。",
 ]
 SCRIPT = "".join(CAPTIONS)
+PACED_SCRIPT = build_local_variants("检测结果怎么判断", "家庭用户", [])[0]["script"]
 
 
 def raw_storyboard() -> dict:
@@ -62,7 +63,7 @@ def raw_storyboard() -> dict:
                 "kicker": "再",
                 "title": "相同条件下复测",
                 "summary": "保留完整记录",
-                "layout": "process_flow",
+                "layout": "explain_points",
                 "items": ["相同条件下复测", "保留完整记录"],
                 "focus_order": [0, 1],
             },
@@ -144,6 +145,17 @@ class StoryboardMechanicalReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(StoryboardError, "通用占位词"):
             validate_storyboard(placeholder, placeholder_script, source="DeepSeek")
 
+    def test_sparse_multi_slot_layout_is_rejected_before_render(self):
+        value = raw_storyboard()
+        value["scenes"][2]["layout"] = "process_flow"
+        with self.assertRaisesRegex(StoryboardError, "需要3到4项信息"):
+            validate_storyboard(value, SCRIPT, source="DeepSeek")
+
+        value = raw_storyboard()
+        value["scenes"][2]["layout"] = "boundary_list"
+        with self.assertRaisesRegex(StoryboardError, "需要3到5项信息"):
+            validate_storyboard(value, SCRIPT, source="DeepSeek")
+
     def test_visible_heading_and_summary_must_also_match_the_narration(self):
         value = raw_storyboard()
         value["scenes"][0]["title"] = "专业结论"
@@ -159,16 +171,12 @@ class StoryboardMechanicalReviewTests(unittest.TestCase):
         self.assertTrue(all(item["visual_content"]["items"] for item in segments))
 
     def test_local_fallback_keeps_complete_list_phrases(self):
-        script = (
-            "其他说法继续核对来源和限制；未经批准的数字、功效、价格、业绩、保证、证言、认证和排名都不写入正文。"
-            "先确认来源和范围。再保留完整记录。最后列出已证实、待确认和禁用内容。"
-        )
-        result = build_local_storyboard("安全表达", script)
+        result = build_local_storyboard("安全表达", PACED_SCRIPT)
         visible_items = [item for scene in result["scenes"] for item in scene["items"]]
         self.assertNotIn("功效", visible_items)
         self.assertNotIn("价格", visible_items)
         self.assertNotIn("”", visible_items)
-        self.assertTrue(any("未经批准的数字、功效、价格" in item for item in visible_items))
+        self.assertTrue(any("功效、价格、业绩数字" in item for item in visible_items))
 
     def test_dynamic_pack_executes_agent_storyboard_with_guarded_renderer(self):
         storyboard = validate_storyboard(raw_storyboard(), SCRIPT, source="DeepSeek", model="deepseek-test")
@@ -204,6 +212,26 @@ class StoryboardMechanicalReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(MotionPlanError, "逐字绑定当前旁白"):
             validate_motion_plan(tampered)
 
+    def test_motion_plan_uses_exact_scene_audio_boundaries_instead_of_text_weights(self):
+        storyboard = validate_storyboard(raw_storyboard(), SCRIPT, source="DeepSeek")
+        segments = storyboard_to_motion_segments(storyboard)
+        bounds = [(0.0, 6.0), (6.0, 15.0), (15.0, 25.0), (25.0, 36.0)]
+        timed_segments = [
+            {**segment, "start": start, "end": end}
+            for segment, (start, end) in zip(segments, bounds)
+        ]
+        plan = build_motion_plan(
+            "检测结果怎么判断", "家庭用户", timed_segments, 36.0,
+            capability_pack={"id": "dynamic-clean-air-pack", "version": "1"},
+        )
+        self.assertEqual(
+            [(scene["start"], scene["end"]) for scene in plan["scenes"]], bounds
+        )
+        self.assertEqual(
+            [row["duration_seconds"] for row in plan["selection_receipt"]["selections"]],
+            [6.0, 9.0, 10.0, 11.0],
+        )
+
 
 class StoryboardProductionIntegrationTests(unittest.TestCase):
     class Provider:
@@ -235,7 +263,7 @@ class StoryboardProductionIntegrationTests(unittest.TestCase):
     class ContentProvider(Provider):
         def generate_content_scripts(self, *_args):
             return [
-                {"id": f"candidate-{index}", "hook_type": "事实拆解", "script": SCRIPT}
+                {"id": f"candidate-{index}", "hook_type": "事实拆解", "script": PACED_SCRIPT}
                 for index in range(4)
             ]
 
@@ -247,13 +275,8 @@ class StoryboardProductionIntegrationTests(unittest.TestCase):
                 "human_confirmation_required": True,
             }
 
-        def generate_motion_storyboard(self, *_args):
-            value = raw_storyboard()
-            for scene in value["scenes"]:
-                scene.pop("kicker")
-                scene.pop("title")
-                scene.pop("summary")
-            return value
+        def generate_motion_storyboard(self, script, *_args):
+            return build_local_storyboard("检测结果怎么判断", script)
 
     class LocalScriptAgentDirectorProvider(ContentProvider):
         def generate_content_scripts(self, *_args):
@@ -306,7 +329,7 @@ class StoryboardProductionIntegrationTests(unittest.TestCase):
                 )
             stored = json.loads((folder / "motion_storyboard.json").read_text(encoding="utf-8"))
             provider_report = json.loads((folder / "script_variants.json").read_text(encoding="utf-8"))["provider"]
-        self.assertEqual(result["approved_script"]["script"], SCRIPT)
+        self.assertEqual(result["approved_script"]["script"], PACED_SCRIPT)
         self.assertEqual(stored["source"], "DeepSeek")
         self.assertEqual(stored["mechanical_review"]["status"], "passed")
         self.assertEqual(provider_report["motion_storyboard"]["source"], "DeepSeek")
@@ -323,7 +346,7 @@ class StoryboardProductionIntegrationTests(unittest.TestCase):
             with mock.patch("core.production.review_script", return_value=deepcopy(passed_review)), mock.patch(
                 "core.production.build_local_variants",
                 return_value=[
-                    {"id": f"local-{index}", "hook_type": "本地安全", "script": SCRIPT, "reason": "fallback"}
+                    {"id": f"local-{index}", "hook_type": "本地安全", "script": PACED_SCRIPT, "reason": "fallback"}
                     for index in range(4)
                 ],
             ):

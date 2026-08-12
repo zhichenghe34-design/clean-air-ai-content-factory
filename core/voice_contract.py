@@ -6,6 +6,11 @@ from typing import Any
 DEFAULT_VOICE_ENGINE = "edge_tts"
 DEFAULT_VOICE_NAME = "zh-CN-YunxiNeural"
 DEFAULT_VOICE_LABEL = "普通中文播报"
+# Fixed product pacing: the former Edge default (+0%) measured 249 spoken
+# Chinese characters in 54.7 seconds and was judged visibly rushed.  -15% was
+# verified with the packaged runtime and keeps a 180-195 character script in
+# the 45-60 second delivery window without post-speeding.
+DEFAULT_VOICE_RATE = "-15%"
 DEFAULT_VOICE_CHUNK_MAX_CHARS = 90
 VOICE_CHUNK_MIN_CHARS = 48
 VOICE_CHUNK_MAX_CHARS = 140

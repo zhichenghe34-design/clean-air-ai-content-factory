@@ -27,6 +27,18 @@ LAYOUT_TO_VISUAL_KIND = {
     "final_checklist": "final-checklist",
     "explain_points": "explain-points",
 }
+LAYOUT_ITEM_BOUNDS = {
+    # These bounds are part of the renderer contract, not a creative hint.
+    # Layouts with too few items leave an entire row or column empty; layouts
+    # with too many items overflow the 9:16 safe area.
+    "claim_contrast": (2, 4),
+    "condition_map": (2, 4),
+    "boundary_list": (3, 5),
+    "process_flow": (3, 4),
+    "evidence_cards": (3, 3),
+    "final_checklist": (2, 4),
+    "explain_points": (1, 5),
+}
 FORBIDDEN_PLACEHOLDERS = frozenset({"第一项", "第二项", "第三项", "第四项", "问题", "依据", "边界", "行动"})
 
 
@@ -109,6 +121,12 @@ def validate_storyboard(
         if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= 5:
             raise StoryboardError(f"场景{index}.items必须包含1到5项")
         items = [_safe_text(item, field=f"场景{index}.items", maximum=30) for item in raw_items]
+        minimum_items, maximum_items = LAYOUT_ITEM_BOUNDS[layout]
+        if not minimum_items <= len(items) <= maximum_items:
+            raise StoryboardError(
+                f"场景{index}布局{layout}需要{minimum_items}到{maximum_items}项信息，"
+                f"当前只有{len(items)}项，会产生大面积空白或溢出"
+            )
         if len(set(map(_compact, items))) != len(items):
             raise StoryboardError(f"场景{index}.items存在重复")
         for item in items:
@@ -159,6 +177,7 @@ def validate_storyboard(
             "script_fully_covered": True,
             "all_visual_items_are_verbatim_caption_phrases": True,
             "layout_whitelist_only": True,
+            "layout_item_density_compatible": True,
             "adjacent_layout_repeat": False,
             "coordinates_css_and_code_allowed": False,
         },
@@ -213,14 +232,51 @@ def build_local_storyboard(
 ) -> dict[str, Any]:
     segments = derive_motion_segments(topic, script, target_count=7, capability_pack=capability_pack)
     raw_scenes: list[dict[str, Any]] = []
-    layout_cycle = ["claim_contrast", "condition_map", "boundary_list", "process_flow", "evidence_cards"]
+    previous_layout = ""
+
+    def final_checklist_items(caption: str, items: list[str]) -> list[str]:
+        if len(items) >= 2:
+            return items[:4]
+        # A final checklist cannot render a single generic block.  Split only
+        # on punctuation or conjunctions that already exist in the narration;
+        # never invent another wording layer merely to fill the layout.
+        phrase = items[0]
+        pieces = [
+            part.strip()
+            for part in re.split(r"[、，；：]|(?:以及|并且|然后)", phrase)
+            if len(_phrase_key(part)) >= 4
+        ]
+        if len(pieces) >= 2:
+            return pieces[:4]
+        for marker in ("并", "和", "与"):
+            pivot = phrase.find(marker, 4)
+            if 4 <= pivot <= len(phrase) - 4:
+                return [phrase[:pivot], phrase[pivot:]][:4]
+        raise StoryboardError("本地兜底最后一幕缺少可逐字拆分的行动清单")
+
+    def choose_layout(item_count: int, *, final: bool) -> str:
+        if final:
+            if 2 <= item_count <= 4:
+                return "final_checklist"
+            raise StoryboardError("本地兜底最后一幕需要2到4项旁白短语，不能生成空清单")
+        candidates = {
+            1: ["explain_points"],
+            2: ["claim_contrast", "condition_map", "explain_points"],
+            3: ["condition_map", "boundary_list", "process_flow", "evidence_cards", "explain_points"],
+            4: ["process_flow", "claim_contrast", "condition_map", "boundary_list", "explain_points"],
+            5: ["boundary_list", "explain_points"],
+        }[item_count]
+        return next((candidate for candidate in candidates if candidate != previous_layout), candidates[0])
+
     for index, segment in enumerate(segments):
         caption = str(segment["caption"])
         items = _verbatim_items(caption)
         if index == len(segments) - 1:
-            layout = "final_checklist"
+            items = final_checklist_items(caption, items)
+            layout = choose_layout(len(items), final=True)
         else:
-            layout = layout_cycle[index % len(layout_cycle)]
+            layout = choose_layout(len(items), final=False)
+        previous_layout = layout
         raw_scenes.append({
             "caption": caption,
             "kicker": caption[: min(8, len(caption))],

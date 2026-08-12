@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,7 @@ from core.voice_contract import (
     DEFAULT_VOICE_ENGINE,
     DEFAULT_VOICE_LABEL,
     DEFAULT_VOICE_NAME,
+    DEFAULT_VOICE_RATE,
     NATURAL_VOICE_ENGINES,
     normalize_voice_chunk_max_chars,
     normalize_voice_engine,
@@ -299,6 +301,11 @@ FONT_BOLD = _configured_path("FONT_BOLD", r"C:\Windows\Fonts\msyhbd.ttc")
 VOICE_TEMPO_MINIMUM = 0.90
 VOICE_TEMPO_MAXIMUM = 1.12
 DEFAULT_EDGE_TTS_VOICE = DEFAULT_VOICE_NAME
+NARRATION_TARGET_MIN_SPOKEN_CHARACTERS = 180
+NARRATION_TARGET_MAX_SPOKEN_CHARACTERS = 195
+NARRATION_MAX_DELIVERED_CHARACTERS_PER_SECOND = 4.05
+VOICE_SCENE_PAUSE_SECONDS = 0.35
+VOICE_SEGMENT_CONTRACT_VERSION = 1
 
 VISUAL_QC_SAMPLE_COUNT = 12
 VISUAL_QC_MOTION_OFFSET_SECONDS = 0.40
@@ -494,6 +501,33 @@ def estimate_narration_duration(script: str) -> dict[str, Any]:
         "estimated_seconds": round(seconds, 2),
         "accepted_range_seconds": [35, 75],
         "target_range_seconds": [45, 60],
+    }
+
+
+def review_narration_pacing(script: str) -> dict[str, Any]:
+    estimate = estimate_narration_duration(script)
+    spoken = int(estimate["spoken_characters"])
+    sentence_count = len(re.findall(r"[^。！？!?]+[。！？!?]", str(script or "")))
+    reasons: list[str] = []
+    if spoken < NARRATION_TARGET_MIN_SPOKEN_CHARACTERS:
+        reasons.append("narration_too_short_for_natural_45_second_delivery")
+    if spoken > NARRATION_TARGET_MAX_SPOKEN_CHARACTERS:
+        reasons.append("narration_too_dense_for_fixed_normal_voice")
+    if not 45.0 <= float(estimate["estimated_seconds"]) <= 60.0:
+        reasons.append("estimated_narration_duration_outside_45_60_seconds")
+    if not 6 <= sentence_count <= 8:
+        reasons.append("narration_requires_6_to_8_complete_sentences")
+    return {
+        **estimate,
+        "status": "blocked" if reasons else "passed",
+        "blocked": bool(reasons),
+        "target_spoken_character_range": [
+            NARRATION_TARGET_MIN_SPOKEN_CHARACTERS,
+            NARRATION_TARGET_MAX_SPOKEN_CHARACTERS,
+        ],
+        "fixed_voice_rate": DEFAULT_VOICE_RATE,
+        "sentence_count": sentence_count,
+        "reasons": reasons,
     }
 
 
@@ -769,17 +803,34 @@ def _sanitize_topic(
     return value.strip() or "当前业务问题"
 
 
-def _pad_safe_script(script: str, minimum_seconds: float = 35.0) -> str:
+def _pad_safe_script(script: str, minimum_seconds: float = 45.0) -> str:
     additions = (
+        "有疑问就回到原始材料重新核对。",
         "复核时还要保留来源和修改记录，避免把未确认信息重新带回正文。",
         "如果关键材料仍然缺失，就明确标注未知，不用听起来确定的话替代证据。",
         "发布前再由工作人员检查一次对象、语境和限制，确认表达没有超出材料边界。",
     )
     value = script
     for addition in additions:
-        if estimate_narration_duration(value)["estimated_seconds"] >= minimum_seconds:
+        estimate = estimate_narration_duration(value)
+        if (
+            estimate["estimated_seconds"] >= minimum_seconds
+            and estimate["spoken_characters"] >= NARRATION_TARGET_MIN_SPOKEN_CHARACTERS
+        ):
             break
-        value += addition
+        # Extend the final sentence instead of creating a ninth sentence.  The
+        # pacing contract deliberately limits short-form narration to 6-8
+        # complete sentences, so safe padding must not break that structure.
+        terminal = value[-1:] if value[-1:] in "。！？!?" else ""
+        clause = addition.rstrip("。！？!?")
+        candidate = (
+            value[:-1] + "；" + clause + terminal
+            if terminal
+            else value + "；" + clause + "。"
+        )
+        if estimate_narration_duration(candidate)["spoken_characters"] > NARRATION_TARGET_MAX_SPOKEN_CHARACTERS:
+            break
+        value = candidate
     return value
 
 
@@ -801,13 +852,14 @@ def _build_legacy_local_variants(
         evidence_rows.sort(key=lambda item: source_priority.get(
             str((item.get("evidence") or [{}])[0].get("source_type", "")), 9
         ))
-        statements = [_finding_statement(item, max_chars=86) for item in evidence_rows]
-        statements = [value for value in statements if value][:2]
+        statements = [_finding_statement(item, max_chars=52) for item in evidence_rows]
+        statements = [value for value in statements if value][:1]
         evidence_copy = "；".join(statements).rstrip("。") + "。"
         core = evidence_copy + (
-            "这些内容只能在原来源和限定范围内使用，不能外推成所有产品或所有场景的结论。"
-            "所以看除醛率，仍要核对剂量、空间体积、作用时间、初始浓度、检测方法和报告来源。"
-            "实验条件与真实房间不同，结果就不能直接照搬；没有完整证据时，也不能把数字理解成入住保证。"
+            "这项内容只适用于原来源的对象和范围，不能外推到所有产品或场景。"
+            "判断除醛信息，还要核对剂量、空间体积、作用时间、初始浓度、检测方法和报告来源。"
+            "实验条件与真实房间不同，结论不能直接照搬；证据不完整，也不能理解成入住保证。"
+            "最后保留原始报告和核对记录，再结合真实房屋情况判断。"
         )
         openings = [
             ("A", "证据反查", "看到一条高比例除醛率宣传，先问一句：这个数字是在什么条件下得到的？"),
@@ -820,25 +872,28 @@ def _build_legacy_local_variants(
             {
                 "id": item_id,
                 "hook_type": hook,
-                "script": _pad_safe_script(opening + core, minimum_seconds=45),
+                "script": _pad_safe_script(opening + core),
                 "reason": "只组合阶段审查批准且通过严格反证审核的证据原意。",
                 "source": "local_evidence_bound",
                 "evidence_finding_ids": finding_ids,
             }
             for item_id, hook, opening in openings
         ]
+    safe_topic = safe_topic[:46]
+    safe_audience = audience[:18] or "装修后家庭"
     core = (
-        f"你问的是“{safe_topic}”。先把肉眼或鼻子感受到的现象，和能够证明室内甲醛水平的证据分开。"
-        "气味、颜色变化和短时间体感都只能提供线索，不能单独替代规范检测。"
-        "判断一条除醛信息，先核对它讨论的对象和使用场景，再看剂量、空间体积、作用时间、初始浓度、检测方法以及报告来源。"
-        "实验条件与真实房间不同，结论就不能直接照搬；缺少来源和适用边界，也不能把宣传话术理解成入住保证。"
-        f"对{audience}来说，更稳妥的做法是保存完整报告、持续通风，并在重要入住决策前结合真实房屋情况请专业人员判断。"
+        "先分清气味线索和仪器读数，再核对室内甲醛证据。"
+        "先核对检测时的门窗状态、仪器位置和持续时间。"
+        "气味和体感只是线索，不能替代规范检测。"
+        "再看剂量、空间体积、作用时间、初始浓度、检测方法和报告来源。"
+        "实验条件与真实房间不同，结论不能直接照搬；缺少来源和适用边界，也不能理解成入住保证。"
+        f"对{safe_audience}，建议保留报告、持续通风，重要决定前结合房屋情况请专业人员判断。"
     )
     openings = [
-        ("A", "问题拆解", "这个问题不能只凭一个表面现象下结论。"),
-        ("B", "证据清单", "先记住一个原则：现象是线索，检测才是证据。"),
-        ("C", "风险提醒", "最容易误判的地方，是把感受直接当成检测结论。"),
-        ("D", "行动建议", "遇到这类问题，可以按证据、条件、场景三步判断。"),
+        ("A", "问题拆解", f"对于“{safe_topic}”，不能只凭一个低数值下结论。"),
+        ("B", "证据清单", f"判断“{safe_topic}”，先分清线索和证据。"),
+        ("C", "风险提醒", f"“{safe_topic}”最容易错在把感受直接当结论。"),
+        ("D", "行动建议", f"面对“{safe_topic}”，可以按条件、证据和场景判断。"),
     ]
     return [
         {"id": item_id, "hook_type": hook, "script": _pad_safe_script(opening + core, minimum_seconds=45), "reason": f"围绕实际选题“{topic}”生成的本地安全模板。"}
@@ -1726,7 +1781,33 @@ class ProductionRunner:
                 str(item.get("script", "")), approved_findings, capability_pack, learning_rules
             )["blocked"]
         ]
-        approved = dict((safe_candidates or variants)[0])
+        paced_candidates = [
+            item for item in safe_candidates
+            if not review_narration_pacing(str(item.get("script", "")))["blocked"]
+        ]
+        if not paced_candidates:
+            local_candidates = build_local_variants(
+                str(config["topic"]), str(config["audience"]), approved_findings,
+                capability_pack, learning_rules,
+            )
+            paced_candidates = [
+                item for item in local_candidates
+                if not review_script(
+                    str(item.get("script", "")), approved_findings, capability_pack, learning_rules
+                )["blocked"]
+                and not review_narration_pacing(str(item.get("script", "")))["blocked"]
+            ]
+            provider_report["narration_pacing_fallback_used"] = True
+            provider_report["narration_pacing_rejections"] = [
+                {
+                    "id": str(item.get("id", "")),
+                    "review": review_narration_pacing(str(item.get("script", ""))),
+                }
+                for item in (safe_candidates or variants)
+            ]
+        if not paced_candidates:
+            raise ScriptRevisionRequired("脚本Agent及本地安全兜底均未生成180到195个口播字的自然节奏脚本")
+        approved = dict(paced_candidates[0])
         approved.update({"selected_by": "local_compliance_prefilter", "selected_at": datetime.now().astimezone().isoformat(timespec="seconds")})
         atomic_json(approved_path, approved)
         review = review_script(str(approved["script"]), approved_findings, capability_pack, learning_rules)
@@ -1789,6 +1870,33 @@ class ProductionRunner:
                 "reason": "候选仍命中本地阻断规则，改用与选题相关的安全模板",
                 "previous_warnings": previous_warnings,
             }
+        final_pacing = review_narration_pacing(str(approved["script"]))
+        if final_pacing["blocked"]:
+            local_candidates = build_local_variants(
+                str(config["topic"]), str(config["audience"]), approved_findings,
+                capability_pack, learning_rules,
+            )
+            replacement = next(
+                (
+                    item for item in local_candidates
+                    if not review_script(
+                        str(item.get("script", "")), approved_findings, capability_pack, learning_rules
+                    )["blocked"]
+                    and not review_narration_pacing(str(item.get("script", "")))["blocked"]
+                ),
+                None,
+            )
+            if replacement is None:
+                raise ScriptRevisionRequired("最终脚本未通过自然节奏门禁，且没有合格的本地安全脚本")
+            approved.update({
+                "script": str(replacement["script"]),
+                "selected_by": "trusted_pacing_safe_topic_template",
+                "pacing_rejected_script": str(approved.get("script", "")),
+            })
+            atomic_json(approved_path, approved)
+            review = review_script(str(approved["script"]), approved_findings, capability_pack, learning_rules)
+            final_pacing = review_narration_pacing(str(approved["script"]))
+        review["narration_pacing"] = final_pacing
         if resolve_production_mode(config) == "motion":
             storyboard, storyboard_report = self._generate_motion_storyboard(
                 config,
@@ -1848,13 +1956,39 @@ class ProductionRunner:
             production_engine_report["codec_strategy"] = H264_CODEC_STRATEGY
             render_report["codec_strategy"] = H264_CODEC_STRATEGY
         else:
-            voice_report = self.voice_adapter(folder, approved["script"], config) if self.voice_adapter else self._synthesize_voice(folder, approved["script"], config)
+            voice_report = (
+                self.voice_adapter(folder, approved["script"], config)
+                if self.voice_adapter
+                else self._synthesize_voice(folder, approved["script"], config, segments=segments)
+            )
             if not (folder / "voice.wav").is_file():
                 raise RuntimeError("配音适配器没有生成voice.wav")
-            voice_report.update(self._normalize_voice_duration(folder, float(config.get("target_duration_seconds", 52))))
-            if self.voice_adapter is None:
+            if voice_report.get("segment_aligned") is True:
+                delivered_duration = self._audio_duration(folder / "voice.wav")
+                if not 45.0 <= delivered_duration <= 60.0:
+                    raise ScriptRevisionRequired(
+                        f"逐镜头配音总时长{delivered_duration:.2f}秒，不在45-60秒；"
+                        "脚本Agent必须重分镜或调整逐镜头台词，禁止整轨加速或减速"
+                    )
                 voice_report.update({
-                    "schema_version": 2,
+                    "duration_seconds": round(delivered_duration, 3),
+                    "tempo_adjusted": False,
+                    "duration_source": "scene_voice_segments",
+                })
+            else:
+                voice_report.update(
+                    self._normalize_voice_duration(
+                        folder, float(config.get("target_duration_seconds", 52))
+                    )
+                )
+            if self.voice_adapter is None:
+                voice_report.update(
+                    self._validate_delivered_voice_pacing(
+                        str(approved["script"]), float(voice_report["duration_seconds"])
+                    )
+                )
+                voice_report.update({
+                    "schema_version": 3,
                     "script_sha256": hashlib.sha256(str(approved["script"]).encode("utf-8")).hexdigest().upper(),
                     "voice_sha256": _file_sha256(folder / "voice.wav"),
                     "quality_eligible": (
@@ -1875,15 +2009,33 @@ class ProductionRunner:
                     script_sha256=hashlib.sha256(str(approved["script"]).encode("utf-8")).hexdigest().upper(),
                 )
                 duration = self._audio_duration(folder / "program_audio.wav")
-            captions = self._write_captions(folder, segments, duration)
+            captions = self._write_captions(
+                folder,
+                segments,
+                duration,
+                scene_timings=(
+                    voice_report.get("scene_segments")
+                    if voice_report.get("segment_aligned") is True
+                    else None
+                ),
+            )
             if production_mode == "motion":
                 motion_caption_report = self._validate_motion_captions(
                     folder / "captions.srt", duration, str(approved["script"])
                 )
         capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
         learning_rules = _normalized_learning_rules(config.get("learning_rules"))
+        # Exact caption boundaries are authoritative only when they came from
+        # the per-scene voice contract.  Footage runs and legacy/injected voice
+        # adapters keep the director's proven duration allocation instead of
+        # accidentally treating derived subtitle timestamps as scene locks.
+        motion_segments = (
+            captions
+            if production_mode != "footage" and voice_report.get("segment_aligned") is True
+            else segments
+        )
         motion_plan = build_motion_plan(
-            config["topic"], config["audience"], segments, duration, capability_pack=capability_pack
+            config["topic"], config["audience"], motion_segments, duration, capability_pack=capability_pack
         )
         atomic_json(folder / "motion_plan.json", motion_plan)
         injected_adapter_identity: dict[str, Any] | None = None
@@ -2263,7 +2415,93 @@ class ProductionRunner:
         }
 
     @staticmethod
-    def _synthesize_voice(folder: Path, script: str, config: dict[str, Any]) -> dict[str, Any]:
+    def _voice_segments_digest(segments: list[dict[str, Any]] | None) -> str:
+        captions = [str(item.get("caption") or "").strip() for item in (segments or [])]
+        payload = json.dumps(captions, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest().upper()
+
+    @staticmethod
+    def _pcm_wave_duration(path: Path) -> float:
+        try:
+            with wave.open(str(path), "rb") as audio:
+                if (
+                    audio.getnchannels() != 1
+                    or audio.getsampwidth() != 2
+                    or audio.getframerate() != 48000
+                    or audio.getcomptype() != "NONE"
+                ):
+                    raise RuntimeError("逐镜头配音必须是48kHz、单声道、16位PCM WAV")
+                return audio.getnframes() / audio.getframerate()
+        except (OSError, EOFError, wave.Error) as exc:
+            raise RuntimeError(f"逐镜头配音WAV无效: {path.name}") from exc
+
+    @classmethod
+    def _concatenate_voice_segments(
+        cls,
+        segment_rows: list[dict[str, Any]],
+        output_path: Path,
+    ) -> list[dict[str, Any]]:
+        if not segment_rows:
+            raise RuntimeError("逐镜头配音不能为空")
+        output_path.unlink(missing_ok=True)
+        cursor_frames = 0
+        sample_rate = 48000
+        silence_frames = round(VOICE_SCENE_PAUSE_SECONDS * sample_rate)
+        timings: list[dict[str, Any]] = []
+        with wave.open(str(output_path), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(sample_rate)
+            for index, row in enumerate(segment_rows, start=1):
+                segment_path = Path(row["path"])
+                with wave.open(str(segment_path), "rb") as audio:
+                    if (
+                        audio.getnchannels() != 1
+                        or audio.getsampwidth() != 2
+                        or audio.getframerate() != sample_rate
+                        or audio.getcomptype() != "NONE"
+                    ):
+                        raise RuntimeError(f"逐镜头配音格式不一致: {segment_path.name}")
+                    frame_count = audio.getnframes()
+                    frame_bytes = audio.readframes(frame_count)
+                start = cursor_frames / sample_rate
+                output.writeframesraw(frame_bytes)
+                cursor_frames += frame_count
+                spoken_end = cursor_frames / sample_rate
+                pause_after = VOICE_SCENE_PAUSE_SECONDS if index < len(segment_rows) else 0.0
+                if pause_after:
+                    output.writeframesraw(b"\0" * silence_frames * 2)
+                    cursor_frames += silence_frames
+                end = cursor_frames / sample_rate
+                timings.append({
+                    "id": str(row["id"]),
+                    "index": index,
+                    "caption": str(row["caption"]),
+                    "text_sha256": str(row["text_sha256"]),
+                    "voice_file": str(row["voice_file"]),
+                    "voice_sha256": str(row["voice_sha256"]),
+                    "spoken_characters": int(row["spoken_characters"]),
+                    "spoken_characters_per_second": float(row["spoken_characters_per_second"]),
+                    "start_seconds": round(start, 3),
+                    "spoken_end_seconds": round(spoken_end, 3),
+                    "end_seconds": round(end, 3),
+                    "spoken_duration_seconds": round(spoken_end - start, 3),
+                    "pause_after_seconds": round(pause_after, 3),
+                })
+            output.writeframes(b"")
+        if not output_path.is_file() or output_path.stat().st_size <= 44:
+            raise RuntimeError("逐镜头配音拼接失败")
+        return timings
+
+    @classmethod
+    def _synthesize_voice(
+        cls,
+        folder: Path,
+        script: str,
+        config: dict[str, Any],
+        *,
+        segments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         requested_engine = normalize_voice_engine(config.get("voice_engine", DEFAULT_VOICE_ENGINE))
         chunk_max_chars = normalize_voice_chunk_max_chars(config.get("voice_chunk_max_chars"))
         text_path = folder / "narration.txt"
@@ -2271,6 +2509,8 @@ class ProductionRunner:
         existing_voice = folder / "voice.wav"
         identity_path = folder / "voice_identity.json"
         script_sha256 = hashlib.sha256(script.encode("utf-8")).hexdigest().upper()
+        segment_aligned = bool(segments)
+        segments_sha256 = cls._voice_segments_digest(segments)
         if previous_text == script and existing_voice.exists() and existing_voice.stat().st_size > 44:
             try:
                 identity = json.loads(identity_path.read_text(encoding="utf-8"))
@@ -2278,15 +2518,19 @@ class ProductionRunner:
                 identity = None
             if (
                 isinstance(identity, dict)
-                and identity.get("schema_version") == 2
+                and identity.get("schema_version") == 3
                 and identity.get("script_sha256") == script_sha256
                 and identity.get("voice_sha256") == _file_sha256(existing_voice)
                 and identity.get("natural_voice") is True
                 and identity.get("quality_eligible") is True
                 and identity.get("requested_engine") == requested_engine
                 and identity.get("voice") == DEFAULT_EDGE_TTS_VOICE
+                and identity.get("voice_rate") == DEFAULT_VOICE_RATE
                 and identity.get("voice_selection_exposed") is False
                 and identity.get("voice_chunk_max_chars") == chunk_max_chars
+                and identity.get("segment_contract_version") == VOICE_SEGMENT_CONTRACT_VERSION
+                and identity.get("segment_aligned") is segment_aligned
+                and identity.get("segments_sha256") == segments_sha256
                 and str(identity.get("engine")) in NATURAL_VOICE_ENGINES
                 and identity.get("engine") == requested_engine
             ):
@@ -2296,6 +2540,9 @@ class ProductionRunner:
         text_path.write_text(script, encoding="utf-8")
         existing_voice.unlink(missing_ok=True)
         identity_path.unlink(missing_ok=True)
+        segment_folder = folder / "voice_segments"
+        if segment_folder.exists():
+            shutil.rmtree(segment_folder)
         log_path = folder / "voice_generation.log"
         failures: list[str] = []
         configured_voice = str(config.get("edge_tts_voice") or DEFAULT_EDGE_TTS_VOICE).strip()
@@ -2303,55 +2550,122 @@ class ProductionRunner:
             raise ValueError("产品只允许固定的普通中文播报声，不提供音色选择")
 
         if requested_engine == DEFAULT_VOICE_ENGINE:
-            edge_media = folder / "voice.edge.mp3"
-            edge_media.unlink(missing_ok=True)
             edge_voice = DEFAULT_EDGE_TTS_VOICE
-            edge_command = [
-                sys.executable,
-                "-m",
-                "edge_tts",
-                "--file",
-                str(text_path),
-                "--voice",
-                edge_voice,
-                "--write-media",
-                str(edge_media),
-            ]
             try:
-                edge_result = subprocess.run(
-                    edge_command,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=300,
-                    check=True,
-                )
-                if not edge_media.is_file() or edge_media.stat().st_size <= 0:
-                    raise RuntimeError("Edge Neural TTS未生成音频")
                 if not _tool_available(FFMPEG):
                     raise FileNotFoundError("未找到FFmpeg，无法规范化Edge Neural TTS音频")
-                conversion = subprocess.run(
-                    [
-                        str(FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
-                        "-i", str(edge_media), "-vn", "-ac", "1", "-ar", "48000",
-                        "-c:a", "pcm_s16le", str(folder / "voice.wav"),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=300,
-                    check=True,
-                )
+                if segment_aligned:
+                    if not 4 <= len(segments or []) <= 8:
+                        raise ScriptRevisionRequired("逐镜头配音必须与4到8幕导演蓝图一一对应")
+                    normalized_script = re.sub(r"\s+", "", script)
+                    normalized_captions = re.sub(
+                        r"\s+", "", "".join(str(item.get("caption") or "") for item in (segments or []))
+                    )
+                    if normalized_script != normalized_captions:
+                        raise ScriptRevisionRequired("逐镜头台词未按原顺序完整覆盖最终脚本")
+                    segment_folder.mkdir(parents=True, exist_ok=False)
+                    voice_inputs = [
+                        {
+                            "id": f"scene-{index:02d}",
+                            "caption": str(item.get("caption") or "").strip(),
+                            "text_path": segment_folder / f"scene-{index:02d}.txt",
+                            "edge_media": segment_folder / f"scene-{index:02d}.edge.mp3",
+                            "wav_path": segment_folder / f"scene-{index:02d}.wav",
+                        }
+                        for index, item in enumerate(segments or [], start=1)
+                    ]
+                else:
+                    voice_inputs = [{
+                        "id": "scene-01",
+                        "caption": script,
+                        "text_path": text_path,
+                        "edge_media": folder / "voice.edge.mp3",
+                        "wav_path": existing_voice,
+                    }]
+
+                segment_rows: list[dict[str, Any]] = []
+                for voice_input in voice_inputs:
+                    caption = str(voice_input["caption"]).strip()
+                    if not caption:
+                        raise ScriptRevisionRequired(f"{voice_input['id']}没有可配音台词")
+                    segment_text_path = Path(voice_input["text_path"])
+                    edge_media = Path(voice_input["edge_media"])
+                    segment_wav = Path(voice_input["wav_path"])
+                    segment_text_path.write_text(caption, encoding="utf-8")
+                    edge_media.unlink(missing_ok=True)
+                    segment_wav.unlink(missing_ok=True)
+                    edge_result = subprocess.run(
+                        [
+                            sys.executable, "-m", "edge_tts", "--file", str(segment_text_path),
+                            "--voice", edge_voice, f"--rate={DEFAULT_VOICE_RATE}",
+                            "--write-media", str(edge_media),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=300,
+                        check=True,
+                    )
+                    if not edge_media.is_file() or edge_media.stat().st_size <= 0:
+                        raise RuntimeError(f"Edge Neural TTS未生成{voice_input['id']}音频")
+                    conversion = subprocess.run(
+                        [
+                            str(FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
+                            "-i", str(edge_media), "-vn", "-ac", "1", "-ar", "48000",
+                            "-c:a", "pcm_s16le", str(segment_wav),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=300,
+                        check=True,
+                    )
+                    if not segment_wav.is_file() or segment_wav.stat().st_size <= 44:
+                        raise RuntimeError(f"{voice_input['id']}音频规范化失败")
+                    with log_path.open("a", encoding="utf-8") as handle:
+                        handle.write((edge_result.stdout or "") + "\n" + (edge_result.stderr or ""))
+                        handle.write((conversion.stdout or "") + "\n" + (conversion.stderr or ""))
+                    if segment_aligned:
+                        spoken_duration = cls._pcm_wave_duration(segment_wav)
+                        spoken_characters = int(estimate_narration_duration(caption)["spoken_characters"])
+                        delivered_rate = spoken_characters / max(spoken_duration, 0.001)
+                        if delivered_rate > NARRATION_MAX_DELIVERED_CHARACTERS_PER_SECOND:
+                            raise ScriptRevisionRequired(
+                                f"{voice_input['id']}配音密度{delivered_rate:.2f}字/秒，"
+                                f"超过{NARRATION_MAX_DELIVERED_CHARACTERS_PER_SECOND:.2f}字/秒；"
+                                "脚本Agent必须缩短该幕台词或重新分镜"
+                            )
+                        segment_rows.append({
+                            "id": voice_input["id"],
+                            "caption": caption,
+                            "path": segment_wav,
+                            "voice_file": segment_wav.relative_to(folder).as_posix(),
+                            "text_sha256": hashlib.sha256(caption.encode("utf-8")).hexdigest().upper(),
+                            "voice_sha256": _file_sha256(segment_wav),
+                            "spoken_characters": spoken_characters,
+                            "spoken_characters_per_second": round(delivered_rate, 3),
+                        })
+                    edge_media.unlink(missing_ok=True)
+
+                if segment_aligned:
+                    scene_timings = cls._concatenate_voice_segments(segment_rows, existing_voice)
+                    atomic_json(folder / "voice_segments.json", {
+                        "schema_version": 1,
+                        "contract": "scene_aligned_edge_tts_pcm_v1",
+                        "segments_sha256": segments_sha256,
+                        "pause_seconds": VOICE_SCENE_PAUSE_SECONDS,
+                        "scene_segments": scene_timings,
+                    })
+                else:
+                    scene_timings = []
                 if not existing_voice.is_file() or existing_voice.stat().st_size <= 44:
                     raise RuntimeError("Edge Neural TTS音频规范化失败")
-                with log_path.open("a", encoding="utf-8") as handle:
-                    handle.write((edge_result.stdout or "") + "\n" + (edge_result.stderr or ""))
-                    handle.write((conversion.stdout or "") + "\n" + (conversion.stderr or ""))
                 report = {
                     "engine": "edge_tts",
                     "voice": edge_voice,
+                    "voice_rate": DEFAULT_VOICE_RATE,
                     "voice_label": DEFAULT_VOICE_LABEL,
                     "voice_selection_exposed": False,
                     "requires_network": True,
@@ -2360,7 +2674,12 @@ class ProductionRunner:
                     "fallback": False,
                     "requested_engine": requested_engine,
                     "voice_chunk_max_chars": chunk_max_chars,
-                    "segment_count": 1,
+                    "segment_count": len(voice_inputs),
+                    "segment_aligned": segment_aligned,
+                    "segment_contract_version": VOICE_SEGMENT_CONTRACT_VERSION,
+                    "segments_sha256": segments_sha256,
+                    "scene_pause_seconds": VOICE_SCENE_PAUSE_SECONDS if segment_aligned else 0.0,
+                    "scene_segments": scene_timings,
                     "natural_voice": True,
                 }
                 return report
@@ -2369,7 +2688,11 @@ class ProductionRunner:
                 with log_path.open("a", encoding="utf-8") as handle:
                     handle.write(f"Edge natural voice failed: {exc}\n")
             finally:
-                edge_media.unlink(missing_ok=True)
+                for media_path in folder.glob("voice*.edge.mp3"):
+                    media_path.unlink(missing_ok=True)
+                if segment_folder.exists():
+                    for media_path in segment_folder.glob("*.edge.mp3"):
+                        media_path.unlink(missing_ok=True)
 
         raise RuntimeError(
             "固定普通中文播报生成失败，已禁止切换其他音色或本机私人模型：" + "; ".join(failures)
@@ -2841,6 +3164,23 @@ class ProductionRunner:
         }
 
     @staticmethod
+    def _validate_delivered_voice_pacing(script: str, duration_seconds: float) -> dict[str, Any]:
+        spoken = int(estimate_narration_duration(script)["spoken_characters"])
+        duration = float(duration_seconds)
+        rate = spoken / max(duration, 0.001)
+        if rate > NARRATION_MAX_DELIVERED_CHARACTERS_PER_SECOND:
+            raise ScriptRevisionRequired(
+                f"最终配音密度{rate:.2f}字/秒，超过{NARRATION_MAX_DELIVERED_CHARACTERS_PER_SECOND:.2f}字/秒；"
+                "脚本Agent必须缩短句子、增加自然停顿后重做"
+            )
+        return {
+            "pacing_status": "passed",
+            "spoken_characters": spoken,
+            "spoken_characters_per_second": round(rate, 3),
+            "maximum_spoken_characters_per_second": NARRATION_MAX_DELIVERED_CHARACTERS_PER_SECOND,
+        }
+
+    @staticmethod
     def _srt_time(seconds: float) -> str:
         milliseconds = max(0, round(seconds * 1000))
         hours, milliseconds = divmod(milliseconds, 3_600_000)
@@ -2848,19 +3188,43 @@ class ProductionRunner:
         secs, milliseconds = divmod(milliseconds, 1000)
         return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
 
-    def _write_captions(self, folder: Path, segments: list[dict[str, str]], duration: float) -> list[dict[str, Any]]:
+    def _write_captions(
+        self,
+        folder: Path,
+        segments: list[dict[str, str]],
+        duration: float,
+        *,
+        scene_timings: Any = None,
+    ) -> list[dict[str, Any]]:
+        exact_timings = scene_timings if isinstance(scene_timings, list) else None
+        if exact_timings is not None and len(exact_timings) != len(segments):
+            raise RuntimeError("逐镜头音频时间轴与导演蓝图数量不一致")
         weights = [max(1, len(item["caption"])) for item in segments]
         total = sum(weights)
         cursor = 0.0
         output: list[dict[str, Any]] = []
         lines: list[str] = []
         for index, (segment, weight) in enumerate(zip(segments, weights), start=1):
-            end = duration if index == len(segments) else cursor + duration * weight / total
+            if exact_timings is not None:
+                timing = exact_timings[index - 1]
+                if not isinstance(timing, dict) or int(timing.get("index", 0)) != index:
+                    raise RuntimeError(f"逐镜头音频时间轴第{index}幕身份无效")
+                start = float(timing.get("start_seconds", -1))
+                end = float(timing.get("end_seconds", -1))
+                if abs(start - cursor) > 0.002 or end <= start:
+                    raise RuntimeError(f"逐镜头音频时间轴第{index}幕不连续")
+            else:
+                start = cursor
+                end = duration if index == len(segments) else cursor + duration * weight / total
             item = dict(segment)
-            item.update({"start": round(cursor, 3), "end": round(end, 3)})
+            item.update({"start": round(start, 3), "end": round(end, 3)})
             output.append(item)
-            lines.extend([str(index), f"{self._srt_time(cursor)} --> {self._srt_time(end)}", segment["caption"], ""])
+            lines.extend([str(index), f"{self._srt_time(start)} --> {self._srt_time(end)}", segment["caption"], ""])
             cursor = end
+        if abs(cursor - duration) > 0.05:
+            raise RuntimeError(
+                f"字幕结束时间{cursor:.3f}秒与音轨{duration:.3f}秒不一致"
+            )
         (folder / "captions.srt").write_text("\n".join(lines), encoding="utf-8")
         return output
 

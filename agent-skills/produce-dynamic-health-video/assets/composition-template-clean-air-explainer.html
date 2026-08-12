@@ -55,19 +55,20 @@
     .measure-dot::before, .measure-dot::after { content: ""; position: absolute; background: #e87955; }
     .measure-dot::before { left: 34px; top: -28px; width: 7px; height: 130px; }
     .measure-dot::after { left: -28px; top: 34px; width: 130px; height: 7px; }
-    .condition-list { display: grid; gap: 18px; }
-    .condition-card { min-height: 170px; display: grid; grid-template-columns: 74px 1fr; align-items: center; gap: 20px; padding: 24px; border: 2px solid rgba(31,90,70,.22); border-radius: 23px; background: #fff; color: #23493d; font-size: 30px; font-weight: 900; }
+    .condition-list { height: 100%; display: grid; grid-template-rows: repeat(var(--item-count), minmax(0,1fr)); gap: 18px; }
+    .condition-card { min-height: 0; display: grid; grid-template-columns: 74px 1fr; align-items: center; gap: 20px; padding: 24px; border: 2px solid rgba(31,90,70,.22); border-radius: 23px; background: #fff; color: #23493d; font-size: 30px; font-weight: 900; }
     .condition-card b { display: grid; place-items: center; width: 66px; height: 66px; border-radius: 50%; background: #C8E35B; color: #12342b; font-size: 26px; }
 
-    .single-layout { height: 100%; display: grid; grid-template-columns: 250px 1fr; gap: 30px; align-items: center; }
-    .single-count { height: 520px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 32px; background: #1f5a46; color: #fff; }
-    .single-count strong { font-size: 150px; line-height: 1; }
+    .single-layout { height: 100%; display: grid; grid-template-columns: .82fr 1.55fr; gap: 30px; align-items: stretch; }
+    .single-count { min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 34px 24px; border-radius: 32px; background: #1f5a46; color: #fff; }
+    .single-count strong { font-size: 116px; line-height: 1; font-variant-numeric: tabular-nums; }
     .single-count span { margin-top: 18px; font-size: 29px; font-weight: 900; }
-    .boundary-list { display: grid; gap: 20px; }
-    .boundary-card { min-height: 145px; display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 22px; padding: 24px 28px; border: 2px solid rgba(215,109,75,.34); border-radius: 22px; background: #fff7f2; color: #3c514a; font-size: 28px; font-weight: 800; }
+    .boundary-list { height: 100%; display: grid; grid-template-rows: repeat(var(--secondary-count), minmax(0,1fr)); gap: 20px; }
+    .boundary-card { min-height: 0; display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 22px; padding: 24px 28px; border: 2px solid rgba(215,109,75,.34); border-radius: 22px; background: #fff7f2; color: #3c514a; font-size: 28px; font-weight: 800; }
     .boundary-card b { color: #d76d4b; font-size: 42px; }
 
     .process-layout { height: 100%; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 26px; }
+    .process-layout[data-item-count="3"] { grid-template-columns: 1fr; grid-template-rows: repeat(3,minmax(0,1fr)); }
     .process-step { position: relative; display: flex; flex-direction: column; justify-content: center; padding: 30px 32px 30px 112px; border: 2px solid rgba(31,90,70,.25); border-radius: 26px; background: #f7faf5; color: #21483c; font-size: 28px; font-weight: 900; }
     .process-step b { position: absolute; left: 28px; top: 50%; width: 60px; height: 60px; margin-top: -30px; display: grid; place-items: center; border-radius: 50%; background: #1f5a46; color: #fff; font-size: 26px; }
     .process-step small { margin-top: 12px; color: #6a7e77; font-size: 20px; font-weight: 700; }
@@ -87,10 +88,13 @@
     .final-item { position: absolute; width: 270px; min-height: 126px; display: grid; place-items: center; padding: 22px; border: 3px solid #86a332; border-radius: 22px; background: #f5f9e7; color: #28483e; font-size: 29px; font-weight: 900; text-align: center; }
     .final-item.i1 { left: 30px; top: 72px; } .final-item.i2 { right: 30px; top: 72px; }
     .final-item.i3 { left: 30px; bottom: 72px; } .final-item.i4 { right: 30px; bottom: 72px; }
+    .final-layout[data-item-count="2"] .final-item.i1 { left: 0; top: calc(50% - 63px); bottom: auto; }
+    .final-layout[data-item-count="2"] .final-item.i2 { right: 0; top: calc(50% - 63px); bottom: auto; }
+    .final-layout[data-item-count="3"] .final-item.i3 { left: calc(50% - 135px); bottom: 38px; }
     .final-axis { position: absolute; left: 50%; top: 50%; width: 520px; height: 520px; margin: -260px; border: 3px dashed rgba(31,90,70,.24); border-radius: 50%; }
 
-    .points-layout { height: 100%; display: grid; gap: 18px; align-content: center; }
-    .point-row { min-height: 125px; display: flex; align-items: center; gap: 24px; padding: 24px 30px; border: 2px solid rgba(31,90,70,.24); border-radius: 22px; background: #fff; color: #25483d; font-size: 28px; font-weight: 900; }
+    .points-layout { height: 100%; display: grid; grid-template-rows: repeat(var(--item-count), minmax(0,1fr)); gap: 18px; }
+    .point-row { min-height: 0; display: flex; align-items: center; gap: 24px; padding: 24px 30px; border: 2px solid rgba(31,90,70,.24); border-radius: 22px; background: #fff; color: #25483d; font-size: 28px; font-weight: 900; }
     .point-row b { color: #748d0f; font-size: 32px; }
   </style>
 </head>
@@ -123,12 +127,36 @@
       const primary = items[0] || esc(visual.summary) || heading;
       const secondary = items[1] || esc(visual.summary) || primary;
       if (visual.kind === "low-reading") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body low-layout"><div class="reading-card reveal" data-item-index="0"><small>当前主张</small><strong>${primary}</strong><span>先看这一项</span></div><div class="logic-not reveal">≠</div><div class="verdict-card reveal" data-item-index="1"><small>不能直接推出</small><strong>${secondary}</strong></div><div class="status-strip">${items.slice(2).map((item,index)=>`<span class="reveal" data-item-index="${index+2}">${item}</span>`).join("")}</div></div></div>`;
-      if (visual.kind === "measurement-conditions") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body condition-layout"><div class="room-map reveal"><div class="room-wall"></div><div class="window"></div><div class="measure-dot"></div></div><div class="condition-list">${items.map((item,index)=>`<div class="condition-card reveal" data-item-index="${index}"><b>${String(index+1).padStart(2,"0")}</b><span>${item}</span></div>`).join("")}</div></div></div>`;
-      if (visual.kind === "single-reading") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body single-layout"><div class="single-count reveal" data-item-index="0"><strong>边界</strong><span>${primary}</span></div><div class="boundary-list">${items.slice(1).map((item,index)=>`<div class="boundary-card reveal" data-item-index="${index+1}"><b>×</b><span>${item}</span></div>`).join("")}</div></div></div>`;
-      if (visual.kind === "retest-process") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body process-layout">${items.map((item,index)=>`<div class="process-step reveal" data-item-index="${index}"><b>${index+1}</b><span>${item}</span><small>${index === 0 ? "先做这一项" : index === items.length-1 ? "最后再判断" : "按顺序核对"}</small></div>`).join("")}</div></div>`;
-      if (visual.kind === "product-conditions") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body product-layout">${items.map((item,index)=>`<div class="product-card reveal" data-item-index="${index}"><i class="product-icon"></i><strong>${item}</strong><span>${index === 0 ? "先核对来源" : index === 1 ? "再确认适用范围" : "按真实条件理解"}</span></div>`).join("")}</div></div>`;
-      if (visual.kind === "final-checklist") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body final-layout"><div class="final-axis reveal"></div><div class="final-core reveal">全部合在一起<br>再做决定</div>${items.map((item,index)=>`<div class="final-item i${index+1} reveal" data-item-index="${index}">${item}</div>`).join("")}</div></div>`;
-      return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body points-layout">${items.map((item,index)=>`<div class="point-row reveal" data-item-index="${index}"><b>${String(index+1).padStart(2,"0")}</b><span>${item}</span></div>`).join("")}</div></div>`;
+      if (visual.kind === "measurement-conditions") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body condition-layout" data-item-count="${items.length}"><div class="room-map reveal"><div class="room-wall"></div><div class="window"></div><div class="measure-dot"></div></div><div class="condition-list" style="--item-count:${items.length}">${items.map((item,index)=>`<div class="condition-card reveal" data-item-index="${index}"><b>${String(index+1).padStart(2,"0")}</b><span>${item}</span></div>`).join("")}</div></div></div>`;
+      if (visual.kind === "single-reading") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body single-layout" data-item-count="${items.length}"><div class="single-count reveal" data-item-index="0"><strong>01</strong><span>${primary}</span></div><div class="boundary-list" style="--secondary-count:${items.length-1}">${items.slice(1).map((item,index)=>`<div class="boundary-card reveal" data-item-index="${index+1}"><b>${String(index+2).padStart(2,"0")}</b><span>${item}</span></div>`).join("")}</div></div></div>`;
+      if (visual.kind === "retest-process") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body process-layout" data-item-count="${items.length}">${items.map((item,index)=>`<div class="process-step reveal" data-item-index="${index}"><b>${index+1}</b><span>${item}</span></div>`).join("")}</div></div>`;
+      if (visual.kind === "product-conditions") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body product-layout" data-item-count="${items.length}">${items.map((item,index)=>`<div class="product-card reveal" data-item-index="${index}"><i class="product-icon"></i><strong>${item}</strong></div>`).join("")}</div></div>`;
+      if (visual.kind === "final-checklist") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body final-layout" data-item-count="${items.length}"><div class="final-axis reveal"></div><div class="final-core reveal">${primary}</div>${items.map((item,index)=>`<div class="final-item i${index+1} reveal" data-item-index="${index}">${item}</div>`).join("")}</div></div>`;
+      return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body points-layout" data-item-count="${items.length}" style="--item-count:${items.length}">${items.map((item,index)=>`<div class="point-row reveal" data-item-index="${index}"><b>${String(index+1).padStart(2,"0")}</b><span>${item}</span></div>`).join("")}</div></div>`;
+    };
+    const densityContract = {
+      "low-reading": [".reading-card,.verdict-card,.status-strip span", .42],
+      "measurement-conditions": [".room-map,.condition-card", .55],
+      "single-reading": [".single-count,.boundary-card", .62],
+      "retest-process": [".process-step", .70],
+      "product-conditions": [".product-card", .52],
+      "final-checklist": [".final-core,.final-item", .25],
+      "explain-points": [".point-row", .70]
+    };
+    const assertVisualDensity = (node, scene) => {
+      const body = node.querySelector(".visual-body");
+      const contract = densityContract[scene.visual_content.kind];
+      if (!body || !contract) throw new Error(`场景 ${scene.id} 缺少视觉密度合同`);
+      const bodyBox = body.getBoundingClientRect();
+      const targetArea = Array.from(body.querySelectorAll(contract[0])).reduce((total, element) => {
+        const box = element.getBoundingClientRect();
+        return total + Math.max(0, box.width) * Math.max(0, box.height);
+      }, 0);
+      const ratio = targetArea / Math.max(1, bodyBox.width * bodyBox.height);
+      node.dataset.visualDensityRatio = ratio.toFixed(3);
+      if (!Number.isFinite(ratio) || ratio < contract[1]) {
+        throw new Error(`场景 ${scene.id} 有效信息仅占视觉区 ${(ratio * 100).toFixed(1)}%，会产生大面积空白`);
+      }
     };
     const scenesRoot = document.getElementById("scenes");
     plan.scenes.forEach((scene, index) => {
@@ -141,6 +169,7 @@
       const titleClass = String(scene.title || "").length > 16 ? "reveal long-title" : "reveal";
       node.innerHTML = `<div class="content"><header class="header"><div class="scene-number">${String(index+1).padStart(2,"0")}</div><div class="kicker reveal">${esc(scene.kicker)}</div><h1 class="${titleClass}">${esc(scene.title)}</h1><div class="argument reveal">${esc(scene.visual_content.summary)}</div></header><div class="visual">${visualMarkup(scene)}</div></div><div class="caption"><span>${esc(scene.caption)}</span></div><div class="semantic-progress" data-layout-ignore><i></i></div>`;
       scenesRoot.appendChild(node);
+      assertVisualDensity(node, scene);
       const titleBox = node.querySelector("h1").getBoundingClientRect();
       const numberBox = node.querySelector(".scene-number").getBoundingClientRect();
       if (titleBox.right > numberBox.left - 18 || titleBox.bottom > node.querySelector(".header").getBoundingClientRect().bottom) {

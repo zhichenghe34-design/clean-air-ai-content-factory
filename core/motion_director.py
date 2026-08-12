@@ -331,8 +331,30 @@ def build_motion_plan(
     if duration <= 0:
         raise MotionPlanError("音频时长必须大于0")
 
-    weights = [max(8, len(str(item.get("caption", "")))) for item in segments]
-    scene_durations = _scene_durations(weights, duration)
+    timing_flags = ["start" in item or "end" in item for item in segments]
+    if any(timing_flags) and not all(timing_flags):
+        raise MotionPlanError("逐镜头音频时间轴必须覆盖全部场景")
+    if all(timing_flags):
+        scene_bounds: list[tuple[float, float]] = []
+        previous_end = 0.0
+        for index, item in enumerate(segments, start=1):
+            start = float(item.get("start", -1))
+            end = float(item.get("end", -1))
+            if abs(start - previous_end) > 0.02 or end <= start:
+                raise MotionPlanError(f"逐镜头音频时间轴第{index}幕不连续")
+            scene_bounds.append((start, end))
+            previous_end = end
+        if abs(previous_end - duration) > 0.05:
+            raise MotionPlanError("逐镜头音频时间轴与总音轨时长不一致")
+    else:
+        weights = [max(8, len(str(item.get("caption", "")))) for item in segments]
+        scene_durations = _scene_durations(weights, duration)
+        timing_cursor = 0.0
+        scene_bounds = []
+        for index, scene_duration in enumerate(scene_durations, start=1):
+            end = duration if index == len(scene_durations) else timing_cursor + scene_duration
+            scene_bounds.append((timing_cursor, end))
+            timing_cursor = end
     cursor = 0.0
     scenes: list[dict[str, Any]] = []
     receipt_selections: list[dict[str, Any]] = []
@@ -347,8 +369,9 @@ def build_motion_plan(
     registry = _registry()
     previous_block_id: str | None = None
     used_renderer_families: set[str] = set()
-    for index, (segment, scene_duration) in enumerate(zip(segments, scene_durations), start=1):
-        end = duration if index == len(segments) else cursor + scene_duration
+    for index, (segment, bounds) in enumerate(zip(segments, scene_bounds), start=1):
+        start, end = bounds
+        scene_duration = end - start
         safe_kicker = str(segment.get("kicker") or f"要点 {index:02d}").strip()
         safe_title = str(segment.get("title") or topic).strip()
         safe_caption = str(segment.get("caption") or "").strip()
@@ -401,7 +424,7 @@ def build_motion_plan(
         scene_payload = {
                 "id": f"scene-{index:02d}",
                 "index": index,
-                "start": round(cursor, 3),
+                "start": round(start, 3),
                 "end": round(end, 3),
                 "kicker": safe_kicker,
                 "title": safe_title,
@@ -424,7 +447,7 @@ def build_motion_plan(
                 "renderer_family": block["renderer_family"],
                 "semantic_tags": tags,
                 "matched_tags": matched_tags,
-                "duration_seconds": round(end - cursor, 3),
+                "duration_seconds": round(scene_duration, 3),
             }
         )
         previous_block_id = visual
