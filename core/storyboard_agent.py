@@ -194,6 +194,32 @@ def _verbatim_items(caption: str) -> list[str]:
         # selected the shortest fragment and then cut it at an arbitrary
         # character count, which produced cards such as “功效” and titles
         # ending in the middle of “材料”.
+        # A short sentence can still contain a dense, narration-bound list.
+        # Keeping that whole list in one card creates the large empty panel the
+        # product is supposed to prevent.  Split only on separators already in
+        # the caption, retaining every visible word verbatim.
+        if "、" in clause:
+            list_parts = [part.strip() for part in clause.split("、") if part.strip()]
+            # Do not turn compact nouns such as "功效、价格" into isolated,
+            # context-free labels.  Enumeration expansion is safe only when
+            # every existing fragment is already a complete visible phrase.
+            if len(list_parts) >= 2 and all(len(_phrase_key(part)) >= 4 for part in list_parts):
+                if len(list_parts) < 5:
+                    expanded: list[str] = []
+                    for part in list_parts:
+                        remaining_slots = 5 - len(expanded)
+                        pair = [
+                            value.strip()
+                            for value in re.split(r"(?:以及|并且|和|与)", part, maxsplit=1)
+                            if len(_phrase_key(value)) >= 4
+                        ]
+                        if len(pair) == 2 and remaining_slots >= 2:
+                            expanded.extend(pair)
+                        else:
+                            expanded.append(part)
+                    list_parts = expanded
+                pieces.extend(list_parts[:5])
+                continue
         if len(clause) <= 30:
             pieces.append(clause)
             continue

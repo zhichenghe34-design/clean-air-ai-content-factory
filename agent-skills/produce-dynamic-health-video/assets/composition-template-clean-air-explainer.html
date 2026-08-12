@@ -96,6 +96,9 @@
     .points-layout { height: 100%; display: grid; grid-template-rows: repeat(var(--item-count), minmax(0,1fr)); gap: 18px; }
     .point-row { min-height: 0; display: flex; align-items: center; gap: 24px; padding: 24px 30px; border: 2px solid rgba(31,90,70,.24); border-radius: 22px; background: #fff; color: #25483d; font-size: 28px; font-weight: 900; }
     .point-row b { color: #748d0f; font-size: 32px; }
+    .points-layout[data-item-count="1"] { grid-template-rows: 380px; align-content: center; padding: 70px 0; }
+    .points-layout[data-item-count="1"] .point-row { padding: 52px; gap: 36px; font-size: 38px; line-height: 1.35; }
+    .points-layout[data-item-count="1"] .point-row b { flex: 0 0 auto; font-size: 92px; line-height: 1; opacity: .7; }
   </style>
 </head>
 <body>
@@ -153,8 +156,11 @@
         return total + Math.max(0, box.width) * Math.max(0, box.height);
       }, 0);
       const ratio = targetArea / Math.max(1, bodyBox.width * bodyBox.height);
+      const minimumRatio = scene.visual_content.kind === "explain-points" && Number(body.dataset.itemCount) === 1
+        ? .34
+        : contract[1];
       node.dataset.visualDensityRatio = ratio.toFixed(3);
-      if (!Number.isFinite(ratio) || ratio < contract[1]) {
+      if (!Number.isFinite(ratio) || ratio < minimumRatio) {
         throw new Error(`场景 ${scene.id} 有效信息仅占视觉区 ${(ratio * 100).toFixed(1)}%，会产生大面积空白`);
       }
     };

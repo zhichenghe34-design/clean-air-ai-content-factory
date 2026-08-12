@@ -1438,6 +1438,8 @@ class OpenAICompatibleProvider:
             "布局必须与items数量匹配：claim_contrast需要2到4项，condition_map需要2到4项，"
             "boundary_list需要3到5项，process_flow需要3到4项，evidence_cards必须恰好3项，"
             "final_checklist需要2到4项，explain_points允许1到5项。"
+            "caption中只要已经出现顿号、以及、并且、和、与等并列结构，就必须把现有逐字短语拆成多个items；"
+            "不得把三个以上可枚举条件合并成一张大卡。单item仅限旁白中确实没有可逐字拆分结构的完整观点。"
             "禁止把两项内容塞进三格或四格结构；每幕必须选择能铺满主要视觉区的结构，不得留下整排、"
             "整列或下半屏大面积空白。信息不足时应换布局或重新划分相邻caption，不能编造新文字。"
             "focus_order必须是items下标0到N-1的不重复完整排列，代表旁白讲解时依次高亮，不代表自由动画。"

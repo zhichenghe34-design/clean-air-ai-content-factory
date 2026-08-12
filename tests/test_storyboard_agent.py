@@ -178,6 +178,26 @@ class StoryboardMechanicalReviewTests(unittest.TestCase):
         self.assertNotIn("”", visible_items)
         self.assertTrue(any("功效、价格、业绩数字" in item for item in visible_items))
 
+    def test_local_fallback_expands_existing_enumerations_instead_of_one_empty_card(self):
+        script = (
+            "对于“甲醛检测仪数值低为什么不能立刻安心入住”，不能只凭一个低数值下结论。"
+            "先分清气味线索和仪器读数，再核对室内甲醛证据。"
+            "先核对检测时的门窗状态、仪器位置和持续时间。"
+            "气味和体感只是线索，不能替代规范检测。"
+            "再看剂量、空间体积、作用时间、初始浓度、检测方法和报告来源。"
+            "实验条件与真实房间不同，结论不能直接照搬；缺少来源和适用边界，也不能理解成入住保证。"
+            "对上海装修后家庭，建议保留报告、持续通风，重要决定前结合房屋情况请专业人员判断。"
+        )
+        result = build_local_storyboard("检测条件", script)
+        enumerated = next(
+            scene for scene in result["scenes"] if "门窗状态" in scene["caption"]
+        )
+        self.assertEqual(
+            enumerated["items"],
+            ["先核对检测时的门窗状态", "仪器位置", "持续时间"],
+        )
+        self.assertNotEqual(enumerated["layout"], "explain_points")
+
     def test_dynamic_pack_executes_agent_storyboard_with_guarded_renderer(self):
         storyboard = validate_storyboard(raw_storyboard(), SCRIPT, source="DeepSeek", model="deepseek-test")
         segments = storyboard_to_motion_segments(storyboard)
