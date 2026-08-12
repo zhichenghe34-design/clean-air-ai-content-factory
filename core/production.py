@@ -858,7 +858,22 @@ def _summarize_spoken_text(value: str, maximum_spoken_characters: int) -> str:
     cleaned = str(value or "").strip()
     if int(estimate_narration_duration(cleaned)["spoken_characters"]) <= maximum_spoken_characters:
         return cleaned
-    tail_budget = max(8, maximum_spoken_characters * 2 // 5)
+    qualifier_matches = list(re.finditer(r"(?:不能|不得|不应|不要|不可|无法|未必|仅限|除非|否则)", cleaned))
+    for match in reversed(qualifier_matches):
+        suffix = cleaned[match.start():].lstrip(" ，,；;：:")
+        suffix_spoken = int(estimate_narration_duration(suffix)["spoken_characters"])
+        if suffix_spoken <= maximum_spoken_characters - 8:
+            prefix = re.sub(
+                r"[，,；;:：]?(?:(?:为什么|为何|怎么|如何)(?:还)?|还)\s*$",
+                "",
+                cleaned[:match.start()],
+            )
+            head = _spoken_text_edge(prefix, maximum_spoken_characters - suffix_spoken)
+            return f"{head}……{suffix}".strip()
+    # The decisive limitation or negation is commonly at the end of a Chinese
+    # topic.  Give the suffix the larger share so phrases such as “不能立刻判断
+    # 可以安心入住” survive compaction as one complete qualifier.
+    tail_budget = max(8, maximum_spoken_characters * 3 // 5)
     head_budget = maximum_spoken_characters - tail_budget
     head = _spoken_text_edge(cleaned, head_budget)
     tail = _spoken_text_edge(cleaned, tail_budget, from_end=True)
@@ -970,8 +985,20 @@ def _build_legacy_local_variants(
             }
             for item_id, hook, opening in openings
         ]
-    safe_topic = safe_topic[:46]
-    safe_audience = audience[:18] or "装修后家庭"
+    # A user may still paste a complete production brief as a custom topic.
+    # Prefer its explicit content focus, then keep both ends of any remaining
+    # long subject.  The fixed legacy narration has room for at most 24 spoken
+    # topic characters and 12 audience characters across all four openings.
+    explicit_focus = re.search(
+        r"(?:重点|主要|集中)(?:讲清|说明|介绍|展示|解释|讲解|呈现)[：:\s]*"
+        r"([^。；;!?！？]{2,80})",
+        safe_topic,
+        flags=re.IGNORECASE,
+    )
+    if explicit_focus:
+        safe_topic = explicit_focus.group(1).strip("，。；;:：")
+    safe_topic = _summarize_spoken_text(safe_topic, 24) or "甲醛信息怎么判断"
+    safe_audience = _summarize_spoken_text(audience, 12) or "装修后家庭"
     core = (
         "先分清气味线索和仪器读数，再核对室内甲醛证据。"
         "先核对检测时的门窗状态、仪器位置和持续时间。"

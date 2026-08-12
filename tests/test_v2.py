@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.capability_pack import local_capability_pack
+from core.capability_pack import local_capability_pack, local_topic_candidates
 from core.orchestrator import (
     CANONICAL_ARTIFACTS,
     ConflictError,
@@ -1567,6 +1567,55 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
             self.assertNotIn("面向上海装修后家庭", item["script"])
             self.assertIn("对上海装修后家庭", item["script"])
             self.assertFalse(review_narration_pacing(item["script"])["blocked"])
+
+    def test_default_no_key_topic_produces_four_releasable_local_scripts(self):
+        goal = (
+            "为除甲醛服务企业制作一条面向新房家庭的竖屏科普短视频，"
+            "重点讲清检测条件、适用边界和可追溯证据。"
+        )
+        pack = local_capability_pack(goal)
+        topic = local_topic_candidates(goal, pack, [])[0]["title"]
+        variants = build_local_variants(topic, pack["snapshot"]["audience"], capability_pack=pack)
+
+        self.assertEqual(len(variants), 4)
+        for item in variants:
+            estimate = estimate_narration_duration(item["script"])
+            self.assertGreaterEqual(estimate["spoken_characters"], 180)
+            self.assertLessEqual(estimate["spoken_characters"], 195)
+            self.assertFalse(review_narration_pacing(item["script"])["blocked"])
+            self.assertFalse(review_script(item["script"], [], capability_pack=pack)["blocked"])
+            self.assertNotIn("制作一条", item["script"])
+            self.assertNotIn("竖屏短视频", item["script"])
+
+    def test_long_custom_clean_air_brief_is_compacted_without_losing_its_tail(self):
+        goal = (
+            "为除甲醛服务企业制作一条面向新房家庭的竖屏科普短视频，"
+            "重点讲清检测条件、适用边界和可追溯证据。"
+        )
+        pack = local_capability_pack(goal)
+        variants = build_local_variants(goal, "正在准备入住新家的母婴家庭用户群体", capability_pack=pack)
+
+        for item in variants:
+            estimate = estimate_narration_duration(item["script"])
+            self.assertGreaterEqual(estimate["spoken_characters"], 180)
+            self.assertLessEqual(estimate["spoken_characters"], 195)
+            self.assertIn("检测条件、适用边界和可追溯证据", item["script"])
+            self.assertIn("母婴家庭用户群体", item["script"])
+            self.assertFalse(review_narration_pacing(item["script"])["blocked"])
+
+    def test_long_clean_air_question_preserves_the_complete_negative_qualifier(self):
+        topic = "甲醛检测仪显示数值较低，为什么还不能立刻判断可以安心入住？"
+        pack = local_capability_pack(f"面向新房家庭讲清{topic}")
+        variants = build_local_variants(topic, "新房家庭", capability_pack=pack)
+
+        for item in variants:
+            estimate = estimate_narration_duration(item["script"])
+            self.assertGreaterEqual(estimate["spoken_characters"], 180)
+            self.assertLessEqual(estimate["spoken_characters"], 195)
+            self.assertIn("不能立刻判断可以安心入住", item["script"])
+            self.assertNotIn("，为……不能", item["script"])
+            self.assertFalse(review_narration_pacing(item["script"])["blocked"])
+            self.assertFalse(review_script(item["script"], [], capability_pack=pack)["blocked"])
 
     def test_numeric_claim_requires_an_approved_finding(self):
         script = "某宣传写着百分之九十九，判断时仍要核对剂量、空间、作用时间、初始浓度、检测方法和报告来源。"
