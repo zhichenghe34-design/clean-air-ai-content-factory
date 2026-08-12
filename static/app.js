@@ -1093,7 +1093,7 @@ async function openJob(id, { job: suppliedJob = null, scroll = true, managePolli
   scriptField.disabled = mechanicalReview || job.legacy_read_only || !script;
   saveScriptButton.disabled = mechanicalReview || job.legacy_read_only || !script;
   rerunJobButton.disabled = mechanicalReview || job.legacy_read_only || !runnableStates.has(job.status) || state.busyJobs.has(job.id);
-  durationEstimate.textContent = script ? `当前 ${script.length} 字；保存时按标点加权校验 35–75 秒，配音后只允许 0.75–1.5 倍安全变速。` : "内容阶段完成后才能在浏览器中改稿。";
+  durationEstimate.textContent = script ? `当前 ${script.length} 字；固定使用普通中文播报声与 -2% 语速，逐幕实测时长和语速，不做整轨变速。` : "内容阶段完成后才能在浏览器中改稿。";
   renderRunHistory(job);
   const artifactLinks = (job.artifacts || []).map(name => name === "final.mp4"
     ? `<a href="/api/jobs/${id}/artifacts/final.mp4" download="shiyi-${escapeHtml(id)}-final.mp4">下载成片</a>`

@@ -180,7 +180,7 @@ def build(output: Path = OUTPUT) -> Path:
         Spacer(1, 7 * mm), paragraph("返工规则", h2),
         bullet("研究文件变化，研究审批立即失效；仅人工改稿时保留仍匹配的研究审批。", body),
         bullet("人工改稿先校验 35-75 秒预计朗读时长，并撤销旧合规审批。", body),
-        bullet("真实配音若需超出 0.75-1.5 倍变速才能进入 45-60 秒，则退回改稿。", body),
+        bullet("动画主线固定普通中文播报声与 -2% 语速；逐幕真实配音超过 4.05 字/秒或总时长不在 45-60 秒内，则退回 Agent 重新分镜或改稿。", body),
         paragraph("旧任务", h2), paragraph("旧 job 不改写，统一显示 legacy_read_only；旧报告不通过 v2 正式产物接口公开。", body), PageBreak(),
 
         section_tag("03 Agent 工作台"), Spacer(1, 4 * mm), paragraph("三选一，把复杂流程收进 Agent", h1),

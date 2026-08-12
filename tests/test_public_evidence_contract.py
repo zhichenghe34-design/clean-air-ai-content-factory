@@ -5,10 +5,13 @@ import json
 import mimetypes
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from unittest import mock
 
+from core.animation_registry import canonical_sha256
 from core.motion_director import build_motion_plan, derive_motion_segments, validate_motion_plan
+from core.production import estimate_narration_duration
 from core.review_policy import (
     AGENT_TEST_IDENTITY,
     AGENT_TEST_REVIEW,
@@ -27,6 +30,16 @@ from core.review_policy import (
     classify_script_edit_record,
     script_edit_validation_line,
 )
+from core.voice_contract import (
+    DEFAULT_VOICE_CHUNK_MAX_CHARS,
+    DEFAULT_VOICE_ENGINE,
+    DEFAULT_VOICE_NAME,
+    DEFAULT_VOICE_RATE,
+    VOICE_SCENE_MAX_DELIVERED_CHARACTERS_PER_SECOND,
+    VOICE_SCENE_PAUSE_SECONDS,
+    VOICE_SEGMENT_CONTRACT_VERSION,
+    voice_segments_digest,
+)
 from tools.build_public_evidence import (
     public_sanitization_validation_line,
     record_public_sanitization,
@@ -44,10 +57,32 @@ from tools.verify_public_evidence import (
     _validate_mpt_review_contract,
     caption_binding_text,
     evidence_artifacts_for_contract,
+    probe_video,
     sha256,
     validate_srt,
     verify,
 )
+
+
+def write_pcm_wave(path: Path, duration_seconds: float = 52.0, *, amplitude: int = 64) -> None:
+    frame_count = round(48000 * duration_seconds)
+    positive = int(amplitude).to_bytes(2, "little", signed=True)
+    negative = (-int(amplitude)).to_bytes(2, "little", signed=True)
+    sample_pair = positive + negative
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(48000)
+        chunk_frames = 48000
+        remaining = frame_count
+        while remaining:
+            current = min(chunk_frames, remaining)
+            payload = sample_pair * (current // 2)
+            if current % 2:
+                payload += positive
+            audio.writeframesraw(payload)
+            remaining -= current
+        audio.writeframes(b"")
 
 
 class PublicEvidenceContractTests(unittest.TestCase):
@@ -60,6 +95,30 @@ class PublicEvidenceContractTests(unittest.TestCase):
             "reviewed_at": "2026-08-09T12:00:00+08:00",
             "artifact_sha256": "a" * 64,
         }
+
+    def test_probe_video_rejects_non_finite_ffprobe_duration(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            folder = Path(folder_name)
+            ffprobe = folder / "ffprobe.exe"
+            video = folder / "final.mp4"
+            ffprobe.write_bytes(b"probe")
+            video.write_bytes(b"video")
+            payload = json.dumps(
+                {
+                    "format": {"duration": "NaN"},
+                    "streams": [
+                        {"codec_type": "video", "codec_name": "h264", "width": 1080, "height": 1920},
+                        {"codec_type": "audio", "codec_name": "aac"},
+                    ],
+                }
+            )
+
+            with mock.patch(
+                "tools.verify_public_evidence.subprocess.check_output",
+                return_value=payload,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "无效成片时长"):
+                    probe_video(video, ffprobe_path=ffprobe)
 
     def test_public_evidence_accepts_explicit_human_formal_contract(self):
         approvals = {
@@ -496,6 +555,8 @@ class PublicEvidenceContractTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as folder_name:
             folder = Path(folder_name)
+            voice_path = folder / "voice.wav"
+            write_pcm_wave(voice_path)
             final_video = folder / "final.mp4"
             final_video.write_bytes(b"motion-video")
             contact_sheet = folder / "contact-sheet.png"
@@ -522,14 +583,74 @@ class PublicEvidenceContractTests(unittest.TestCase):
                 derive_motion_segments("如何核验本地服务信息？", approved_script),
                 52.0,
             )
+            binding = caption_binding_text(approved_script)
+            voice_scenes = []
+            voice_cursor = 0.0
+            spoken_segment_duration = (52.0 - VOICE_SCENE_PAUSE_SECONDS * (len(plan["scenes"]) - 1)) / len(plan["scenes"])
+            for index, scene in enumerate(plan["scenes"], start=1):
+                spoken = int(estimate_narration_duration(scene["caption"])["spoken_characters"])
+                pause_after = VOICE_SCENE_PAUSE_SECONDS if index < len(plan["scenes"]) else 0.0
+                spoken_end = voice_cursor + spoken_segment_duration
+                voice_end = spoken_end + pause_after
+                scene["start"] = round(voice_cursor, 3)
+                scene["end"] = round(voice_end, 3)
+                voice_scenes.append({
+                    "id": scene["id"],
+                    "index": index,
+                    "caption": scene["caption"],
+                    "text_sha256": hashlib.sha256(scene["caption"].encode("utf-8")).hexdigest().upper(),
+                    "spoken_characters": spoken,
+                    "start_seconds": scene["start"],
+                    "spoken_end_seconds": round(spoken_end, 3),
+                    "end_seconds": scene["end"],
+                    "spoken_duration_seconds": round(spoken_segment_duration, 3),
+                    "pause_after_seconds": pause_after,
+                    "spoken_characters_per_second": round(spoken / spoken_segment_duration, 3),
+                })
+                voice_cursor = voice_end
             (folder / "motion_plan.json").write_text(
                 json.dumps(plan, ensure_ascii=False), encoding="utf-8"
             )
-            binding = caption_binding_text(approved_script)
+            for selection, scene in zip(plan["selection_receipt"]["selections"], plan["scenes"]):
+                selection["duration_seconds"] = round(float(scene["end"]) - float(scene["start"]), 3)
+            plan["selection_receipt"]["sha256"] = ""
+            plan["selection_receipt"]["sha256"] = canonical_sha256({
+                key: value for key, value in plan["selection_receipt"].items() if key != "sha256"
+            })
+            (folder / "motion_plan.json").write_text(
+                json.dumps(plan, ensure_ascii=False), encoding="utf-8"
+            )
             validation = validate_motion_plan(plan)
+            total_spoken = int(estimate_narration_duration(approved_script)["spoken_characters"])
             report = {
                 "status": "complete",
                 "production_mode": "motion",
+                "voice": {
+                    "schema_version": 3,
+                    "engine": DEFAULT_VOICE_ENGINE,
+                    "requested_engine": DEFAULT_VOICE_ENGINE,
+                    "voice": DEFAULT_VOICE_NAME,
+                    "voice_rate": DEFAULT_VOICE_RATE,
+                    "voice_selection_exposed": False,
+                    "voice_chunk_max_chars": DEFAULT_VOICE_CHUNK_MAX_CHARS,
+                    "segment_contract_version": VOICE_SEGMENT_CONTRACT_VERSION,
+                    "segment_aligned": True,
+                    "segment_count": len(voice_scenes),
+                    "segments_sha256": voice_segments_digest(voice_scenes),
+                    "scene_segments": voice_scenes,
+                    "fallback": False,
+                    "natural_voice": True,
+                    "quality_eligible": True,
+                    "tempo_adjusted": False,
+                    "duration_source": "scene_voice_segments",
+                    "duration_seconds": 52.0,
+                    "pacing_status": "passed",
+                    "spoken_characters": total_spoken,
+                    "spoken_characters_per_second": round(total_spoken / 52.0, 3),
+                    "maximum_spoken_characters_per_second": VOICE_SCENE_MAX_DELIVERED_CHARACTERS_PER_SECOND,
+                    "script_sha256": hashlib.sha256(approved_script.encode("utf-8")).hexdigest().upper(),
+                    "voice_sha256": sha256(voice_path).upper(),
+                },
                 "production_engine": {
                     **MOTION_ENGINE_IDENTITY,
                     "browser_strategy": "trusted_system_edge",
@@ -572,6 +693,15 @@ class PublicEvidenceContractTests(unittest.TestCase):
             }
             self.assertEqual(_validate_motion_evidence(folder, report, approved_script), [])
 
+            write_pcm_wave(voice_path, amplitude=0)
+            report["voice"]["voice_sha256"] = sha256(voice_path).upper()
+            silent_voice_errors = _validate_motion_evidence(folder, report, approved_script)
+            self.assertTrue(
+                any("silent_or_near_silent_voice_wav" in error for error in silent_voice_errors)
+            )
+            write_pcm_wave(voice_path)
+            report["voice"]["voice_sha256"] = sha256(voice_path).upper()
+
             def srt_time(seconds: float) -> str:
                 milliseconds = round(seconds * 1000)
                 hours, remainder = divmod(milliseconds, 3_600_000)
@@ -600,7 +730,6 @@ class PublicEvidenceContractTests(unittest.TestCase):
                 (folder / name).write_text(
                     json.dumps(payload, ensure_ascii=False), encoding="utf-8"
                 )
-            (folder / "voice.wav").write_bytes(b"voice")
             approvals = {
                 "research": {
                     **self._approval("何sir", HUMAN_IDENTITY),
@@ -664,10 +793,38 @@ class PublicEvidenceContractTests(unittest.TestCase):
             self.assertEqual(errors, [])
             self.assertEqual(media["evidence_contract"], "motion_v0.3")
 
+            with mock.patch(
+                "tools.verify_public_evidence.probe_video",
+                return_value={
+                    "duration_seconds": float("nan"),
+                    "video_codec": "h264",
+                    "audio_codec": "aac",
+                    "width": 1080,
+                    "height": 1920,
+                },
+            ):
+                non_finite_media_errors, _ = verify(folder)
+            self.assertTrue(any("成片时长不在" in error for error in non_finite_media_errors))
+
             report["render"]["runtime_source"] = "development_repo"
             runtime_errors = _validate_motion_evidence(folder, report, approved_script)
             self.assertTrue(any("正式便携包" in error for error in runtime_errors))
             report["render"]["runtime_source"] = "packaged"
+
+            report["render"]["duration_seconds"] = float("nan")
+            nan_duration_errors = _validate_motion_evidence(folder, report, approved_script)
+            self.assertTrue(any("时长不一致" in error for error in nan_duration_errors))
+            report["render"]["duration_seconds"] = 52.0
+
+            report["voice"]["voice_rate"] = "-15%"
+            voice_errors = _validate_motion_evidence(folder, report, approved_script)
+            self.assertTrue(any("invalid_voice_rate" in error for error in voice_errors))
+            report["voice"]["voice_rate"] = DEFAULT_VOICE_RATE
+
+            report["voice"]["scene_segments"][0]["start_seconds"] = 0.5
+            binding_errors = _validate_motion_evidence(folder, report, approved_script)
+            self.assertTrue(any("motion_plan_scene_binding_mismatch" in error for error in binding_errors))
+            report["voice"]["scene_segments"][0]["start_seconds"] = plan["scenes"][0]["start"]
 
             report["render"]["browser_version"] = "150.0.999.1"
             browser_errors = _validate_motion_evidence(folder, report, approved_script)

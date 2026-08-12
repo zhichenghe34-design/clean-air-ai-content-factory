@@ -14,6 +14,7 @@ from core.animation_registry import (
     AnimationRegistryError,
     DEFAULT_PACK_PATH,
 )
+from core.voice_contract import estimate_voice_scene_pacing
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -200,6 +201,50 @@ def _outside_pair_positions(text: str) -> list[int]:
     return positions
 
 
+def _split_voice_dense_units(units: list[str], *, maximum_units: int = 8) -> list[str]:
+    """Split over-dense narration only at punctuation outside paired text."""
+
+    result = list(units)
+    index = 0
+    punctuation = frozenset("，。！？；：,!?;:")
+    while index < len(result):
+        caption = result[index]
+        pacing = estimate_voice_scene_pacing(caption)
+        if not pacing["blocked"]:
+            index += 1
+            continue
+        if len(result) >= maximum_units:
+            raise MotionPlanError(
+                f"场景{index + 1}固定{pacing['voice_rate']}大众播报预计"
+                f"{pacing['spoken_characters_per_second']:.2f}字/秒，超过"
+                f"{pacing['maximum_spoken_characters_per_second']:.2f}字/秒；已有{maximum_units}个完整语句镜头，"
+                "禁止为腾出镜头而合并其他完整句，请脚本Agent缩短或重写过密句"
+            )
+        candidates = [
+            position
+            for position in _safe_punctuation_positions(caption, punctuation)
+            if 0 < position < len(caption)
+        ]
+        if not candidates:
+            raise MotionPlanError(
+                f"场景{index + 1}固定{pacing['voice_rate']}大众播报预计"
+                f"{pacing['spoken_characters_per_second']:.2f}字/秒，且没有可安全拆分的旁白标点"
+            )
+
+        def split_score(position: int) -> tuple[int, float, int]:
+            halves = (caption[:position], caption[position:])
+            estimates = [estimate_voice_scene_pacing(value) for value in halves]
+            rates = [float(value["spoken_characters_per_second"]) for value in estimates]
+            blocked = sum(bool(value["blocked"]) for value in estimates)
+            return blocked, max(rates), abs(len(halves[0]) - len(halves[1]))
+
+        cut = min(candidates, key=split_score)
+        result[index:index + 1] = [caption[:cut], caption[cut:]]
+    if not 4 <= len(result) <= maximum_units:
+        raise MotionPlanError("固定大众播报分幕必须保持4到8幕")
+    return result
+
+
 def _balanced_caption_units(text: str, target_count: int, max_chars: int = 62) -> list[str]:
     """Split every script character across 4-8 bounded motion captions."""
     value = str(text or "")
@@ -250,7 +295,13 @@ def _balanced_caption_units(text: str, target_count: int, max_chars: int = 62) -
     return units
 
 
-def _semantic_caption_units(text: str, target_count: int, max_chars: int = 62) -> list[str]:
+def _semantic_caption_units(
+    text: str,
+    target_count: int,
+    max_chars: int = 62,
+    *,
+    enforce_voice_pacing: bool = False,
+) -> list[str]:
     """Prefer complete spoken sentences; never cut a usable argument by character count."""
 
     sentences = split_narration_units(
@@ -258,28 +309,38 @@ def _semantic_caption_units(text: str, target_count: int, max_chars: int = 62) -
         punctuation="。！？!?",
         keep_punctuation=True,
     )
-    merged: list[str] = []
-    cursor = 0
-    while cursor < len(sentences):
-        current = sentences[cursor]
-        if (
-            cursor + 1 < len(sentences)
-            and current.endswith(("？", "?"))
-            and len(sentences[cursor + 1]) <= 18
-            and len(current) + len(sentences[cursor + 1]) <= max_chars
-        ):
-            current += sentences[cursor + 1]
+    # Historical non-voice visual routing keeps a question and its very short
+    # answer on one card.  The formal scene-aligned voice path must not do so:
+    # each complete sentence is measured and synthesized independently.
+    if not enforce_voice_pacing:
+        merged: list[str] = []
+        cursor = 0
+        while cursor < len(sentences):
+            current = sentences[cursor]
+            if (
+                cursor + 1 < len(sentences)
+                and current.endswith(("？", "?"))
+                and len(sentences[cursor + 1]) <= 18
+                and len(current) + len(sentences[cursor + 1]) <= max_chars
+            ):
+                current += sentences[cursor + 1]
+                cursor += 1
+            merged.append(current)
             cursor += 1
-        merged.append(current)
-        cursor += 1
-    sentences = merged
+        sentences = merged
     if (
         4 <= len(sentences) <= 8
         and all(len(value) <= max_chars for value in sentences)
         and "".join(sentences) == text
     ):
-        return sentences
-    return _balanced_caption_units(text, target_count, max_chars=max_chars)
+        units = sentences
+    else:
+        units = _balanced_caption_units(text, target_count, max_chars=max_chars)
+    if enforce_voice_pacing:
+        units = _split_voice_dense_units(units)
+    if any(len(value) > max_chars for value in units) or "".join(units) != text:
+        raise MotionPlanError("固定大众播报分幕未完整绑定批准脚本")
+    return units
 
 
 def _legacy_visual_content(caption: str, index: int, total: int) -> dict[str, Any]:
@@ -346,11 +407,18 @@ def derive_motion_segments(
     script: str,
     target_count: int = 7,
     capability_pack: dict[str, Any] | None = None,
+    *,
+    enforce_voice_pacing: bool = False,
 ) -> list[dict[str, Any]]:
     text = re.sub(r"\s+", "", str(script or "").strip())
     if not text:
         raise MotionPlanError("脚本为空，无法生成动态场景")
-    units = _semantic_caption_units(text, target_count, max_chars=62)
+    units = _semantic_caption_units(
+        text,
+        target_count,
+        max_chars=62,
+        enforce_voice_pacing=enforce_voice_pacing,
+    )
 
     def title_for(caption: str, index: int) -> tuple[str, str]:
         if _is_legacy_pack(capability_pack):

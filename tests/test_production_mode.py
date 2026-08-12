@@ -27,6 +27,7 @@ from core.orchestrator import (
 )
 from core.production import (
     ProductionRunner,
+    ScriptRevisionRequired,
     _hyperframes_commands,
     _hyperframes_subprocess_environment,
     resolve_production_mode,
@@ -36,17 +37,21 @@ from core.voice_contract import (
     DEFAULT_VOICE_ENGINE,
     DEFAULT_VOICE_NAME,
     DEFAULT_VOICE_RATE,
+    estimate_voice_scene_pacing,
     normalize_voice_engine,
 )
 
 
 def _write_pcm_wav(path: Path, duration_seconds: float) -> None:
     frames = round(48000 * duration_seconds)
+    sample_pair = (64).to_bytes(2, "little", signed=True) + (-64).to_bytes(
+        2, "little", signed=True
+    )
     with wave.open(str(path), "wb") as audio:
         audio.setnchannels(1)
         audio.setsampwidth(2)
         audio.setframerate(48000)
-        audio.writeframes(b"\0" * frames * 2)
+        audio.writeframes((sample_pair * ((frames + 1) // 2))[: frames * 2])
 
 
 SAFE_SCRIPT = (
@@ -784,7 +789,7 @@ class VoiceFallbackContractTests(unittest.TestCase):
             self.assertEqual(len(commands), 8)
             edge_commands = [command for command in commands if "edge_tts" in command]
             self.assertEqual(len(edge_commands), 4)
-            self.assertTrue(all("--rate=-15%" in command for command in edge_commands))
+            self.assertTrue(all("--rate=-2%" in command for command in edge_commands))
             self.assertAlmostEqual(
                 ProductionRunner._pcm_wave_duration(job / "voice.wav"), 49.05, places=2
             )
@@ -803,6 +808,38 @@ class VoiceFallbackContractTests(unittest.TestCase):
                 [(item["start"], item["end"]) for item in captions],
                 [(0.0, 12.35), (12.35, 24.7), (24.7, 37.05), (37.05, 49.05)],
             )
+
+    def test_fixed_voice_pacing_preflight_matches_the_faster_profile(self):
+        safe = estimate_voice_scene_pacing("对新房家庭，建议保留报告、持续通风，重要决定前结合房屋情况请专业人员判断。")
+        dense = estimate_voice_scene_pacing("实验条件与真实房间不同，结论不能直接照搬；缺少来源和适用边界，也不能理解成入住保证。")
+
+        self.assertEqual(DEFAULT_VOICE_RATE, "-2%")
+        self.assertFalse(safe["blocked"])
+        self.assertTrue(dense["blocked"])
+        self.assertGreater(dense["spoken_characters_per_second"], 4.05)
+
+    def test_scene_density_revision_signal_is_not_wrapped_as_voice_engine_failure(self):
+        with tempfile.TemporaryDirectory() as folder_name:
+            job = Path(folder_name) / "job"
+            job.mkdir()
+            segments = [{"caption": "这一幕台词会触发真实语音密度门禁。"} for _ in range(4)]
+            script = "".join(item["caption"] for item in segments)
+
+            def fake_run(command: list[str], **_kwargs):
+                if "edge_tts" in command:
+                    Path(command[command.index("--write-media") + 1]).write_bytes(b"edge-mp3")
+                else:
+                    _write_pcm_wav(Path(command[-1]), 1.0)
+                return mock.Mock(stdout="", stderr="")
+
+            with mock.patch("core.production.FFMPEG", Path(folder_name) / "ffmpeg.exe"), mock.patch(
+                "core.production._tool_available", return_value=True
+            ), mock.patch("core.production.subprocess.run", side_effect=fake_run):
+                with self.assertRaisesRegex(
+                    ScriptRevisionRequired,
+                    "脚本Agent必须缩短该幕台词或重新分镜",
+                ):
+                    ProductionRunner._synthesize_voice(job, script, {}, segments=segments)
 
     def test_scene_voice_identity_is_not_reused_for_different_scene_boundaries(self):
         with tempfile.TemporaryDirectory() as folder_name:

@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +32,16 @@ from core.production import (
 )
 from core.review_policy import CODEX_TEST_REVIEWER, MECHANICAL_REVIEWER
 from core.secrets import protect_secret, unprotect_secret
+from core.voice_contract import (
+    DEFAULT_VOICE_CHUNK_MAX_CHARS,
+    DEFAULT_VOICE_ENGINE,
+    DEFAULT_VOICE_NAME,
+    DEFAULT_VOICE_RATE,
+    VOICE_SCENE_MAX_DELIVERED_CHARACTERS_PER_SECOND,
+    VOICE_SCENE_PAUSE_SECONDS,
+    VOICE_SEGMENT_CONTRACT_VERSION,
+    voice_segments_digest,
+)
 
 
 VALID_TOPIC = "气味小就代表甲醛少吗？"
@@ -40,6 +51,82 @@ LONG_SAFE_SCRIPT = (
     "实验条件与真实房间不同，结论就不能直接照搬。缺少完整来源和适用边界时，也不能把宣传话术理解成入住保证。"
     "更稳妥的做法是保存完整检测报告，持续通风，并在重要入住决定前结合真实房屋情况请专业人员判断。"
 )
+
+
+def fake_fixed_voice_identity(script: str, voice: bytes) -> dict:
+    boundaries = [round(len(script) * index / 4) for index in range(5)]
+    captions = [script[boundaries[index]:boundaries[index + 1]] for index in range(4)]
+    total_duration = 52.0
+    spoken_duration = (total_duration - VOICE_SCENE_PAUSE_SECONDS * 3) / 4
+    cursor = 0.0
+    scenes = []
+    for index, caption in enumerate(captions, start=1):
+        spoken = int(estimate_narration_duration(caption)["spoken_characters"])
+        pause_after = VOICE_SCENE_PAUSE_SECONDS if index < 4 else 0.0
+        spoken_end = cursor + spoken_duration
+        end = spoken_end + pause_after
+        scenes.append({
+            "id": f"scene-{index:02d}",
+            "index": index,
+            "caption": caption,
+            "text_sha256": hashlib.sha256(caption.encode("utf-8")).hexdigest().upper(),
+            "spoken_characters": spoken,
+            "start_seconds": round(cursor, 3),
+            "spoken_end_seconds": round(spoken_end, 3),
+            "end_seconds": round(end, 3),
+            "spoken_duration_seconds": round(spoken_duration, 3),
+            "pause_after_seconds": pause_after,
+            "spoken_characters_per_second": round(spoken / spoken_duration, 3),
+        })
+        cursor = end
+    spoken = int(estimate_narration_duration(script)["spoken_characters"])
+    return {
+        "schema_version": 3,
+        "engine": DEFAULT_VOICE_ENGINE,
+        "requested_engine": DEFAULT_VOICE_ENGINE,
+        "voice": DEFAULT_VOICE_NAME,
+        "voice_rate": DEFAULT_VOICE_RATE,
+        "voice_selection_exposed": False,
+        "voice_chunk_max_chars": DEFAULT_VOICE_CHUNK_MAX_CHARS,
+        "segment_contract_version": VOICE_SEGMENT_CONTRACT_VERSION,
+        "segment_aligned": True,
+        "segment_count": len(scenes),
+        "segments_sha256": voice_segments_digest(scenes),
+        "scene_segments": scenes,
+        "fallback": False,
+        "natural_voice": True,
+        "quality_eligible": True,
+        "tempo_adjusted": False,
+        "duration_source": "scene_voice_segments",
+        "duration_seconds": total_duration,
+        "pacing_status": "passed",
+        "spoken_characters": spoken,
+        "spoken_characters_per_second": round(spoken / total_duration, 3),
+        "maximum_spoken_characters_per_second": VOICE_SCENE_MAX_DELIVERED_CHARACTERS_PER_SECOND,
+        "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest().upper(),
+        "voice_sha256": hashlib.sha256(voice).hexdigest().upper(),
+    }
+
+
+def write_pcm_wave(path: Path, duration_seconds: float = 52.0, *, amplitude: int = 64) -> None:
+    frame_count = round(48000 * duration_seconds)
+    positive = int(amplitude).to_bytes(2, "little", signed=True)
+    negative = (-int(amplitude)).to_bytes(2, "little", signed=True)
+    sample_pair = positive + negative
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(48000)
+        chunk_frames = 48000
+        remaining = frame_count
+        while remaining:
+            current = min(chunk_frames, remaining)
+            payload = sample_pair * (current // 2)
+            if current % 2:
+                payload += positive
+            audio.writeframesraw(payload)
+            remaining -= current
+        audio.writeframes(b"")
 
 
 def fake_visual_qc(video_path, *, output_dir, **_kwargs):
@@ -56,6 +143,16 @@ def fake_visual_qc(video_path, *, output_dir, **_kwargs):
         json.dumps(payload, ensure_ascii=False), encoding="utf-8"
     )
     return payload
+
+
+def resign_durable_run_manifest(root: str | Path, job_id: str, run_id: str, manifest_path: Path) -> None:
+    """Re-sign the durable job record only when a test targets a downstream gate."""
+
+    job_path = Path(root) / "jobs" / job_id / "job.json"
+    payload = json.loads(job_path.read_text(encoding="utf-8"))
+    run = next(item for item in payload["runs"] if item["run_id"] == run_id)
+    run["manifest_sha256"] = file_sha256(manifest_path)
+    job_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 class FakeStageRunner:
@@ -98,8 +195,35 @@ class FakeStageRunner:
                 continue
             if path.suffix == ".json":
                 path.write_text(json.dumps({"name": name}, ensure_ascii=False), encoding="utf-8")
+            elif name == "voice.wav":
+                write_pcm_wave(path)
             else:
                 path.write_bytes(("fake:" + name).encode("utf-8"))
+        voice = (output / "voice.wav").read_bytes()
+        identity = fake_fixed_voice_identity(LONG_SAFE_SCRIPT, voice)
+        (output / "run_report.json").write_text(
+            json.dumps({
+                "status": "complete",
+                "production_mode": "motion",
+                "production_engine": {"selected_mode": "motion"},
+                "voice": identity,
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (output / "motion_plan.json").write_text(
+            json.dumps({
+                "scenes": [
+                    {
+                        "id": scene["id"],
+                        "caption": scene["caption"],
+                        "start": scene["start_seconds"],
+                        "end": scene["end_seconds"],
+                    }
+                    for scene in identity["scene_segments"]
+                ]
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
 class FakeEngineStageRunner(FakeStageRunner):
@@ -113,6 +237,37 @@ class FakeEngineStageRunner(FakeStageRunner):
             json.dumps({"engine": "MoneyPrinterTurbo", "version": "1.3.3"}, ensure_ascii=False),
             encoding="utf-8",
         )
+
+
+class InvalidFirstPublishVoiceRunner(FakeStageRunner):
+    def __init__(self, mutation: str):
+        super().__init__()
+        self.mutation = mutation
+
+    def run_render_stage(self, output, production_input, approvals):
+        super().run_render_stage(output, production_input, approvals)
+        report_path = output / "run_report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if self.mutation == "old_rate":
+            report["voice"]["voice_rate"] = "-15%"
+        elif self.mutation == "forged_density":
+            report["voice"]["scene_segments"][0]["spoken_characters_per_second"] = 0.1
+        elif self.mutation == "nan_timeline":
+            report["voice"]["scene_segments"][0]["spoken_end_seconds"] = float("nan")
+        elif self.mutation == "wrong_binding":
+            plan_path = output / "motion_plan.json"
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            plan["scenes"][0]["caption"] += "篡改"
+            plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+        elif self.mutation == "invalid_wav":
+            (output / "voice.wav").write_bytes(b"not-a-wav")
+        elif self.mutation == "silent_wav":
+            voice_path = output / "voice.wav"
+            write_pcm_wave(voice_path, amplitude=0)
+            report["voice"]["voice_sha256"] = file_sha256(voice_path)
+        else:
+            raise AssertionError(f"unknown mutation: {self.mutation}")
+        report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
 
 
 class SlowResearchRunner(FakeStageRunner):
@@ -293,8 +448,11 @@ class ReportRebuildRunner:
 
     @staticmethod
     def rebuild_run_report(output, approvals):
+        report_path = output / "run_report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report.update({"corrected": True, "approvals_preserved": approvals})
         (output / "run_report.json").write_text(
-            json.dumps({"corrected": True, "approvals_preserved": approvals}, ensure_ascii=False),
+            json.dumps(report, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -314,6 +472,16 @@ class NeedsVisualReviewRebuildRunner(ReportRebuildRunner):
         raise VideoVisualQualityBlocked(
             "正式成片等待视觉复核：extreme_visual_repetition"
         )
+
+
+class InvalidReportRebuildRunner(ReportRebuildRunner):
+    @staticmethod
+    def rebuild_run_report(output, approvals):
+        report_path = output / "run_report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report.pop("production_mode", None)
+        report.pop("voice", None)
+        report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
 
 
 def advance_to_content_gate(jobs, job, runner):
@@ -369,6 +537,33 @@ class V2WorkflowTests(unittest.TestCase):
             self.assertTrue(manifest["approval_hashes"]["research"])
             self.assertTrue(manifest["approval_hashes"]["compliance"])
             self.assertEqual(jobs.resolve_artifact(job["id"], "final.mp4").read_bytes(), b"fake:final.mp4")
+
+    def test_first_motion_publish_rejects_invalid_fixed_voice_contract(self):
+        for mutation in (
+            "old_rate",
+            "forged_density",
+            "nan_timeline",
+            "wrong_binding",
+            "invalid_wav",
+            "silent_wav",
+        ):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as folder:
+                jobs, job = self.make_job(folder)
+                job = advance_to_content_gate(jobs, job, FakeStageRunner())
+                job = approve_compliance(jobs, job)
+
+                with self.assertRaisesRegex(ConflictError, "正式交付"):
+                    jobs.advance(job["id"], InvalidFirstPublishVoiceRunner(mutation), f"bad-first-{mutation}")
+
+                current = jobs.get(job["id"])
+                self.assertNotEqual(current["status"], "complete")
+                self.assertIsNone(current.get("current_run_id"))
+                failed_run = current["runs"][-1]
+                self.assertEqual(failed_run["status"], "failed")
+                if mutation == "silent_wav":
+                    self.assertIn("silent_or_near_silent_voice_wav", failed_run["error"])
+                failed_dir = Path(folder) / "jobs" / job["id"] / "runs" / failed_run["run_id"] / "failed"
+                self.assertFalse((failed_dir / "manifest.json").exists())
 
     def test_agent_test_review_is_server_bound_and_never_claims_human_approval(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1022,11 +1217,173 @@ class V2WorkflowTests(unittest.TestCase):
                 "sha256": file_sha256(outside),
             })
             manifest_path.write_text(json.dumps(tampered, ensure_ascii=False), encoding="utf-8")
+            resign_durable_run_manifest(folder, job["id"], current_run, manifest_path)
             with self.assertRaises(ConflictError):
                 jobs.rebuild_successful_delivery(
                     job["id"], ReportRebuildRunner(), "report-rebuild-unsafe", "拒绝清单路径穿越"
                 )
             self.assertEqual(jobs.get(job["id"])["current_run_id"], current_run)
+
+    def test_report_rebuild_rejects_manifest_not_bound_to_durable_run_hash(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            job = advance_to_content_gate(jobs, job, FakeStageRunner())
+            job = approve_compliance(jobs, job)
+            job = jobs.advance(job["id"], FakeStageRunner(), "immutable-manifest-source")
+            source_run = job["current_run_id"]
+            manifest_path = (
+                Path(folder) / "jobs" / job["id"] / "runs" / source_run / "artifacts" / "manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["status"] = "tampered"
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            run_count = len(job["runs"])
+
+            with self.assertRaisesRegex(ConflictError, "不可变哈希不一致"):
+                jobs.rebuild_successful_delivery(
+                    job["id"], ReportRebuildRunner(), "immutable-manifest-rebuild", "拒绝篡改manifest"
+                )
+
+            current = jobs.get(job["id"])
+            self.assertEqual(current["current_run_id"], source_run)
+            self.assertEqual(len(current["runs"]), run_count)
+
+    def test_report_rebuild_rejects_a_manifest_bound_old_voice_rate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            job = advance_to_content_gate(jobs, job, FakeStageRunner())
+            job = approve_compliance(jobs, job)
+            job = jobs.advance(job["id"], FakeStageRunner(), "old-voice-source")
+            source_run = job["current_run_id"]
+            source_dir = Path(folder) / "jobs" / job["id"] / "runs" / source_run / "artifacts"
+            report_path = source_dir / "run_report.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["voice"]["voice_rate"] = "-15%"
+            report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+            manifest_path = source_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            report_entry = next(item for item in manifest["artifacts"] if item["name"] == "run_report.json")
+            report_entry.update({
+                "size": report_path.stat().st_size,
+                "sha256": file_sha256(report_path),
+            })
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            resign_durable_run_manifest(folder, job["id"], source_run, manifest_path)
+            run_count = len(job["runs"])
+
+            with self.assertRaisesRegex(ConflictError, "invalid_voice_rate"):
+                jobs.rebuild_successful_delivery(
+                    job["id"], ReportRebuildRunner(), "old-voice-rebuild", "旧配音不得复用"
+                )
+
+            current = jobs.get(job["id"])
+            self.assertEqual(current["current_run_id"], source_run)
+            self.assertEqual(len(current["runs"]), run_count)
+
+    def test_report_rebuild_cannot_skip_voice_gate_by_forging_report_mode(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            job = advance_to_content_gate(jobs, job, FakeStageRunner())
+            job = approve_compliance(jobs, job)
+            job = jobs.advance(job["id"], FakeStageRunner(), "forged-mode-source")
+            source_run = job["current_run_id"]
+            source_dir = Path(folder) / "jobs" / job["id"] / "runs" / source_run / "artifacts"
+            report_path = source_dir / "run_report.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["production_mode"] = "footage"
+            report["production_engine"] = {"selected_mode": "footage"}
+            report["voice"]["voice_rate"] = "-15%"
+            report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+            manifest_path = source_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            report_entry = next(item for item in manifest["artifacts"] if item["name"] == "run_report.json")
+            report_entry.update({"size": report_path.stat().st_size, "sha256": file_sha256(report_path)})
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            resign_durable_run_manifest(folder, job["id"], source_run, manifest_path)
+            run_count = len(job["runs"])
+
+            with self.assertRaisesRegex(ConflictError, "生产模式与任务冻结模式不一致"):
+                jobs.rebuild_successful_delivery(
+                    job["id"], ReportRebuildRunner(), "forged-mode-rebuild", "伪造模式不得绕过配音门禁"
+                )
+
+            current = jobs.get(job["id"])
+            self.assertEqual(current["current_run_id"], source_run)
+            self.assertEqual(len(current["runs"]), run_count)
+
+    def test_report_rebuild_rejects_voice_timeline_not_bound_to_motion_plan(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            job = advance_to_content_gate(jobs, job, FakeStageRunner())
+            job = approve_compliance(jobs, job)
+            job = jobs.advance(job["id"], FakeStageRunner(), "voice-plan-source")
+            source_run = job["current_run_id"]
+            source_dir = Path(folder) / "jobs" / job["id"] / "runs" / source_run / "artifacts"
+            plan_path = source_dir / "motion_plan.json"
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            plan["scenes"][0]["start"] = 0.5
+            plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+            manifest_path = source_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            plan_entry = next(item for item in manifest["artifacts"] if item["name"] == "motion_plan.json")
+            plan_entry.update({"size": plan_path.stat().st_size, "sha256": file_sha256(plan_path)})
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            resign_durable_run_manifest(folder, job["id"], source_run, manifest_path)
+
+            with self.assertRaisesRegex(ConflictError, "motion_plan_scene_binding_mismatch"):
+                jobs.rebuild_successful_delivery(
+                    job["id"], ReportRebuildRunner(), "voice-plan-rebuild", "音轨分镜不匹配"
+                )
+
+    def test_report_rebuild_rejects_non_finite_negative_or_forged_voice_metrics(self):
+        mutations = (
+            ("nan", lambda voice: voice["scene_segments"][0].update({"spoken_end_seconds": float("nan")})),
+            ("negative", lambda voice: voice["scene_segments"][0].update({"start_seconds": -1.0})),
+            ("forged", lambda voice: voice["scene_segments"][0].update({"spoken_characters_per_second": 0.1})),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as folder:
+                jobs, job = self.make_job(folder)
+                job = advance_to_content_gate(jobs, job, FakeStageRunner())
+                job = approve_compliance(jobs, job)
+                job = jobs.advance(job["id"], FakeStageRunner(), f"voice-metric-{label}")
+                source_run = job["current_run_id"]
+                source_dir = Path(folder) / "jobs" / job["id"] / "runs" / source_run / "artifacts"
+                report_path = source_dir / "run_report.json"
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                mutate(report["voice"])
+                report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+                manifest_path = source_dir / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                report_entry = next(item for item in manifest["artifacts"] if item["name"] == "run_report.json")
+                report_entry.update({"size": report_path.stat().st_size, "sha256": file_sha256(report_path)})
+                manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+                resign_durable_run_manifest(folder, job["id"], source_run, manifest_path)
+
+                with self.assertRaisesRegex(ConflictError, "固定配音合同"):
+                    jobs.rebuild_successful_delivery(
+                        job["id"], ReportRebuildRunner(), f"metric-rebuild-{label}", "伪造指标"
+                    )
+
+    def test_report_rebuild_revalidates_report_after_runner_mutation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs, job = self.make_job(folder)
+            job = advance_to_content_gate(jobs, job, FakeStageRunner())
+            job = approve_compliance(jobs, job)
+            job = jobs.advance(job["id"], FakeStageRunner(), "post-rebuild-source")
+            source_run = job["current_run_id"]
+
+            with self.assertRaisesRegex(ConflictError, "生产模式与任务冻结模式不一致"):
+                jobs.rebuild_successful_delivery(
+                    job["id"], InvalidReportRebuildRunner(), "post-rebuild-invalid", "重建后再次校验"
+                )
+
+            current = jobs.get(job["id"])
+            self.assertEqual(current["current_run_id"], source_run)
+            failed = current["runs"][-1]
+            self.assertEqual(failed["status"], "failed")
+            failed_dir = Path(folder) / "jobs" / job["id"] / "runs" / failed["run_id"] / "failed"
+            self.assertFalse((failed_dir / "manifest.json").exists())
 
     def test_report_rebuild_needs_visual_review_preserves_previous_current_run(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1586,6 +1943,10 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
             self.assertFalse(review_script(item["script"], [], capability_pack=pack)["blocked"])
             self.assertNotIn("制作一条", item["script"])
             self.assertNotIn("竖屏短视频", item["script"])
+            self.assertIn("报告来源和适用边界", item["script"])
+            self.assertIn("实验条件与真实房间不同。结论不能直接照搬；所谓入住保证，更不能这样理解", item["script"])
+            self.assertIn("保留原始报告、持续有效通风", item["script"])
+            self.assertNotIn("结论不能直接照搬；缺少来源和适用边界", item["script"])
 
     def test_long_custom_clean_air_brief_is_compacted_without_losing_its_tail(self):
         goal = (

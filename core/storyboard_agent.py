@@ -5,6 +5,7 @@ import re
 from typing import Any, Mapping
 
 from core.motion_director import NARRATION_PAIRS, derive_motion_segments, split_narration_units
+from core.voice_contract import estimate_voice_scene_pacing
 
 
 STORYBOARD_SCHEMA_VERSION = 1
@@ -107,8 +108,14 @@ def _narration_clauses(caption: str) -> list[str]:
 def _local_kicker(title: str) -> str:
     """Return a complete narration phrase; never slice at a character count."""
 
-    for phrase in re.split(r"[，。！？；：,!?;:]", title):
-        value = phrase.strip("“”‘’\"' ")
+    for phrase in split_narration_units(
+        title,
+        punctuation="，。！？；：,!?;:",
+        keep_punctuation=False,
+    ):
+        value = phrase.strip()
+        if value and value[0] in NARRATION_PAIRS and value[-1] == NARRATION_PAIRS[value[0]]:
+            value = value[1:-1].strip()
         if 4 <= len(_phrase_key(value)) <= 18:
             return value
     return title
@@ -147,6 +154,9 @@ def validate_storyboard(
 
     normalized_scenes: list[dict[str, Any]] = []
     previous_layout = ""
+    previous_item_count = 0
+    previous_sentence_count = 0
+    previous_caption_complete = False
     captions: list[str] = []
     for index, raw in enumerate(raw_scenes, start=1):
         if not isinstance(raw, Mapping):
@@ -157,13 +167,18 @@ def validate_storyboard(
         if raw.get("id") not in (None, f"scene-{index:02d}"):
             raise StoryboardError(f"场景{index}.id与顺序不一致")
         caption = _safe_text(raw.get("caption"), field=f"场景{index}.caption", maximum=90)
+        voice_pacing = estimate_voice_scene_pacing(caption)
+        if voice_pacing["blocked"]:
+            raise StoryboardError(
+                f"场景{index}.caption固定{voice_pacing['voice_rate']}大众播报预计"
+                f"{voice_pacing['spoken_characters_per_second']:.2f}字/秒，超过"
+                f"{voice_pacing['maximum_spoken_characters_per_second']:.2f}字/秒；"
+                "请在旁白已有的安全标点处分幕，不能删字、增字或从引号括号中间截断"
+            )
         phrase_caption = _phrase_key(caption)
         layout = str(raw.get("layout", "")).strip()
         if layout not in LAYOUTS:
             raise StoryboardError(f"场景{index}布局不在白名单")
-        if layout == previous_layout:
-            raise StoryboardError(f"场景{index}与上一幕重复同一信息结构")
-        previous_layout = layout
         raw_items = raw.get("items")
         if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= 5:
             raise StoryboardError(f"场景{index}.items必须包含1到5项")
@@ -174,6 +189,25 @@ def validate_storyboard(
                 f"场景{index}布局{layout}需要{minimum_items}到{maximum_items}项信息，"
                 f"当前只有{len(items)}项，会产生大面积空白或溢出"
             )
+        sentence_count = len(split_narration_units(
+            caption,
+            punctuation="。！？!?",
+            keep_punctuation=True,
+        ))
+        caption_complete = caption.rstrip().endswith(("。", "！", "？", "!", "?"))
+        allowed_single_item_repeat = (
+            layout == previous_layout == "explain_points"
+            and previous_item_count == len(items) == 1
+            and previous_sentence_count == sentence_count == 1
+            and previous_caption_complete
+            and caption_complete
+        )
+        if layout == previous_layout and not allowed_single_item_repeat:
+            raise StoryboardError(f"场景{index}与上一幕重复同一信息结构")
+        previous_layout = layout
+        previous_item_count = len(items)
+        previous_sentence_count = sentence_count
+        previous_caption_complete = caption_complete
         if len(set(map(_compact, items))) != len(items):
             raise StoryboardError(f"场景{index}.items存在重复")
         for item in items:
@@ -231,10 +265,40 @@ def validate_storyboard(
             "all_visual_items_are_verbatim_caption_phrases": True,
             "layout_whitelist_only": True,
             "layout_item_density_compatible": True,
+            "voice_scene_density_compatible": True,
+            # Separate one-item explain scenes use deterministic alternate
+            # renderer blocks, so the narrow exception above is not recorded
+            # as a repeated information structure.
             "adjacent_layout_repeat": False,
             "coordinates_css_and_code_allowed": False,
         },
     }
+
+
+def _coalesce_verbatim_items(caption: str, items: list[str], maximum: int) -> list[str]:
+    """Fit verbatim visual phrases without dropping the narration tail."""
+
+    values = [str(item).strip() for item in items if str(item).strip()]
+    while len(values) > maximum:
+        candidates: list[tuple[int, int, str]] = []
+        cursor = 0
+        positions: list[tuple[int, int]] = []
+        for value in values:
+            start = caption.find(value, cursor)
+            if start < 0:
+                raise StoryboardError("图上短语未按旁白顺序绑定")
+            end = start + len(value)
+            positions.append((start, end))
+            cursor = end
+        for index in range(len(values) - 1):
+            combined = caption[positions[index][0]:positions[index + 1][1]].strip("，。！？；：、,!?;: ")
+            if combined and len(combined) <= 30:
+                candidates.append((len(combined), index, combined))
+        if not candidates:
+            raise StoryboardError("旁白信息无法在画面容量内逐字完整展示")
+        _, index, combined = min(candidates)
+        values[index:index + 2] = [combined]
+    return values
 
 
 def _verbatim_items(caption: str) -> list[str]:
@@ -262,7 +326,7 @@ def _verbatim_items(caption: str) -> list[str]:
                         remaining_slots = 5 - len(expanded)
                         pair = [
                             value.strip()
-                            for value in re.split(r"(?:以及|并且|和|与)", part, maxsplit=1)
+                            for value in re.split(r"(?:以及|并且)", part, maxsplit=1)
                             if len(_phrase_key(value)) >= 4
                         ]
                         if len(pair) == 2 and remaining_slots >= 2:
@@ -270,7 +334,7 @@ def _verbatim_items(caption: str) -> list[str]:
                         else:
                             expanded.append(part)
                     list_parts = expanded
-                pieces.extend(list_parts[:5])
+                pieces.extend(list_parts)
                 continue
         if "、" in clause and len(clause.split("、")) >= 4 and len(clause) <= 30:
             members = clause.split("、")
@@ -303,9 +367,7 @@ def _verbatim_items(caption: str) -> list[str]:
         value = piece
         if value and value not in compact:
             compact.append(value)
-        if len(compact) == 5:
-            break
-    return compact or [caption]
+    return _coalesce_verbatim_items(caption, compact or [caption], 5)
 
 
 def build_local_storyboard(
@@ -313,7 +375,15 @@ def build_local_storyboard(
     script: str,
     capability_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    segments = list(derive_motion_segments(topic, script, target_count=7, capability_pack=capability_pack))
+    segments = list(
+        derive_motion_segments(
+            topic,
+            script,
+            target_count=7,
+            capability_pack=capability_pack,
+            enforce_voice_pacing=True,
+        )
+    )
 
     # A one-phrase scene has only one safe renderer.  Merge it with a nearby
     # non-final scene when the combined narration still fits the frozen caption
@@ -330,7 +400,22 @@ def build_local_storyboard(
                 left, right = sorted((sparse_index, neighbour))
                 caption = str(segments[left]["caption"]) + str(segments[right]["caption"])
                 items = _verbatim_items(caption)
-                if len(caption) <= 62 and 2 <= len(items) <= 5:
+                if (
+                    len(caption) <= 62
+                    and 2 <= len(items) <= 5
+                    # Keep two complete spoken sentences as two TTS scenes.
+                    # The faster fixed voice has materially different leading
+                    # and trailing prosody when separate sentences are sent in
+                    # one Edge request; the final PCM gate measured a merge of
+                    # this shape above the delivery-density limit even though
+                    # each sentence was safe on its own.
+                    and len(split_narration_units(
+                        caption,
+                        punctuation="。！？!?",
+                        keep_punctuation=True,
+                    )) <= 1
+                    and not estimate_voice_scene_pacing(caption)["blocked"]
+                ):
                     candidates.append((len(items), left, right))
         if not candidates:
             break
@@ -342,7 +427,7 @@ def build_local_storyboard(
 
     def final_checklist_items(caption: str, items: list[str]) -> list[str]:
         if len(items) >= 2:
-            return items[:4]
+            return _coalesce_verbatim_items(caption, items, 4)
         # A final checklist cannot render a single generic block.  Split only
         # on punctuation or conjunctions that already exist in the narration;
         # never invent another wording layer merely to fill the layout.
@@ -353,11 +438,7 @@ def build_local_storyboard(
             if len(_phrase_key(part)) >= 4
         ]
         if len(pieces) >= 2:
-            return pieces[:4]
-        for marker in ("并", "和", "与"):
-            pivot = phrase.find(marker, 4)
-            if 4 <= pivot <= len(phrase) - 4:
-                return [phrase[:pivot], phrase[pivot:]][:4]
+            return _coalesce_verbatim_items(caption, pieces, 4)
         raise StoryboardError("本地兜底最后一幕缺少可逐字拆分的行动清单")
 
     def choose_layout(item_count: int, *, final: bool) -> str:
@@ -366,6 +447,10 @@ def build_local_storyboard(
                 return "final_checklist"
             raise StoryboardError("本地兜底最后一幕需要2到4项旁白短语，不能生成空清单")
         candidates = {
+            # A complete single-sentence scene is legitimate after the voice
+            # director separates two independently paced sentences.  Alternate
+            # its information structure so adjacent short sentences do not
+            # render as identical cards.
             1: ["explain_points"],
             # Two narration phrases do not automatically form an A ≠ B claim.
             # The renderer labels the right side as “cannot directly infer”, so
@@ -381,6 +466,26 @@ def build_local_storyboard(
     for index, segment in enumerate(segments):
         caption = str(segment["caption"])
         items = _verbatim_items(caption)
+        # Visible card copy is capped at 30 characters.  A quote-aware clause
+        # may remain longer (for example a complete question plus its reason),
+        # so split only over punctuation that already exists in that clause.
+        expanded_items: list[str] = []
+        for item in items:
+            if len(item) <= 30:
+                expanded_items.append(item)
+                continue
+            pieces = _narration_clauses(item)
+            if len(pieces) < 2:
+                quoted_parts = re.fullmatch(r"([^“]*“[^”]+”)(.+)", item)
+                pieces = (
+                    [quoted_parts.group(1).strip(), quoted_parts.group(2).strip()]
+                    if quoted_parts
+                    else pieces
+                )
+            if len(pieces) < 2 or any(len(piece) > 30 for piece in pieces):
+                raise StoryboardError("本地兜底旁白缺少可安全展示的完整短语")
+            expanded_items.extend(pieces)
+        items = _coalesce_verbatim_items(caption, expanded_items, 5)
         if index == len(segments) - 1:
             items = final_checklist_items(caption, items)
             layout = choose_layout(len(items), final=True)

@@ -34,7 +34,11 @@ from core.review_policy import (
     normalize_review_policy,
     script_edit_identity,
 )
-from core.voice_contract import normalize_voice_chunk_max_chars, normalize_voice_engine
+from core.voice_contract import (
+    fixed_voice_delivery_violations,
+    normalize_voice_chunk_max_chars,
+    normalize_voice_engine,
+)
 
 
 PIPELINE = [
@@ -872,6 +876,7 @@ class JobStore:
                     render_result = runner.run_render_stage(staging, job["production_input"], job["approvals"])
                     if render_result_is_diagnostic(render_result):
                         raise RuntimeError("诊断渲染不能发布为正式成功产物")
+                    self._validate_delivery_mode_and_voice(job, staging)
                     self._write(staging / "approvals.json", job["approvals"])
                     manifest = self._build_manifest(job, run, staging, runner)
                     self._write(staging / "manifest.json", manifest)
@@ -1517,6 +1522,64 @@ class JobStore:
         })
         return self._public(job)
 
+    @staticmethod
+    def _validate_delivery_mode_and_voice(
+        job: dict[str, Any],
+        artifacts_dir: Path,
+        *,
+        artifact_names: set[str] | None = None,
+    ) -> str:
+        """Fail closed before first publication or reuse of a formal delivery."""
+
+        names = artifact_names or {
+            path.name for path in artifacts_dir.iterdir() if path.is_file()
+        }
+        try:
+            report = json.loads((artifacts_dir / "run_report.json").read_text(encoding="utf-8"))
+            approved = json.loads((artifacts_dir / "approved_script.json").read_text(encoding="utf-8"))
+            motion_plan = json.loads((artifacts_dir / "motion_plan.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ConflictError("正式交付缺少可核验的报告、批准脚本或分镜") from exc
+        if not all(isinstance(value, dict) for value in (report, approved, motion_plan)):
+            raise ConflictError("正式交付的报告、批准脚本或分镜格式无效")
+
+        production_input = job.get("production_input")
+        if not isinstance(production_input, dict):
+            raise ConflictError("任务缺少冻结的生产模式输入")
+        job_mode = production_input.get("production_mode")
+        if job_mode is None:
+            job_mode = (
+                "footage"
+                if is_legacy_footage_input(production_input) or "engine_report.json" in names
+                else ("simple" if production_input.get("render_mode") == "simple" else "motion")
+            )
+        if job_mode not in {"motion", "footage", "hybrid", "simple"}:
+            raise ConflictError("任务冻结的生产模式无效")
+        if report.get("production_mode") != job_mode:
+            raise ConflictError("正式交付报告的生产模式与任务冻结模式不一致")
+        production_engine = report.get("production_engine")
+        if (
+            not isinstance(production_engine, dict)
+            or production_engine.get("selected_mode") != job_mode
+        ):
+            raise ConflictError("正式交付报告的正式引擎身份与任务冻结模式不一致")
+        if job_mode == "motion":
+            voice_path = artifacts_dir / "voice.wav"
+            if not voice_path.is_file():
+                raise ConflictError("正式交付缺少固定配音音频")
+            voice_violations = fixed_voice_delivery_violations(
+                report.get("voice"),
+                script=str(approved.get("script", "")),
+                voice_path=voice_path,
+                motion_plan=motion_plan,
+            )
+            if voice_violations:
+                raise ConflictError(
+                    "正式交付固定配音合同已过期或无效，必须重新渲染："
+                    + ",".join(voice_violations)
+                )
+        return str(job_mode)
+
     def rebuild_successful_delivery(
         self,
         job_id: str,
@@ -1555,6 +1618,12 @@ class JobStore:
             )
             if not source_run:
                 raise ConflictError("报告重建来源不是成功发布的正式运行")
+            durable_manifest_sha256 = str(source_run.get("manifest_sha256") or "")
+            if (
+                not durable_manifest_sha256
+                or file_sha256(source_manifest_path) != durable_manifest_sha256
+            ):
+                raise ConflictError("成功运行manifest与任务记录中的不可变哈希不一致")
             source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
             if (
                 source_manifest.get("schema_version") != 2
@@ -1586,6 +1655,7 @@ class JobStore:
                     raise ConflictError(f"成功运行产物校验失败: {item.get('name', '')}")
             if not required_names.issubset(seen_names):
                 raise ConflictError("成功运行manifest正式产物集合不完整")
+            self._validate_delivery_mode_and_voice(job, source_dir, artifact_names=seen_names)
 
             lock_path = self._acquire_disk_lock(folder, idempotency_key)
             run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}"
@@ -1619,6 +1689,7 @@ class JobStore:
                     raise RuntimeError("报告重建缺少正式成片视觉门禁")
                 visual_qc_stage(staging)
                 runner.rebuild_run_report(staging, job["approvals"])
+                self._validate_delivery_mode_and_voice(job, staging)
                 self._write(staging / "approvals.json", job["approvals"])
                 manifest = self._build_manifest(job, run, staging, runner)
                 self._write(staging / "manifest.json", manifest)

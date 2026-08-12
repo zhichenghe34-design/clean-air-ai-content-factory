@@ -20,7 +20,12 @@ from typing import Any
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, ImageStat
 
-from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
+from core.motion_director import (
+    build_motion_plan,
+    build_motion_project,
+    derive_motion_segments,
+    split_narration_units,
+)
 from core.program_audio import build_default_program_audio
 from core.storyboard_agent import (
     StoryboardError,
@@ -56,8 +61,12 @@ from core.voice_contract import (
     DEFAULT_VOICE_NAME,
     DEFAULT_VOICE_RATE,
     NATURAL_VOICE_ENGINES,
+    VOICE_SCENE_MAX_DELIVERED_CHARACTERS_PER_SECOND,
+    VOICE_SCENE_PAUSE_SECONDS,
+    VOICE_SEGMENT_CONTRACT_VERSION,
     normalize_voice_chunk_max_chars,
     normalize_voice_engine,
+    voice_segments_digest,
 )
 
 
@@ -303,9 +312,7 @@ VOICE_TEMPO_MAXIMUM = 1.12
 DEFAULT_EDGE_TTS_VOICE = DEFAULT_VOICE_NAME
 NARRATION_TARGET_MIN_SPOKEN_CHARACTERS = 180
 NARRATION_TARGET_MAX_SPOKEN_CHARACTERS = 195
-NARRATION_MAX_DELIVERED_CHARACTERS_PER_SECOND = 4.05
-VOICE_SCENE_PAUSE_SECONDS = 0.35
-VOICE_SEGMENT_CONTRACT_VERSION = 1
+NARRATION_MAX_DELIVERED_CHARACTERS_PER_SECOND = VOICE_SCENE_MAX_DELIVERED_CHARACTERS_PER_SECOND
 
 VISUAL_QC_SAMPLE_COUNT = 12
 VISUAL_QC_MOTION_OFFSET_SECONDS = 0.40
@@ -507,7 +514,14 @@ def estimate_narration_duration(script: str) -> dict[str, Any]:
 def review_narration_pacing(script: str) -> dict[str, Any]:
     estimate = estimate_narration_duration(script)
     spoken = int(estimate["spoken_characters"])
-    sentence_count = len(re.findall(r"[^。！？!?]+[。！？!?]", str(script or "")))
+    # A question mark inside a paired quotation belongs to the surrounding
+    # spoken sentence; counting it as a second sentence rejects otherwise
+    # valid narration such as “……吗？”，然后给出结论。
+    sentence_count = len(split_narration_units(
+        str(script or ""),
+        punctuation="。！？!?",
+        keep_punctuation=True,
+    ))
     reasons: list[str] = []
     if spoken < NARRATION_TARGET_MIN_SPOKEN_CHARACTERS:
         reasons.append("narration_too_short_for_natural_45_second_delivery")
@@ -805,7 +819,7 @@ def _sanitize_topic(
 
 def _pad_safe_script(script: str, minimum_seconds: float = 45.0) -> str:
     additions = (
-        "有疑问就回到原始材料重新核对。",
+        "有疑问，回到原始材料重新核对。",
         "复核时还要保留来源和修改记录，避免把未确认信息重新带回正文。",
         "如果关键材料仍然缺失，就明确标注未知，不用听起来确定的话替代证据。",
         "发布前再由工作人员检查一次对象、语境和限制，确认表达没有超出材料边界。",
@@ -1003,9 +1017,9 @@ def _build_legacy_local_variants(
         "先分清气味线索和仪器读数，再核对室内甲醛证据。"
         "先核对检测时的门窗状态、仪器位置和持续时间。"
         "气味和体感只是线索，不能替代规范检测。"
-        "再看剂量、空间体积、作用时间、初始浓度、检测方法和报告来源。"
-        "实验条件与真实房间不同，结论不能直接照搬；缺少来源和适用边界，也不能理解成入住保证。"
-        f"对{safe_audience}，建议保留报告、持续通风，重要决定前结合房屋情况请专业人员判断。"
+        "再看剂量、空间体积、作用时间、初始浓度、检测方法、报告来源和适用边界。"
+        "实验条件与真实房间不同。结论不能直接照搬；所谓入住保证，更不能这样理解。"
+        f"对{safe_audience}，建议保留原始报告、持续有效通风；重要决定前，结合房屋情况，请专业人员判断。"
     )
     openings = [
         ("A", "问题拆解", f"对于“{safe_topic}”，不能只凭一个低数值下结论。"),
@@ -2536,9 +2550,7 @@ class ProductionRunner:
 
     @staticmethod
     def _voice_segments_digest(segments: list[dict[str, Any]] | None) -> str:
-        captions = [str(item.get("caption") or "").strip() for item in (segments or [])]
-        payload = json.dumps(captions, ensure_ascii=False, separators=(",", ":"))
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest().upper()
+        return voice_segments_digest(segments)
 
     @staticmethod
     def _pcm_wave_duration(path: Path) -> float:
@@ -2803,6 +2815,12 @@ class ProductionRunner:
                     "natural_voice": True,
                 }
                 return report
+            except ScriptRevisionRequired:
+                # Preserve the typed workflow signal so the unattended
+                # controller can return to content/storyboard generation with
+                # the exact scene-density failure instead of reporting a
+                # generic voice-engine outage.
+                raise
             except Exception as exc:
                 failures.append(f"edge_tts:{type(exc).__name__}:{exc}")
                 with log_path.open("a", encoding="utf-8") as handle:

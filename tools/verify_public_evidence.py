@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import re
@@ -39,6 +40,7 @@ from core.motion_runtime_contract import (
     SYSTEM_BROWSER_MINIMUM_MAJOR,
     SYSTEM_BROWSER_STRATEGY,
 )
+from core.voice_contract import fixed_voice_delivery_violations
 
 
 CANONICAL = [
@@ -130,8 +132,11 @@ def probe_video(path: Path, ffprobe_path: Path | str | None = None) -> dict[str,
     data = json.loads(output)
     video = next((item for item in data.get("streams", []) if item.get("codec_type") == "video"), {})
     audio = next((item for item in data.get("streams", []) if item.get("codec_type") == "audio"), {})
+    duration = float(data.get("format", {}).get("duration", 0))
+    if not math.isfinite(duration) or duration <= 0:
+        raise RuntimeError("FFprobe 返回了无效成片时长")
     return {
-        "duration_seconds": round(float(data.get("format", {}).get("duration", 0)), 3),
+        "duration_seconds": round(duration, 3),
         "video_codec": video.get("codec_name"),
         "audio_codec": audio.get("codec_name"),
         "width": video.get("width"),
@@ -492,10 +497,23 @@ def _validate_motion_evidence(
         except (TypeError, ValueError):
             errors.append("motion_plan.json 或 run_report.json 的时长无效")
         else:
-            if not 45 <= plan_duration <= 60 or abs(plan_duration - render_duration) > 0.05:
+            if (
+                not math.isfinite(plan_duration)
+                or not math.isfinite(render_duration)
+                or not 45 <= plan_duration <= 60
+                or abs(plan_duration - render_duration) > 0.05
+            ):
                 errors.append("motion_plan.json 与纯动画渲染时长不一致")
     if motion_validation is not None and render.get("motion_validation") != motion_validation:
         errors.append("run_report.json 的可信动画积木验证摘要不一致")
+    voice_violations = fixed_voice_delivery_violations(
+        run_report.get("voice"),
+        script=approved_script,
+        voice_path=folder / "voice.wav",
+        motion_plan=motion_plan,
+    )
+    if voice_violations:
+        errors.append("run_report.json 固定大众播报配音合同无效：" + ",".join(voice_violations))
 
     approved_binding = caption_binding_text(approved_script)
     expected_caption_hash = hashlib.sha256(approved_binding.encode("utf-8")).hexdigest().upper()
@@ -680,7 +698,11 @@ def verify(
             errors.extend(scan_text(path))
 
     media = probe_video(folder / "final.mp4", ffprobe_path=ffprobe_path)
-    if not 45 <= media["duration_seconds"] <= 60:
+    try:
+        media_duration = float(media["duration_seconds"])
+    except (KeyError, TypeError, ValueError):
+        media_duration = 0.0
+    if not math.isfinite(media_duration) or not 45 <= media_duration <= 60:
         errors.append("成片时长不在 45–60 秒")
     if (media["width"], media["height"]) != (1080, 1920):
         errors.append("成片不是 1080×1920")
@@ -692,11 +714,15 @@ def verify(
             reported_duration = float(render.get("duration_seconds", 0))
         except (TypeError, ValueError):
             reported_duration = 0.0
-        if abs(reported_duration - media["duration_seconds"]) > 0.15:
+        if (
+            not math.isfinite(reported_duration)
+            or not math.isfinite(media_duration)
+            or abs(reported_duration - media_duration) > 0.15
+        ):
             errors.append("run_report.json 的纯动画时长与 final.mp4 不一致")
     errors.extend(validate_srt(
         folder / "captions.srt",
-        media["duration_seconds"],
+        media_duration,
         approved_script_text,
         contract=contract,
     ))
