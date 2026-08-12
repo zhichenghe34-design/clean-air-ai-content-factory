@@ -15,6 +15,7 @@ from core.animation_registry import (
     validate_animation_pack,
 )
 from core.motion_director import (
+    CLEAN_AIR_EXPLAINER_TEMPLATE_FILE,
     CINEMATIC_TEMPLATE_FILE,
     CINEMATIC_VISUAL_FILE,
     FONT_BOLD_FILE,
@@ -64,6 +65,38 @@ class AnimationRegistryTests(unittest.TestCase):
         self.assertIn("先看对象与场景", titles)
         self.assertIn("报告 × 通风 × 判断", titles)
         self.assertEqual("感觉 ≠ 结论", titles[-1])
+
+    def test_clean_air_explainer_keeps_complete_sentences_and_binds_each_diagram(self):
+        sentences = [
+            "甲醛检测仪数值低，就能直接安心入住吗？先别只看这一刻的数字。",
+            "测量位置、门窗状态和测量时间不同，读数可能出现变化。",
+            "一次读数反映的是当时结果，不能代替持续观察，也不能证明污染来源已经消失。",
+            "先记录检测条件，再在相同条件下复测，观察结果是否稳定。",
+            "涉及具体产品时，要核对检测材料、适用空间和使用条件。",
+            "把数字、条件和来源放在一起看，再决定下一步。",
+        ]
+        segments = derive_motion_segments(
+            "低读数能否直接安心入住？",
+            "".join(sentences),
+            target_count=7,
+            capability_pack={"id": "legacy-clean-air-v2"},
+        )
+        self.assertEqual([item["caption"] for item in segments], sentences)
+        self.assertEqual(
+            [item["visual_content"]["kind"] for item in segments],
+            [
+                "low-reading",
+                "measurement-conditions",
+                "single-reading",
+                "retest-process",
+                "product-conditions",
+                "final-checklist",
+            ],
+        )
+        self.assertEqual(
+            segments[1]["visual_content"]["items"],
+            ["测量位置", "门窗状态", "测量时间"],
+        )
 
     def test_bundled_pack_is_hash_bound_and_families_are_explicit(self):
         registry = AnimationRegistry.load()
@@ -226,21 +259,31 @@ class AnimationRegistryTests(unittest.TestCase):
         self.assertIn('<i>时</i><span>净界AI内容工厂</span>', legacy_html)
         self.assertIn('"visual_type": "liquid-chamber"', legacy_html)
         self.assertIn('"visual_type": "orbit-summary"', legacy_html)
-        self.assertEqual(legacy_built["template"], CINEMATIC_TEMPLATE_FILE.name)
-        self.assertEqual(
-            legacy_built["visual_asset_sha256"],
-            hashlib.sha256(CINEMATIC_VISUAL_FILE.read_bytes()).hexdigest(),
-        )
-        self.assertTrue(legacy_asset_exists)
+        self.assertEqual(legacy_built["template"], CLEAN_AIR_EXPLAINER_TEMPLATE_FILE.name)
+        self.assertIsNone(legacy_built["visual_asset_sha256"])
+        self.assertFalse(legacy_asset_exists)
         self.assertFalse(generic_asset_exists)
         self.assertIn(
-            {"kind": "keepsMoving", "withinSelector": "#motion-stage", "maxStaticSec": 1.5},
+            {"kind": "keepsMoving", "withinSelector": "#scenes", "maxStaticSec": 2.5},
             legacy_motion["assertions"],
         )
         self.assertIn(
-            {"kind": "staysInFrame", "selector": "#visual-scene-01 .visual-module"},
+            {"kind": "staysInFrame", "selector": "#scene-01 .visual"},
             legacy_motion["assertions"],
         )
+        self.assertNotIn("clean-air-device-neutral-v1.png", legacy_html)
+        self.assertNotIn("第一项", legacy_html)
+        self.assertNotIn("已有依据", legacy_html)
+        self.assertNotIn("scene-wipe", legacy_html)
+        self.assertNotIn("translateX(", legacy_html)
+        self.assertNotIn("data-layout-allow-occlusion", legacy_html)
+        self.assertIn('finite(node.querySelector(".semantic-progress i")', legacy_html)
+        self.assertIn('const visual = scene.visual_content;', legacy_html)
+        self.assertIn('const unorderedTargets = Array.from', legacy_html)
+        self.assertIn('scene.visual_content.focus_order', legacy_html)
+        self.assertNotIn('检测仪当下读数', legacy_html)
+        self.assertNotIn('<strong>安心入住</strong>', legacy_html)
+        self.assertIn('scene.visual_content.summary', legacy_html)
 
     def test_generic_plan_rejects_legacy_only_block_even_with_rehashed_receipt(self):
         registry = AnimationRegistry.load()

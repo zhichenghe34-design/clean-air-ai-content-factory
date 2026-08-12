@@ -80,7 +80,6 @@ from core.provider import (
 from core.review_policy import (
     AGENT_TEST_REVIEW,
     CODEX_TEST_REVIEWER,
-    HUMAN_STAGE_REVIEW,
     MECHANICAL_REVIEWER,
     MECHANICAL_STAGE_REVIEW,
     STAGE_REVIEW_MODES,
@@ -112,7 +111,7 @@ if _explicit_review_mode and _explicit_review_mode not in STAGE_REVIEW_MODES:
 STAGE_REVIEW_MODE = _explicit_review_mode or (
     AGENT_TEST_REVIEW
     if os.environ.get("SHIYI_AGENT_TEST_REVIEW", "").strip() == "1"
-    else HUMAN_STAGE_REVIEW
+    else MECHANICAL_STAGE_REVIEW
 )
 job_store = JobStore(RUNTIME_DIR, stage_review_mode=STAGE_REVIEW_MODE)
 learning_store = LearningStore(RUNTIME_DIR)
@@ -1001,26 +1000,37 @@ class AppHandler(BaseHTTPRequestHandler):
                     allow = bool(config_store.load()["security"].get("allow_external_commands", False))
                     self.json_response(job_store.run_safe(job_id, allow_external_commands=allow))
                 else:
-                    limit = int(config_store.load().get("research", {}).get("max_provider_calls_per_job", 7))
-                    budget = BudgetLedger(limit=limit, snapshot=job.get("budget"))
-                    provider = self._provider(budget)
-                    render_stage_requested = job.get("status") == "compliance_approved" or (
-                        job.get("status") == "failed" and job.get("last_failed_stage") == "render"
-                    )
-                    production_mode = production_mode_for_persisted_job(job)
-                    engine_adapter, engine_options = production_engine_adapter_for_mode(
-                        production_mode,
-                        render_stage_requested=render_stage_requested,
-                    )
-                    runner = ProductionRunner(
-                        provider=provider,
-                        research_config=config_store.load().get("research", {}),
-                        budget=budget,
-                        production_engine_adapter=engine_adapter,
-                        production_engine_options=engine_options,
-                    )
+                    config_snapshot = config_store.load()
+                    limit = int(config_snapshot.get("research", {}).get("max_provider_calls_per_job", 7))
+
+                    def runner_factory(current_job: dict[str, Any]) -> ProductionRunner:
+                        budget = BudgetLedger(limit=limit, snapshot=current_job.get("budget"))
+                        provider = self._provider(budget)
+                        render_stage_requested = current_job.get("status") == "compliance_approved" or (
+                            current_job.get("status") == "failed"
+                            and current_job.get("last_failed_stage") == "render"
+                        )
+                        production_mode = production_mode_for_persisted_job(current_job)
+                        engine_adapter, engine_options = production_engine_adapter_for_mode(
+                            production_mode,
+                            render_stage_requested=render_stage_requested,
+                        )
+                        return ProductionRunner(
+                            provider=provider,
+                            research_config=config_snapshot.get("research", {}),
+                            budget=budget,
+                            production_engine_adapter=engine_adapter,
+                            production_engine_options=engine_options,
+                        )
+
                     executed_rule_ids = list(job.get("learning_rule_ids", []))
-                    result = job_store.advance(job_id, runner, self.headers.get("Idempotency-Key", ""))
+                    request_key = self.headers.get("Idempotency-Key", "")
+                    review_mode = normalize_review_policy(job.get("review_policy"))["stage_review_mode"]
+                    result = (
+                        job_store.advance_automatically(job_id, runner_factory, request_key)
+                        if review_mode == MECHANICAL_STAGE_REVIEW
+                        else job_store.advance(job_id, runner_factory(job), request_key)
+                    )
                     learning_update = None
                     if result.get("status") == "complete" and executed_rule_ids:
                         try:
@@ -1193,7 +1203,7 @@ class AppHandler(BaseHTTPRequestHandler):
             if not isinstance(options, dict):
                 raise UnprocessableError("production_options必须是JSON对象")
             allowed_options = {
-                "target_duration_seconds", "pattern_card_ids", "voice_engine", "voice_chunk_max_chars", "aspect_ratio", "production_mode", "render_mode",
+                "target_duration_seconds", "pattern_card_ids", "aspect_ratio", "production_mode", "render_mode",
                 "require_animation", "enable_web_research", "source_urls", "motion_scenes", "animation_quality",
             }
             option_unknown = sorted(set(options) - allowed_options)

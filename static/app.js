@@ -60,6 +60,7 @@ const artifactLabels = {
 const PENDING_CREATE_STORAGE = "shiyi_pending_agent_create";
 const EMPTY_RESEARCH_APPROVAL_NOTE = "本次确认无可采信 finding；后续仅允许使用不含行业事实主张的本地安全模板";
 const AGENT_TEST_REVIEWER = "Codex 测试代理";
+const MECHANICAL_REVIEWER = "反向机械审核器";
 const AGENT_RESEARCH_NOTE = "Codex 测试代理已逐项核对来源、严格审核结论与允许使用范围；仅用于受控测试。";
 const AGENT_COMPLIANCE_NOTE = "Codex 测试代理已核对最终脚本、合规结果与审批哈希；仅用于受控测试。";
 const POLL_BASE_DELAY_MS = 1000;
@@ -72,8 +73,8 @@ function isEmptyLocalResearch(research) {
 
 function reviewPolicyForJob(job = null) {
   const formalDefault = {
-    stage_review_mode: "human",
-    final_human_acceptance_required: false,
+    stage_review_mode: "mechanical",
+    final_human_acceptance_required: true,
   };
   if (job) return job.review_policy || formalDefault;
   return state.status?.review_policy || formalDefault;
@@ -83,8 +84,14 @@ function isAgentTestReview(job = null) {
   return reviewPolicyForJob(job).stage_review_mode === "agent_test";
 }
 
+function isMechanicalReview(job = null) {
+  return reviewPolicyForJob(job).stage_review_mode === "mechanical";
+}
+
 function reviewerForJob(job = null) {
-  return isAgentTestReview(job) ? AGENT_TEST_REVIEWER : "本机会话用户";
+  if (isAgentTestReview(job)) return AGENT_TEST_REVIEWER;
+  if (isMechanicalReview(job)) return MECHANICAL_REVIEWER;
+  return "本机会话用户";
 }
 
 async function bootstrapSession() {
@@ -443,7 +450,6 @@ async function startSelectedTopic() {
       production_options: {
         target_duration_seconds: 52,
         pattern_card_ids: [],
-        voice_engine: "voxcpm2",
         production_mode: document.querySelector('input[name="productionMode"]:checked')?.value === "footage"
           && !document.getElementById("productionModeFootage").disabled ? "footage" : "motion",
         enable_web_research: true,
@@ -492,7 +498,9 @@ async function startSelectedTopic() {
 function renderRunningCard(title, message, progress, job = null) {
   const pauseText = isAgentTestReview(job)
     ? "Agent 会在两道测试审查门禁停下，由 Codex 通过浏览器检查并推进。"
-    : "Agent 会在需要你本人确认时停下来。";
+    : isMechanicalReview(job)
+      ? "反向机械审核会自动核对证据、脚本与镜头蓝图；通过后直接继续，不要求中途改稿。"
+      : "Agent 会在需要你本人确认时停下来。";
   return `<div class="job-chat-head"><div><h2>${escapeHtml(title)}</h2><p>${pauseText}</p></div><span class="status-pill status-running">处理中</span></div>
     <div class="progress-block"><div class="progress-copy"><span>${escapeHtml(message)}</span><b class="mono">${progress}%</b></div><div class="progress-track"><span class="progress-value progress-${progress}"></span></div></div>`;
 }
@@ -630,12 +638,19 @@ async function renderHomeJob(job, { managePolling = true } = {}) {
   const title = job.production_input?.topic || job.plan?.goal || job.id;
   const status = job.status;
   const agentTestReview = isAgentTestReview(job);
+  const mechanicalReview = isMechanicalReview(job);
   const progress = statusProgress[status] ?? 18;
   document.getElementById("processBudget").textContent = `请求 ${job.budget?.attempted || 0} / ${job.budget?.limit || 7}`;
   document.getElementById("processDetails").innerHTML = `<p>当前状态：${escapeHtml(statusLabels[status] || status)}。失败重跑不会覆盖上一份成功产物；详细证据、脚本和哈希仍可在任务记录中查看。</p>`;
 
   if (runningStates.has(status)) {
     panel.innerHTML = renderRunningCard(title, statusLabels[status], progress, job);
+    if (managePolling) schedulePoll(job.id);
+    return true;
+  }
+
+  if (mechanicalReview && runnableStates.has(status) && state.busyJobs.has(job.id)) {
+    panel.innerHTML = renderRunningCard(title, "反向机械审核已通过当前阶段，正在自动继续…", progress, job);
     if (managePolling) schedulePoll(job.id);
     return true;
   }
@@ -692,7 +707,13 @@ async function renderHomeJob(job, { managePolling = true } = {}) {
     return false;
   }
   if (status === "complete") {
-    panel.innerHTML = `${head}<div class="gate-card"><h3>${agentTestReview ? "测试成片已经完成，等待用户最终验收" : "成片已经完成"}</h3><p>视频、证据清单、审查记录和哈希都已发布到本次成功运行；失败尝试没有覆盖它。${agentTestReview ? " 两道阶段门禁记录为代理测试审查，不冒充用户签署。" : ""}</p><div class="gate-actions"><button class="primary" type="button" data-home-action="play-latest">播放最新成片</button><button class="quiet-link" type="button" data-home-action="new-task">再做一条</button></div></div>`;
+    const completionTitle = agentTestReview
+      ? "测试成片已经完成，等待用户最终验收"
+      : mechanicalReview ? "自动成片已经完成" : "成片已经完成";
+    const reviewBoundary = agentTestReview
+      ? " 两道阶段门禁记录为代理测试审查，不冒充用户签署。"
+      : mechanicalReview ? " 研究、脚本和镜头均已通过反向机械审核；公开发布仍保留最终责任确认。" : "";
+    panel.innerHTML = `${head}<div class="gate-card"><h3>${completionTitle}</h3><p>视频、证据清单、审查记录和哈希都已发布到本次成功运行；失败尝试没有覆盖它。${reviewBoundary}</p><div class="gate-actions"><button class="primary" type="button" data-home-action="play-latest">播放最新成片</button><button class="quiet-link" type="button" data-home-action="new-task">再做一条</button></div></div>`;
     renderLatestArtifact();
     if (managePolling) stopPoll(job.id);
     return false;

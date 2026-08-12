@@ -19,6 +19,7 @@ from core.animation_registry import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPO_ROOT / "agent-skills" / "produce-dynamic-health-video"
 TEMPLATE_FILE = SKILL_ROOT / "assets" / "composition-template.html"
+CLEAN_AIR_EXPLAINER_TEMPLATE_FILE = SKILL_ROOT / "assets" / "composition-template-clean-air-explainer.html"
 CINEMATIC_TEMPLATE_FILE = SKILL_ROOT / "assets" / "composition-template-cinematic.html"
 CINEMATIC_VISUAL_FILE = SKILL_ROOT / "assets" / "media" / "clean-air-device-neutral-v1.png"
 ANIMATION_PACK_FILE = DEFAULT_PACK_PATH
@@ -170,20 +171,115 @@ def _balanced_caption_units(text: str, target_count: int, max_chars: int = 62) -
     return units
 
 
+def _semantic_caption_units(text: str, target_count: int, max_chars: int = 62) -> list[str]:
+    """Prefer complete spoken sentences; never cut a usable argument by character count."""
+
+    sentences = [value for value in re.findall(r"[^。！？!?]+[。！？!?]?", text) if value]
+    merged: list[str] = []
+    cursor = 0
+    while cursor < len(sentences):
+        current = sentences[cursor]
+        if (
+            cursor + 1 < len(sentences)
+            and current.endswith(("？", "?"))
+            and len(sentences[cursor + 1]) <= 18
+            and len(current) + len(sentences[cursor + 1]) <= max_chars
+        ):
+            current += sentences[cursor + 1]
+            cursor += 1
+        merged.append(current)
+        cursor += 1
+    sentences = merged
+    if (
+        4 <= len(sentences) <= 8
+        and all(len(value) <= max_chars for value in sentences)
+        and "".join(sentences) == text
+    ):
+        return sentences
+    return _balanced_caption_units(text, target_count, max_chars=max_chars)
+
+
+def _legacy_visual_content(caption: str, index: int, total: int) -> dict[str, Any]:
+    """Bind the clean-air explainer diagram to facts that are actually spoken."""
+
+    if index == total:
+        return {
+            "kind": "final-checklist",
+            "headline": "做决定前，四项一起看",
+            "summary": "四项缺一，结论就不完整",
+            "items": ["检测数字", "测量条件", "资料来源", "下一步决定"],
+        }
+    if all(keyword in caption for keyword in ("测量位置", "门窗状态", "测量时间")):
+        return {
+            "kind": "measurement-conditions",
+            "headline": "读数会随检测条件变化",
+            "summary": "先固定条件，读数才可比较",
+            "items": ["测量位置", "门窗状态", "测量时间"],
+        }
+    if "一次读数" in caption:
+        return {
+            "kind": "single-reading",
+            "headline": "一次读数的三条边界",
+            "summary": "单点结果不能替代持续观察",
+            "items": ["只反映当时结果", "不能代替持续观察", "不能证明污染源消失"],
+        }
+    if "相同条件" in caption and "复测" in caption:
+        return {
+            "kind": "retest-process",
+            "headline": "把判断过程留下来",
+            "summary": "相同条件复测，才看得出稳定性",
+            "items": ["记录位置/门窗/时间", "保持相同条件", "再次测量", "比较是否稳定"],
+        }
+    if "具体产品" in caption or "治理效果" in caption:
+        return {
+            "kind": "product-conditions",
+            "headline": "涉及产品时再核对三项",
+            "summary": "产品结论必须对应真实使用条件",
+            "items": ["检测材料", "适用空间", "使用条件"],
+        }
+    if "数字" in caption or "数值" in caption or "读数" in caption:
+        return {
+            "kind": "low-reading",
+            "headline": "低读数不能直接推出安心",
+            "summary": "读数是输入，不是最终结论",
+            "items": ["当下数字：低", "检测条件：待核对", "入住结论：不能直接下"],
+        }
+
+    clauses = [
+        value.strip("，。；：,;: ")
+        for value in re.split(r"[，。；：,;:]", caption)
+        if value.strip("，。；：,;: ")
+    ]
+    return {
+        "kind": "explain-points",
+        "headline": "把这句话拆成可核对的信息",
+        "summary": "逐项核对，不靠画面替代证据",
+        "items": [value[:18] for value in clauses[:4]] or [caption[:18]],
+    }
+
+
 def derive_motion_segments(
     topic: str,
     script: str,
     target_count: int = 7,
     capability_pack: dict[str, Any] | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     text = re.sub(r"\s+", "", str(script or "").strip())
     if not text:
         raise MotionPlanError("脚本为空，无法生成动态场景")
-    units = _balanced_caption_units(text, target_count, max_chars=62)
+    units = _semantic_caption_units(text, target_count, max_chars=62)
 
     def title_for(caption: str, index: int) -> tuple[str, str]:
         if _is_legacy_pack(capability_pack):
             rules = [
+                (("数值低", "安心入住"), "低读数 ≠ 安心结论", "先别急着下结论"),
+                (("一个数字替你下结论",), "数字 + 条件 + 来源", "最终判断原则"),
+                (("具体产品或治理效果", "适用空间和使用条件"), "材料 × 空间 × 用法", "先核对产品条件"),
+                (("相同条件下复测",), "复测结果看稳定性", "判断前先复测"),
+                (("记录检测条件",), "记录条件再复测", "把过程留下来"),
+                (("一次读数",), "一次读数 ≠ 持续状态", "单点结果不能外推"),
+                (("测量位置", "门窗状态", "测量时间"), "位置 × 门窗 × 时间", "结果取决于测量条件"),
+                (("这一刻的数字",), "低读数 ≠ 安心结论", "先别只看当下数字"),
                 (("第一步",), "先看对象与场景", "判断从场景开始"),
                 (("持续通风", "专业人员", "保存完整"), "报告 × 通风 × 判断", "稳妥行动"),
                 (("记住", "感觉"), "感觉 ≠ 结论", "最终判断原则"),
@@ -209,13 +305,16 @@ def derive_motion_segments(
         clean = re.sub(r"[“”‘’\"']", "", caption)
         return clean[:14] + ("…" if len(clean) > 14 else ""), ("核心问题" if index == 1 else "关键判断")
 
-    segments: list[dict[str, str]] = []
+    segments: list[dict[str, Any]] = []
     for index, caption in enumerate(units, start=1):
         title, kicker = title_for(caption, index)
         if index == len(units):
             kicker = "最终判断原则" if _is_legacy_pack(capability_pack) else "下一步行动"
             title = title if len(title) <= 16 else str(topic)[:16]
-        segments.append({"kicker": kicker, "title": title, "caption": caption})
+        segment: dict[str, Any] = {"kicker": kicker, "title": title, "caption": caption}
+        if _is_legacy_pack(capability_pack):
+            segment["visual_content"] = _legacy_visual_content(caption, index, len(units))
+        segments.append(segment)
     return segments
 
 
@@ -238,6 +337,11 @@ def build_motion_plan(
     scenes: list[dict[str, Any]] = []
     receipt_selections: list[dict[str, Any]] = []
     legacy = _is_legacy_pack(capability_pack)
+    agent_directed = bool(segments) and all(
+        isinstance(item.get("visual_content"), dict)
+        and str(item["visual_content"].get("storyboard_source", "")).strip()
+        for item in segments
+    )
     visual_sequence = LEGACY_VISUAL_SEQUENCE if legacy else GENERIC_VISUAL_SEQUENCE
     pack_mode = "legacy_clean_air" if legacy else "generic"
     registry = _registry()
@@ -248,6 +352,14 @@ def build_motion_plan(
         safe_kicker = str(segment.get("kicker") or f"要点 {index:02d}").strip()
         safe_title = str(segment.get("title") or topic).strip()
         safe_caption = str(segment.get("caption") or "").strip()
+        visual_content = segment.get("visual_content") if (legacy or agent_directed) else None
+        if legacy and not isinstance(visual_content, dict):
+            visual_content = _legacy_visual_content(safe_caption, index, len(segments))
+        if legacy and isinstance(visual_content, dict) and "focus_order" not in visual_content:
+            visual_content = dict(visual_content)
+            legacy_items = visual_content.get("items")
+            if isinstance(legacy_items, list):
+                visual_content["focus_order"] = list(range(len(legacy_items)))
         tags = _semantic_tags(" ".join((safe_kicker, safe_title, safe_caption)), index, len(segments))
         legacy_space_scene = legacy and index == min(3, len(segments) - 1)
         if legacy_space_scene:
@@ -286,8 +398,7 @@ def build_motion_plan(
                 raise MotionPlanError(f"场景{index}的{field}超出可信积木文字限制")
         visual = block["id"]
         motion = block["motion"]
-        scenes.append(
-            {
+        scene_payload = {
                 "id": f"scene-{index:02d}",
                 "index": index,
                 "start": round(cursor, 3),
@@ -303,7 +414,9 @@ def build_motion_plan(
                 "transition": motion["transition"],
                 "entrance_lead_seconds": 0.22,
             }
-        )
+        if legacy or agent_directed:
+            scene_payload["visual_content"] = visual_content
+        scenes.append(scene_payload)
         receipt_selections.append(
             {
                 "scene_id": f"scene-{index:02d}",
@@ -357,6 +470,7 @@ def build_motion_plan(
             "brand_name": brand_name,
             "brand_mark": ("时" if legacy else (brand_name[:1].upper() or "E")),
             "legacy": legacy,
+            "agent_directed": agent_directed,
         },
         "capability_pack": {
             "id": str((capability_pack or {}).get("id", "")) if isinstance(capability_pack, dict) else "",
@@ -395,6 +509,7 @@ def validate_motion_plan(plan: dict[str, Any]) -> dict[str, Any]:
     project = plan.get("project") if isinstance(plan.get("project"), dict) else {}
     capability_identity = plan.get("capability_pack") if isinstance(plan.get("capability_pack"), dict) else {}
     project_legacy = project.get("legacy") is True
+    agent_directed = project.get("agent_directed") is True
     capability_legacy = capability_identity.get("id") == "legacy-clean-air-v2"
     if project_legacy != capability_legacy:
         errors.append("项目legacy标记与能力包身份不一致")
@@ -442,6 +557,57 @@ def validate_motion_plan(plan: dict[str, Any]) -> dict[str, Any]:
                 or scene.get("transition") != block["motion"]["transition"]
             ):
                 errors.append(f"场景{index}运动声明与可信积木不一致")
+            if capability_legacy or agent_directed:
+                visual_content = scene.get("visual_content")
+                if not isinstance(visual_content, dict):
+                    errors.append(f"场景{index}缺少旁白绑定的科普图解")
+                else:
+                    kind = visual_content.get("kind")
+                    headline = visual_content.get("headline")
+                    summary = visual_content.get("summary")
+                    items = visual_content.get("items")
+                    focus_order = visual_content.get("focus_order")
+                    allowed_kinds = {
+                        "low-reading",
+                        "measurement-conditions",
+                        "single-reading",
+                        "retest-process",
+                        "product-conditions",
+                        "final-checklist",
+                        "explain-points",
+                    }
+                    if kind not in allowed_kinds:
+                        errors.append(f"场景{index}使用未知科普图解类型")
+                    if not isinstance(headline, str) or not headline.strip() or len(headline) > 30:
+                        errors.append(f"场景{index}科普图解标题无效")
+                    if not isinstance(summary, str) or not summary.strip() or len(summary) > 30:
+                        errors.append(f"场景{index}科普图解摘要无效")
+                    if (
+                        not isinstance(items, list)
+                        or not 1 <= len(items) <= 5
+                        or any(not isinstance(item, str) or not item.strip() or len(item) > 30 for item in items)
+                    ):
+                        errors.append(f"场景{index}科普图解条目无效")
+                    elif (
+                        not isinstance(focus_order, list)
+                        or sorted(focus_order) != list(range(len(items)))
+                    ):
+                        errors.append(f"场景{index}科普图解高亮顺序无效")
+                    if agent_directed:
+                        storyboard_source = str(visual_content.get("storyboard_source", "")).strip()
+                        if not storyboard_source:
+                            errors.append(f"场景{index}缺少Agent导演来源")
+                        compact_caption = re.sub(r"[^0-9A-Za-z\u3400-\u9fff]", "", str(scene.get("caption", "")))
+                        bound_phrases = [headline, summary]
+                        if isinstance(items, list):
+                            bound_phrases.extend(items)
+                        if any(
+                            not isinstance(phrase, str)
+                            or not re.sub(r"[^0-9A-Za-z\u3400-\u9fff]", "", phrase)
+                            or re.sub(r"[^0-9A-Za-z\u3400-\u9fff]", "", phrase) not in compact_caption
+                            for phrase in bound_phrases
+                        ):
+                            errors.append(f"场景{index}Agent画面文字未逐字绑定当前旁白")
     minimum_family_count = max(3, math.ceil(len(scenes) * 0.8))
     if len(renderer_families) < minimum_family_count:
         errors.append(f"整条视频至少需要{minimum_family_count}种不同renderer family")
@@ -477,11 +643,12 @@ def build_motion_project(
     validation = validate_motion_plan(plan)
     project = plan.get("project") if isinstance(plan.get("project"), dict) else {}
     legacy = bool(project.get("legacy")) or _is_legacy_pack(capability_pack)
-    template_file = CINEMATIC_TEMPLATE_FILE if legacy else TEMPLATE_FILE
+    agent_directed = project.get("agent_directed") is True
+    # Clean-air explainers use a dedicated information-design template.  The
+    # generic renderer remains untouched for other capability packs.
+    template_file = CLEAN_AIR_EXPLAINER_TEMPLATE_FILE if (legacy or agent_directed) else TEMPLATE_FILE
     if not template_file.exists():
         raise FileNotFoundError(f"缺少受信动画模板：{template_file}")
-    if legacy and (not CINEMATIC_VISUAL_FILE.is_file() or CINEMATIC_VISUAL_FILE.is_symlink()):
-        raise FileNotFoundError(f"缺少已核验电影化主视觉：{CINEMATIC_VISUAL_FILE.name}")
     for font_path in (FONT_REGULAR_FILE, FONT_BOLD_FILE):
         if not font_path.is_file() or font_path.is_symlink():
             raise FileNotFoundError(f"缺少已核验离线字体：{font_path.name}")
@@ -490,8 +657,6 @@ def build_motion_project(
     assets_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(FONT_REGULAR_FILE, assets_dir / FONT_REGULAR_FILE.name)
     shutil.copy2(FONT_BOLD_FILE, assets_dir / FONT_BOLD_FILE.name)
-    if legacy:
-        shutil.copy2(CINEMATIC_VISUAL_FILE, assets_dir / CINEMATIC_VISUAL_FILE.name)
 
     has_audio = bool(voice_path and Path(voice_path).exists())
     if has_audio:
@@ -556,25 +721,16 @@ def build_motion_project(
         encoding="utf-8",
     )
     first_scene = plan["scenes"][0]["id"]
-    if legacy:
-        motion_assertions = [
-            {"kind": "appearsBy", "selector": f"#{first_scene} strong", "bySec": 1.1},
-            {"kind": "keepsMoving", "withinSelector": "#motion-stage", "maxStaticSec": 1.5},
-        ] + [
-            {"kind": "staysInFrame", "selector": f'#{scene["id"]} .beat-panel'}
-            for scene in plan["scenes"]
-        ] + [
-            {"kind": "staysInFrame", "selector": f'#visual-{scene["id"]} .visual-module'}
-            for scene in plan["scenes"]
-        ]
-    else:
-        motion_assertions = [
-            {"kind": "appearsBy", "selector": f"#{first_scene} h1", "bySec": 0.8},
-            {"kind": "keepsMoving", "withinSelector": "#scenes", "maxStaticSec": 2.5},
-        ] + [
-            {"kind": "staysInFrame", "selector": f'#{scene["id"]} .caption'}
-            for scene in plan["scenes"]
-        ]
+    motion_assertions = [
+        {"kind": "appearsBy", "selector": f"#{first_scene} h1", "bySec": 0.8},
+        {"kind": "keepsMoving", "withinSelector": "#scenes", "maxStaticSec": 2.5},
+    ] + [
+        {"kind": "staysInFrame", "selector": f'#{scene["id"]} .caption'}
+        for scene in plan["scenes"]
+    ] + [
+        {"kind": "staysInFrame", "selector": f'#{scene["id"]} .visual'}
+        for scene in plan["scenes"]
+    ]
     (project_dir / "index.motion.json").write_text(
         json.dumps(
             {
@@ -598,9 +754,5 @@ def build_motion_project(
             FONT_REGULAR_FILE.name: hashlib.sha256((assets_dir / FONT_REGULAR_FILE.name).read_bytes()).hexdigest(),
             FONT_BOLD_FILE.name: hashlib.sha256((assets_dir / FONT_BOLD_FILE.name).read_bytes()).hexdigest(),
         },
-        "visual_asset_sha256": (
-            hashlib.sha256((assets_dir / CINEMATIC_VISUAL_FILE.name).read_bytes()).hexdigest()
-            if legacy
-            else None
-        ),
+        "visual_asset_sha256": None,
     }

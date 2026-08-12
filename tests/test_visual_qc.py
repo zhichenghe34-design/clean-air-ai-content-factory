@@ -103,6 +103,27 @@ class VisualQualityGateTests(unittest.TestCase):
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["active_pair_count"], VISUAL_QC_SAMPLE_COUNT)
 
+    def test_semantic_motion_profile_allows_reading_holds_but_not_static_cards(self):
+        moving = active_motion_pairs()
+        static = Image.new("RGB", (360, 640), (35, 45, 55))
+        reading_hold_pairs = [
+            pair if index in {1, 4, 7, 10} else (static.copy(), static.copy())
+            for index, pair in enumerate(moving)
+        ]
+        report = analyze_visual_motion_pairs(
+            reading_hold_pairs,
+            self.timestamps,
+            motion_profile="semantic_motion_graphics",
+        )
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["active_pair_count"], 4)
+        all_static = analyze_visual_motion_pairs(
+            [(static.copy(), static.copy()) for _ in range(VISUAL_QC_SAMPLE_COUNT)],
+            self.timestamps,
+            motion_profile="semantic_motion_graphics",
+        )
+        self.assertEqual(all_static["status"], "needs_visual_review")
+
     def test_verifier_writes_contact_sheet_and_json(self):
         with tempfile.TemporaryDirectory() as folder_name:
             folder = Path(folder_name)

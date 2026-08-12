@@ -20,6 +20,13 @@ from typing import Any
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, ImageStat
 
 from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
+from core.program_audio import build_default_program_audio
+from core.storyboard_agent import (
+    StoryboardError,
+    build_local_storyboard,
+    storyboard_to_motion_segments,
+    validate_storyboard,
+)
 from core.motion_runtime_contract import (
     H264_CODEC_STRATEGY,
     HYPERFRAMES_RENDERER,
@@ -44,8 +51,9 @@ from core.web_tools import TrustedWebToolRegistry
 from core.voice_contract import (
     DEFAULT_VOICE_CHUNK_MAX_CHARS,
     DEFAULT_VOICE_ENGINE,
+    DEFAULT_VOICE_LABEL,
+    DEFAULT_VOICE_NAME,
     NATURAL_VOICE_ENGINES,
-    WORKBENCH_VOICE_ENGINES,
     normalize_voice_chunk_max_chars,
     normalize_voice_engine,
 )
@@ -278,31 +286,11 @@ def _tool_path(env_name: str, command_name: str) -> Path:
     return Path(command_name)
 
 
-def _windows_powershell_executable() -> Path:
-    """Resolve the only PowerShell binary allowed to execute the SAPI fallback."""
-    system_root_value = os.getenv("SystemRoot")
-    if not system_root_value:
-        raise FileNotFoundError("Windows PowerShell固定路径不可用，拒绝SAPI回退")
-    system_root = Path(system_root_value)
-    if not system_root.is_absolute():
-        raise FileNotFoundError("Windows PowerShell固定路径不可用，拒绝SAPI回退")
-    candidate = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-    try:
-        resolved = candidate.resolve(strict=True)
-    except OSError as exc:
-        raise FileNotFoundError("Windows PowerShell固定路径不可用，拒绝SAPI回退") from exc
-    if not resolved.is_file():
-        raise FileNotFoundError("Windows PowerShell固定路径不可用，拒绝SAPI回退")
-    return resolved
-
-
 def _tool_available(path: Path) -> bool:
     return path.exists() or shutil.which(str(path)) is not None
 
 
 PATTERN_FILE = _configured_path("PATTERN_FILE", REPO_ROOT / "examples" / "pattern_cards.jsonl")
-VOICE_WORKBENCH = _configured_path("VOICE_WORKBENCH", REPO_ROOT / "integrations" / "voice_workbench.py")
-VOICE_REFERENCE = _configured_path("VOICE_REFERENCE", REPO_ROOT / "assets" / "voice-reference.wav")
 FFMPEG = _tool_path("FFMPEG_PATH", "ffmpeg")
 FFPROBE = _tool_path("FFPROBE_PATH", "ffprobe")
 FONT_REGULAR = _configured_path("FONT_REGULAR", r"C:\Windows\Fonts\msyh.ttc")
@@ -310,13 +298,21 @@ FONT_BOLD = _configured_path("FONT_BOLD", r"C:\Windows\Fonts\msyhbd.ttc")
 
 VOICE_TEMPO_MINIMUM = 0.90
 VOICE_TEMPO_MAXIMUM = 1.12
-DEFAULT_EDGE_TTS_VOICE = "zh-CN-YunxiNeural"
+DEFAULT_EDGE_TTS_VOICE = DEFAULT_VOICE_NAME
 
 VISUAL_QC_SAMPLE_COUNT = 12
 VISUAL_QC_MOTION_OFFSET_SECONDS = 0.40
 VISUAL_QC_MIN_ACTIVE_PAIR_RATIO = 0.75
 VISUAL_QC_MIN_FRAME_DIFFERENCE = 0.0035
 VISUAL_QC_MIN_MOVING_PIXEL_RATIO = 0.035
+VISUAL_QC_MOTION_PROFILES = {
+    "sustained_video": {"minimum_active_pair_ratio": 0.75, "maximum_inactive_run": 2},
+    # Information motion deliberately holds a completed diagram long enough to
+    # read it.  HyperFrames still enforces a <=2.5s frozen interval, while this
+    # sampled gate requires repeated, measurable internal motion without forcing
+    # the whole page to shake or adding decorative background effects.
+    "semantic_motion_graphics": {"minimum_active_pair_ratio": 0.25, "maximum_inactive_run": 4},
+}
 KNOWN_TEST_MATERIAL_SHA256 = {
     "9A37A318334DD6478E5BBE3B4447E97B437B92C22855F96640D2CF9DD1F9716D": "mpt_testsrc2_fixture",
 }
@@ -1137,9 +1133,16 @@ def _normalized_frame_difference(left: Image.Image, right: Image.Image) -> float
 def analyze_visual_motion_pairs(
     pairs: list[tuple[Image.Image, Image.Image]],
     timestamps: list[float],
+    *,
+    motion_profile: str = "sustained_video",
 ) -> dict[str, Any]:
     if len(pairs) != VISUAL_QC_SAMPLE_COUNT or len(timestamps) != len(pairs):
         raise ValueError(f"动态密度门禁必须恰好抽取{VISUAL_QC_SAMPLE_COUNT}组相邻帧")
+    profile = VISUAL_QC_MOTION_PROFILES.get(str(motion_profile))
+    if profile is None:
+        raise ValueError("未知动态密度质检类型")
+    minimum_active_pair_ratio = float(profile["minimum_active_pair_ratio"])
+    maximum_inactive_run = int(profile["maximum_inactive_run"])
     rows: list[dict[str, Any]] = []
     active_flags: list[bool] = []
     for index, ((left, right), timestamp) in enumerate(zip(pairs, timestamps), start=1):
@@ -1180,14 +1183,16 @@ def analyze_visual_motion_pairs(
             current_inactive_run += 1
             longest_inactive_run = max(longest_inactive_run, current_inactive_run)
     active_pair_ratio = sum(active_flags) / len(active_flags)
-    passed = active_pair_ratio >= VISUAL_QC_MIN_ACTIVE_PAIR_RATIO and longest_inactive_run <= 2
+    passed = active_pair_ratio >= minimum_active_pair_ratio and longest_inactive_run <= maximum_inactive_run
     return {
         "status": "passed" if passed else "needs_visual_review",
+        "motion_profile": str(motion_profile),
         "active_pair_count": sum(active_flags),
         "sample_pair_count": len(active_flags),
         "active_pair_ratio": round(active_pair_ratio, 4),
         "longest_inactive_run": longest_inactive_run,
-        "minimum_active_pair_ratio": VISUAL_QC_MIN_ACTIVE_PAIR_RATIO,
+        "minimum_active_pair_ratio": minimum_active_pair_ratio,
+        "maximum_inactive_run": maximum_inactive_run,
         "minimum_frame_difference": VISUAL_QC_MIN_FRAME_DIFFERENCE,
         "minimum_moving_pixel_ratio": VISUAL_QC_MIN_MOVING_PIXEL_RATIO,
         "pairs": rows,
@@ -1340,6 +1345,7 @@ def verify_video_visuals(
     material_sources_path: Path | None = None,
     ffmpeg_path: Path | None = None,
     ffprobe_path: Path | None = None,
+    motion_profile: str = "sustained_video",
 ) -> dict[str, Any]:
     video_path = Path(video_path)
     if not video_path.is_file() or video_path.stat().st_size <= 0:
@@ -1368,7 +1374,11 @@ def verify_video_visuals(
             ffmpeg_path,
             ffprobe_path,
         )
-        motion_density = analyze_visual_motion_pairs(motion_pairs, motion_timestamps)
+        motion_density = analyze_visual_motion_pairs(
+            motion_pairs,
+            motion_timestamps,
+            motion_profile=motion_profile,
+        )
         report["checks"]["motion_density"] = motion_density
         if motion_density["status"] != "passed":
             if "insufficient_motion_density" not in report["review_reasons"]:
@@ -1779,6 +1789,18 @@ class ProductionRunner:
                 "reason": "候选仍命中本地阻断规则，改用与选题相关的安全模板",
                 "previous_warnings": previous_warnings,
             }
+        if resolve_production_mode(config) == "motion":
+            storyboard, storyboard_report = self._generate_motion_storyboard(
+                config,
+                insight,
+                str(approved["script"]),
+                # The visual director is an independent Agent stage.  A safe
+                # local script fallback must not silently disable DeepSeek's
+                # shot and card-layout decisions.
+                prefer_provider=True,
+            )
+            atomic_json(folder / "motion_storyboard.json", storyboard)
+            provider_report["motion_storyboard"] = storyboard_report
         provider_report["budget"] = self.budget.snapshot()
         atomic_json(folder / "script_variants.json", {"variants": variants, "provider": provider_report})
         atomic_json(folder / "review.json", review)
@@ -1810,9 +1832,10 @@ class ProductionRunner:
         review = json.loads((folder / "review.json").read_text(encoding="utf-8"))
         if review.get("status") == "blocked" or review.get("blocked"):
             raise RuntimeError("合规审核仍处于阻断状态")
-        segments = self._segments(config, str(approved["script"]))
+        segments = self._segments(config, str(approved["script"]), folder=folder)
         production_engine_report: dict[str, Any] | None = None
         motion_caption_report: dict[str, Any] | None = None
+        program_audio_report: dict[str, Any] | None = None
         if production_mode == "footage":
             if self.production_engine_adapter is None:
                 raise RuntimeError("footage生产模式要求已验证的MoneyPrinterTurbo适配器")
@@ -1842,6 +1865,16 @@ class ProductionRunner:
                 })
                 atomic_json(folder / "voice_identity.json", voice_report)
             duration = self._audio_duration(folder / "voice.wav")
+            if self.voice_adapter is None and self.render_adapter is None:
+                program_audio_report = build_default_program_audio(
+                    folder / "voice.wav",
+                    folder / "bgm.wav",
+                    folder / "program_audio.wav",
+                    ffmpeg_path=FFMPEG,
+                    duration_seconds=duration,
+                    script_sha256=hashlib.sha256(str(approved["script"]).encode("utf-8")).hexdigest().upper(),
+                )
+                duration = self._audio_duration(folder / "program_audio.wav")
             captions = self._write_captions(folder, segments, duration)
             if production_mode == "motion":
                 motion_caption_report = self._validate_motion_captions(
@@ -1938,6 +1971,7 @@ class ProductionRunner:
             "capability_pack": _pack_report(capability_pack),
             "learning_rule_ids": [str(item.get("rule_id")) for item in learning_rules if item.get("rule_id")],
             "voice": voice_report,
+            "program_audio": program_audio_report,
             "render": render_report,
             "production_engine": production_engine_report,
             "compliance": review,
@@ -1957,7 +1991,11 @@ class ProductionRunner:
                 "voice.wav", "captions.srt", "motion_plan.json", "final.mp4", "run_report.json",
                 "contact-sheet.png", "visual-qc.json",
             ] + [
-                name for name in ("material_sources.json", "engine_report.json") if (folder / name).is_file()
+                name for name in (
+                    "motion_storyboard.json", "bgm.wav", "program_audio.wav",
+                    "material_sources.json", "engine_report.json",
+                )
+                if (folder / name).is_file()
             ],
         }
         atomic_json(folder / "run_report.json", report)
@@ -1973,6 +2011,9 @@ class ProductionRunner:
             ),
             ffmpeg_path=FFMPEG,
             ffprobe_path=FFPROBE,
+            motion_profile=(
+                "semantic_motion_graphics" if (folder / "motion_plan.json").is_file() else "sustained_video"
+            ),
         )
         if not isinstance(visual_qc, dict) or visual_qc.get("status") not in {
             "passed", "needs_visual_review", "blocked",
@@ -2162,6 +2203,65 @@ class ProductionRunner:
                 capability_pack, learning_rules,
             ), report
 
+    def _generate_motion_storyboard(
+        self,
+        config: dict[str, Any],
+        insight: dict[str, Any],
+        script: str,
+        *,
+        prefer_provider: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
+        if (
+            prefer_provider
+            and self.provider is not None
+            and getattr(self.provider, "api_key", "")
+            and callable(getattr(self.provider, "generate_motion_storyboard", None))
+        ):
+            try:
+                raw = self.provider.generate_motion_storyboard(script, config, insight)
+                retry_used = False
+                try:
+                    storyboard = validate_storyboard(
+                        raw,
+                        script,
+                        source="DeepSeek",
+                        model=str(getattr(self.provider, "model", "")),
+                    )
+                except StoryboardError as first_error:
+                    retry_used = True
+                    repaired = self.provider.generate_motion_storyboard(
+                        script,
+                        config,
+                        insight,
+                        mechanical_feedback=str(first_error),
+                    )
+                    storyboard = validate_storyboard(
+                        repaired,
+                        script,
+                        source="DeepSeek",
+                        model=str(getattr(self.provider, "model", "")),
+                    )
+                return storyboard, {
+                    "source": "DeepSeek",
+                    "model": str(getattr(self.provider, "model", "")),
+                    "fallback_used": False,
+                    "mechanical_review": "passed",
+                    "mechanical_retry_used": retry_used,
+                }
+            except (ProviderError, StoryboardError, TypeError, ValueError):
+                fallback_reason = "provider_output_failed_mechanical_storyboard_review"
+        else:
+            fallback_reason = "provider_unavailable_or_content_used_local_fallback"
+        storyboard = build_local_storyboard(str(config["topic"]), script, capability_pack)
+        return storyboard, {
+            "source": "local_deterministic_storyboard",
+            "model": "",
+            "fallback_used": True,
+            "fallback_reason": fallback_reason,
+            "mechanical_review": "passed",
+        }
+
     @staticmethod
     def _synthesize_voice(folder: Path, script: str, config: dict[str, Any]) -> dict[str, Any]:
         requested_engine = normalize_voice_engine(config.get("voice_engine", DEFAULT_VOICE_ENGINE))
@@ -2184,15 +2284,11 @@ class ProductionRunner:
                 and identity.get("natural_voice") is True
                 and identity.get("quality_eligible") is True
                 and identity.get("requested_engine") == requested_engine
+                and identity.get("voice") == DEFAULT_EDGE_TTS_VOICE
+                and identity.get("voice_selection_exposed") is False
                 and identity.get("voice_chunk_max_chars") == chunk_max_chars
                 and str(identity.get("engine")) in NATURAL_VOICE_ENGINES
-                and (
-                    identity.get("engine") == requested_engine
-                    or (
-                        identity.get("engine") == "edge_tts"
-                        and identity.get("fallback_from") == requested_engine
-                    )
-                )
+                and identity.get("engine") == requested_engine
             ):
                 report = dict(identity)
                 report.update({"reused": True, "reason": "脚本、音频哈希和自然配音身份均匹配"})
@@ -2200,43 +2296,16 @@ class ProductionRunner:
         text_path.write_text(script, encoding="utf-8")
         existing_voice.unlink(missing_ok=True)
         identity_path.unlink(missing_ok=True)
-        script_digest = hashlib.sha256(script.encode("utf-8")).hexdigest()[:12]
-        voice_dir = folder / f"voice_parts-{script_digest}-{requested_engine}-{chunk_max_chars}"
-        command = [
-            sys.executable, str(VOICE_WORKBENCH), "--engine", requested_engine,
-            "--text-file", str(text_path), "--reference-audio", str(VOICE_REFERENCE),
-            "--output-dir", str(voice_dir), "--max-chars", str(chunk_max_chars),
-        ]
         log_path = folder / "voice_generation.log"
         failures: list[str] = []
-        if requested_engine in WORKBENCH_VOICE_ENGINES:
-            try:
-                if not VOICE_WORKBENCH.exists() or not VOICE_REFERENCE.exists():
-                    raise FileNotFoundError("Local Voice Workbench或参考音频不存在")
-                result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800, check=True)
-                log_path.write_text((result.stdout or "") + "\n" + (result.stderr or ""), encoding="utf-8")
-                merged = voice_dir / "merged.wav"
-                if not merged.exists():
-                    raise RuntimeError("语音工作台未生成 merged.wav")
-                shutil.copy2(merged, folder / "voice.wav")
-                qc = json.loads((voice_dir / "qc_report.json").read_text(encoding="utf-8"))
-                return {
-                    "engine": requested_engine,
-                    "requested_engine": requested_engine,
-                    "voice_chunk_max_chars": chunk_max_chars,
-                    "segment_count": len(qc.get("parts", [])) if isinstance(qc, dict) else None,
-                    "fallback": False,
-                    "natural_voice": True,
-                    "qc": qc,
-                }
-            except Exception as exc:
-                failures.append(f"primary:{type(exc).__name__}:{exc}")
-                log_path.write_text(f"Primary natural voice failed: {exc}\n", encoding="utf-8")
+        configured_voice = str(config.get("edge_tts_voice") or DEFAULT_EDGE_TTS_VOICE).strip()
+        if configured_voice != DEFAULT_EDGE_TTS_VOICE:
+            raise ValueError("产品只允许固定的普通中文播报声，不提供音色选择")
 
-        if requested_engine == "edge_tts" or config.get("allow_online_voice_fallback", True) is not False:
+        if requested_engine == DEFAULT_VOICE_ENGINE:
             edge_media = folder / "voice.edge.mp3"
             edge_media.unlink(missing_ok=True)
-            edge_voice = str(config.get("edge_tts_voice") or DEFAULT_EDGE_TTS_VOICE).strip()
+            edge_voice = DEFAULT_EDGE_TTS_VOICE
             edge_command = [
                 sys.executable,
                 "-m",
@@ -2280,18 +2349,20 @@ class ProductionRunner:
                 with log_path.open("a", encoding="utf-8") as handle:
                     handle.write((edge_result.stdout or "") + "\n" + (edge_result.stderr or ""))
                     handle.write((conversion.stdout or "") + "\n" + (conversion.stderr or ""))
-                edge_fallback = requested_engine != "edge_tts"
                 report = {
                     "engine": "edge_tts",
                     "voice": edge_voice,
-                    "fallback": edge_fallback,
+                    "voice_label": DEFAULT_VOICE_LABEL,
+                    "voice_selection_exposed": False,
+                    "requires_network": True,
+                    "requires_api_key": False,
+                    "requires_local_private_voice_model": False,
+                    "fallback": False,
                     "requested_engine": requested_engine,
                     "voice_chunk_max_chars": chunk_max_chars,
                     "segment_count": 1,
                     "natural_voice": True,
                 }
-                if edge_fallback:
-                    report["fallback_from"] = requested_engine
                 return report
             except Exception as exc:
                 failures.append(f"edge_tts:{type(exc).__name__}:{exc}")
@@ -2300,30 +2371,30 @@ class ProductionRunner:
             finally:
                 edge_media.unlink(missing_ok=True)
 
-        if config.get("allow_diagnostic_sapi") is True:
-            fallback = Path(__file__).resolve().parent / "sapi_tts.ps1"
-            powershell = _windows_powershell_executable()
-            command = [
-                str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(fallback),
-                "-TextFile", str(text_path), "-OutputFile", str(folder / "voice.wav"),
-            ]
-            result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, check=True)
-            with log_path.open("a", encoding="utf-8") as handle:
-                handle.write((result.stdout or "") + "\n" + (result.stderr or ""))
-            return {
-                "engine": "windows_sapi",
-                "fallback": True,
-                "quality_blocked": True,
-                "diagnostic_only": True,
-                "fallback_reason": "; ".join(failures),
-            }
-
         raise RuntimeError(
-            "自然配音生成失败，已禁止静默降级到Windows SAPI：" + "; ".join(failures)
+            "固定普通中文播报生成失败，已禁止切换其他音色或本机私人模型：" + "; ".join(failures)
         )
 
     @staticmethod
-    def _segments(config: dict[str, Any], script: str) -> list[dict[str, str]]:
+    def _segments(
+        config: dict[str, Any],
+        script: str,
+        *,
+        folder: Path | None = None,
+    ) -> list[dict[str, Any]]:
+        # The current content-stage Agent storyboard outranks legacy caller
+        # overrides.  Old jobs without the artifact retain their narrow
+        # motion_scenes compatibility path below.
+        storyboard_path = Path(folder) / "motion_storyboard.json" if folder is not None else None
+        if storyboard_path is not None and storyboard_path.is_file():
+            raw_storyboard = json.loads(storyboard_path.read_text(encoding="utf-8"))
+            storyboard = validate_storyboard(
+                raw_storyboard,
+                script,
+                source=str(raw_storyboard.get("source", "stored_storyboard")),
+                model=str(raw_storyboard.get("model", "")),
+            )
+            return storyboard_to_motion_segments(storyboard)
         provided = config.get("motion_scenes")
         if isinstance(provided, list) and 4 <= len(provided) <= 8 and all(isinstance(item, dict) for item in provided):
             return [
@@ -2822,7 +2893,7 @@ class ProductionRunner:
         output = folder / "final.mp4"
         command = [
             str(FFMPEG), "-y", "-f", "concat", "-safe", "0", "-i", str(concat_path),
-            "-i", str(folder / "voice.wav"), "-vf", "fps=30,format=yuv420p",
+            "-i", str(folder / ("program_audio.wav" if (folder / "program_audio.wav").is_file() else "voice.wav")), "-vf", "fps=30,format=yuv420p",
             *h264_mf_video_args(crf_equivalent=20),
             "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(output),
         ]
@@ -2856,7 +2927,10 @@ class ProductionRunner:
         project_dir = folder / "animation_project"
         capability_pack = config.get("capability_pack") if isinstance(config.get("capability_pack"), dict) else None
         build_report = build_motion_project(
-            project_dir, motion_plan, folder / "voice.wav", capability_pack=capability_pack
+            project_dir,
+            motion_plan,
+            folder / ("program_audio.wav" if (folder / "program_audio.wav").is_file() else "voice.wav"),
+            capability_pack=capability_pack,
         )
         quality = str(config.get("animation_quality", "standard"))
         check_command, render_command, runtime = _hyperframes_commands(quality)

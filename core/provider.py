@@ -1388,6 +1388,11 @@ class OpenAICompatibleProvider:
             "不得保证医疗效果、投资收益或司法结果，不得用绝对化措辞把有限证据外推。证据不足时改写为问题、"
             "流程建议或明确标注待核验的信息，不得自行补全。"
             "输出JSON对象，唯一字段variants，必须有4项；每项字段为id,hook_type,script,reason。"
+            "严格照此骨架输出，不得把variants改名为scripts、candidates、data或其他字段："
+            '{"variants":[{"id":"v1","hook_type":"问题切入","script":"完整口播","reason":"选择理由"},'
+            '{"id":"v2","hook_type":"反常识","script":"完整口播","reason":"选择理由"},'
+            '{"id":"v3","hook_type":"清单式","script":"完整口播","reason":"选择理由"},'
+            '{"id":"v4","hook_type":"场景式","script":"完整口播","reason":"选择理由"}]}。'
             "每条脚本适合45-60秒中文口播；行动建议必须符合能力包范围，不能暗示未证实的商业结果。"
         )
         data = self._chat_json(system, {"production_input": production_input, "insight": insight}, stage="script_generation")
@@ -1407,6 +1412,43 @@ class OpenAICompatibleProvider:
             self._mark_semantic_failure("invalid_script_schema")
             raise ProviderError("脚本接口没有返回variants数组")
         return variants
+
+    def generate_motion_storyboard(
+        self,
+        script: str,
+        production_input: dict[str, Any],
+        insight: dict[str, Any],
+        mechanical_feedback: str = "",
+    ) -> dict[str, Any]:
+        """Plan the approved script as a constrained, renderer-neutral storyboard."""
+
+        system = (
+            "你是短视频信息导演，不写代码、不写CSS、不输出坐标，也不改写最终脚本。"
+            "读取最终script、production_input.capability_pack和insight，先判断content_mode是educational还是marketing。"
+            "科普内容必须把问题、条件、边界、过程和最终清单完整展示；营销内容也不得越过已批准证据。"
+            "把script按原顺序切成4到8幕；所有caption拼接后必须与script逐字一致，不能漏字、增字或调序。"
+            "每幕只讲一个完整观点。每幕items必须是当前caption中逐字存在的1到5个完整短语，每项最多30字；"
+            "不得从词语中间截断；卡片可省略引号和逗号等标点，但汉字、数字及顺序必须逐字来自caption。"
+            "title最多30字且必须是一句完整可读短语。禁止第一项、第二项、"
+            "问题、依据、边界、行动等脱离旁白的通用占位词。屏幕标题与摘要由本地机械层从items生成，禁止另写。"
+            "layout只能从claim_contrast,condition_map,boundary_list,process_flow,evidence_cards,"
+            "final_checklist,explain_points中选择；相邻两幕不得使用相同layout。"
+            "focus_order必须是items下标0到N-1的不重复完整排列，代表旁白讲解时依次高亮，不代表自由动画。"
+            "educational最后一幕必须使用final_checklist。"
+            "只输出JSON对象，字段严格为schema_version,content_mode,narrative_arc,scenes。schema_version固定为1。"
+            "scenes每项字段严格为caption,layout,items,focus_order，禁止输出其他字段。"
+            "如果mechanical_feedback非空，表示上一版被本地机械门禁拒绝；只能按反馈修正结构，仍不得改写script。"
+        )
+        return self._chat_json(
+            system,
+            {
+                "script": script,
+                "production_input": production_input,
+                "insight": insight,
+                "mechanical_feedback": str(mechanical_feedback).strip()[:500],
+            },
+            stage="motion_storyboard",
+        )
 
     def review_content_script(
         self,

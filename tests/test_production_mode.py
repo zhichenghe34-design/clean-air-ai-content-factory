@@ -30,7 +30,12 @@ from core.production import (
     _hyperframes_subprocess_environment,
     resolve_production_mode,
 )
-from core.voice_contract import DEFAULT_VOICE_CHUNK_MAX_CHARS, DEFAULT_VOICE_ENGINE
+from core.voice_contract import (
+    DEFAULT_VOICE_CHUNK_MAX_CHARS,
+    DEFAULT_VOICE_ENGINE,
+    DEFAULT_VOICE_NAME,
+    normalize_voice_engine,
+)
 
 
 SAFE_SCRIPT = (
@@ -478,6 +483,16 @@ class HyperFramesRuntimeContractTests(unittest.TestCase):
 class VoiceFallbackContractTests(unittest.TestCase):
     def test_default_voice_engine_is_portable_edge_tts(self):
         self.assertEqual(DEFAULT_VOICE_ENGINE, "edge_tts")
+        self.assertEqual(DEFAULT_VOICE_NAME, "zh-CN-YunxiNeural")
+        self.assertEqual(normalize_voice_engine("edge-tts"), "edge_tts")
+
+    def test_product_rejects_optional_or_private_voice_engines(self):
+        for engine in ("voxcpm2", "qwen3-tts", "gpt_sovits", "windows_sapi"):
+            with self.subTest(engine=engine):
+                with self.assertRaisesRegex(ValueError, "不提供音色选择"):
+                    normalize_voice_engine(engine)
+                with self.assertRaisesRegex(UnprocessableError, "不提供音色选择"):
+                    validate_topic_input({"topic": "固定普通播报声测试", "voice_engine": engine})
 
     def test_render_stage_persists_hash_bound_natural_voice_identity(self):
         with tempfile.TemporaryDirectory() as folder_name:
@@ -486,7 +501,13 @@ class VoiceFallbackContractTests(unittest.TestCase):
 
             def synthesize(folder: Path, _script: str, _config: dict):
                 (folder / "voice.wav").write_bytes(b"RIFF" + b"natural-render" * 8)
-                return {"engine": "voxcpm2", "natural_voice": True, "fallback": False}
+                return {
+                    "engine": "edge_tts",
+                    "voice": DEFAULT_VOICE_NAME,
+                    "voice_selection_exposed": False,
+                    "natural_voice": True,
+                    "fallback": False,
+                }
 
             runner = ProductionRunner(
                 render_adapter=_render_adapter,
@@ -509,7 +530,9 @@ class VoiceFallbackContractTests(unittest.TestCase):
 
             identity = json.loads((root / "voice_identity.json").read_text(encoding="utf-8"))
             self.assertTrue(identity["quality_eligible"])
-            self.assertEqual(identity["engine"], "voxcpm2")
+            self.assertEqual(identity["engine"], "edge_tts")
+            self.assertEqual(identity["voice"], DEFAULT_VOICE_NAME)
+            self.assertFalse(identity["voice_selection_exposed"])
             self.assertEqual(identity["script_sha256"], hashlib.sha256(SAFE_SCRIPT.encode("utf-8")).hexdigest().upper())
             self.assertEqual(identity["voice_sha256"], hashlib.sha256((root / "voice.wav").read_bytes()).hexdigest().upper())
             self.assertEqual(report["voice"]["voice_sha256"], identity["voice_sha256"])
@@ -522,8 +545,8 @@ class VoiceFallbackContractTests(unittest.TestCase):
             script = "旧配音不能无证据复用"
             (job / "narration.txt").write_text(script, encoding="utf-8")
             (job / "voice.wav").write_bytes(b"RIFF" + b"legacy-sapi" * 8)
-            with mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"):
-                with self.assertRaisesRegex(RuntimeError, "禁止静默降级"):
+            with mock.patch("core.production.subprocess.run", side_effect=RuntimeError("offline")):
+                with self.assertRaisesRegex(RuntimeError, "禁止切换其他音色"):
                     ProductionRunner._synthesize_voice(
                         job, script, {"allow_online_voice_fallback": False}
                     )
@@ -542,6 +565,8 @@ class VoiceFallbackContractTests(unittest.TestCase):
                     "schema_version": 2,
                     "engine": "edge_tts",
                     "requested_engine": "edge_tts",
+                    "voice": DEFAULT_VOICE_NAME,
+                    "voice_selection_exposed": False,
                     "voice_chunk_max_chars": DEFAULT_VOICE_CHUNK_MAX_CHARS,
                     "natural_voice": True,
                     "quality_eligible": True,
@@ -556,45 +581,18 @@ class VoiceFallbackContractTests(unittest.TestCase):
             self.assertEqual(report["engine"], "edge_tts")
             run.assert_not_called()
 
-    def test_voice_engine_alias_and_chunk_size_are_bound_to_workbench_command(self):
+    def test_hidden_voice_override_is_rejected_before_any_process_starts(self):
         with tempfile.TemporaryDirectory() as folder_name:
-            root = Path(folder_name)
-            job = root / "job"
+            job = Path(folder_name) / "job"
             job.mkdir()
-            workbench = root / "voice_workbench.py"
-            reference = root / "voice-reference.wav"
-            workbench.write_text("# fixture", encoding="utf-8")
-            reference.write_bytes(b"RIFF" + b"reference" * 8)
-            commands: list[list[str]] = []
-
-            def fake_run(command: list[str], **_kwargs):
-                commands.append(command)
-                output_dir = Path(command[command.index("--output-dir") + 1])
-                output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / "merged.wav").write_bytes(b"RIFF" + b"qwen-natural" * 8)
-                (output_dir / "qc_report.json").write_text(
-                    json.dumps({"parts": [{"ok": True}, {"ok": True}], "merged": {"ok": True}}),
-                    encoding="utf-8",
-                )
-                return mock.Mock(stdout="", stderr="")
-
-            with (
-                mock.patch("core.production.VOICE_WORKBENCH", workbench),
-                mock.patch("core.production.VOICE_REFERENCE", reference),
-                mock.patch("core.production.subprocess.run", side_effect=fake_run),
-            ):
-                report = ProductionRunner._synthesize_voice(
-                    job,
-                    "自然配音按语义分段，避免一整段机械朗读。",
-                    {"voice_engine": "qwen3-tts", "voice_chunk_max_chars": 72},
-                )
-
-            self.assertEqual(report["engine"], "qwen3_tts")
-            self.assertEqual(report["requested_engine"], "qwen3_tts")
-            self.assertEqual(report["voice_chunk_max_chars"], 72)
-            self.assertEqual(report["segment_count"], 2)
-            self.assertEqual(commands[0][commands[0].index("--engine") + 1], "qwen3_tts")
-            self.assertEqual(commands[0][commands[0].index("--max-chars") + 1], "72")
+            with mock.patch("core.production.subprocess.run") as run:
+                with self.assertRaisesRegex(ValueError, "不提供音色选择"):
+                    ProductionRunner._synthesize_voice(
+                        job,
+                        "产品固定使用普通中文播报。",
+                        {"edge_tts_voice": "zh-CN-XiaoxiaoNeural"},
+                    )
+            run.assert_not_called()
 
     def test_voice_identity_with_different_chunk_contract_is_not_reused(self):
         with tempfile.TemporaryDirectory() as folder_name:
@@ -608,8 +606,10 @@ class VoiceFallbackContractTests(unittest.TestCase):
             (job / "voice_identity.json").write_text(
                 json.dumps({
                     "schema_version": 2,
-                    "engine": "qwen3_tts",
-                    "requested_engine": "qwen3_tts",
+                    "engine": "edge_tts",
+                    "requested_engine": "edge_tts",
+                    "voice": DEFAULT_VOICE_NAME,
+                    "voice_selection_exposed": False,
                     "voice_chunk_max_chars": 260,
                     "natural_voice": True,
                     "quality_eligible": True,
@@ -618,26 +618,26 @@ class VoiceFallbackContractTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-            with mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"):
-                with self.assertRaisesRegex(RuntimeError, "禁止静默降级"):
+            with mock.patch("core.production.subprocess.run", side_effect=RuntimeError("offline")):
+                with self.assertRaisesRegex(RuntimeError, "禁止切换其他音色"):
                     ProductionRunner._synthesize_voice(
                         job,
                         script,
                         {
-                            "voice_engine": "qwen3_tts",
+                            "voice_engine": "edge_tts",
                             "voice_chunk_max_chars": DEFAULT_VOICE_CHUNK_MAX_CHARS,
                             "allow_online_voice_fallback": False,
                         },
                     )
             self.assertFalse((job / "voice.wav").exists())
 
-    def test_topic_input_normalizes_voice_engine_alias_and_chunk_contract(self):
+    def test_topic_input_accepts_only_edge_alias_and_chunk_contract(self):
         normalized = validate_topic_input({
             "topic": "自然配音分段合同测试",
-            "voice_engine": "qwen3-tts",
+            "voice_engine": "edge-tts",
             "voice_chunk_max_chars": 72,
         })
-        self.assertEqual(normalized["voice_engine"], "qwen3_tts")
+        self.assertEqual(normalized["voice_engine"], "edge_tts")
         self.assertEqual(normalized["voice_chunk_max_chars"], 72)
         with self.assertRaisesRegex(UnprocessableError, "48到140"):
             validate_topic_input({
@@ -645,68 +645,29 @@ class VoiceFallbackContractTests(unittest.TestCase):
                 "voice_chunk_max_chars": 260,
             })
 
-    def test_explicit_diagnostic_sapi_uses_systemroot_powershell_absolute_path(self):
+    def test_explicit_diagnostic_sapi_flag_does_not_enable_second_voice_path(self):
         with tempfile.TemporaryDirectory() as folder_name:
-            root = Path(folder_name)
-            job = root / "job"
+            job = Path(folder_name) / "job"
             job.mkdir()
-            powershell = (
-                root / "Windows" / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-            )
-            powershell.parent.mkdir(parents=True)
-            powershell.write_bytes(b"powershell")
-            commands: list[list[str]] = []
+            with mock.patch("core.production.subprocess.run", side_effect=RuntimeError("edge unavailable")) as run:
+                with self.assertRaisesRegex(RuntimeError, "禁止切换其他音色"):
+                    ProductionRunner._synthesize_voice(
+                        job, "固定路径语音测试", {"allow_diagnostic_sapi": True}
+                    )
+            self.assertEqual(run.call_count, 1)
 
-            def fallback_run(command: list[str], **_kwargs):
-                commands.append(command)
-                (job / "voice.wav").write_bytes(b"RIFF" + b"\0" * 64)
-                return mock.Mock(stdout="", stderr="")
-
-            with (
-                mock.patch.dict(os.environ, {"SystemRoot": str(root / "Windows")}, clear=False),
-                mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"),
-                mock.patch("core.production.subprocess.run", side_effect=fallback_run),
-            ):
-                report = ProductionRunner._synthesize_voice(
-                    job,
-                    "固定路径语音测试",
-                    {
-                        "voice_engine": "qwen3_tts",
-                        "allow_online_voice_fallback": False,
-                        "allow_diagnostic_sapi": True,
-                    },
-                )
-            self.assertEqual(report["engine"], "windows_sapi")
-            self.assertTrue(report["quality_blocked"])
-            self.assertTrue(report["diagnostic_only"])
-            self.assertEqual(len(commands), 1)
-            self.assertEqual(commands[0][0], str(powershell.resolve()))
-            self.assertTrue(Path(commands[0][0]).is_absolute())
-            self.assertNotEqual(commands[0][0].casefold(), "powershell.exe")
-
-    def test_explicit_diagnostic_sapi_fails_closed_when_fixed_powershell_is_missing(self):
+    def test_private_engine_is_rejected_even_when_diagnostic_flag_is_present(self):
         with tempfile.TemporaryDirectory() as folder_name:
-            root = Path(folder_name)
-            job = root / "job"
+            job = Path(folder_name) / "job"
             job.mkdir()
-            with (
-                mock.patch.dict(os.environ, {"SystemRoot": str(root / "Windows")}, clear=False),
-                mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"),
-                mock.patch(
-                    "core.production.subprocess.run",
-                    side_effect=AssertionError("missing fixed PowerShell must never execute"),
-                ),
-            ):
-                with self.assertRaisesRegex(FileNotFoundError, "固定路径不可用"):
+            with mock.patch("core.production.subprocess.run") as run:
+                with self.assertRaisesRegex(ValueError, "不提供音色选择"):
                     ProductionRunner._synthesize_voice(
                         job,
                         "固定路径语音测试",
-                        {
-                            "voice_engine": "qwen3_tts",
-                            "allow_online_voice_fallback": False,
-                            "allow_diagnostic_sapi": True,
-                        },
+                        {"voice_engine": "gpt_sovits", "allow_diagnostic_sapi": True},
                     )
+            run.assert_not_called()
 
     def test_natural_voice_failure_does_not_silently_fall_back_to_sapi(self):
         with tempfile.TemporaryDirectory() as folder_name:
@@ -714,10 +675,9 @@ class VoiceFallbackContractTests(unittest.TestCase):
             job = root / "job"
             job.mkdir()
             with (
-                mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"),
                 mock.patch("core.production.subprocess.run", side_effect=RuntimeError("edge unavailable")),
             ):
-                with self.assertRaisesRegex(RuntimeError, "禁止静默降级到Windows SAPI"):
+                with self.assertRaisesRegex(RuntimeError, "禁止切换其他音色"):
                     ProductionRunner._synthesize_voice(job, "固定路径语音测试", {})
 
     def test_edge_neural_voice_is_the_portable_natural_default(self):
@@ -736,7 +696,6 @@ class VoiceFallbackContractTests(unittest.TestCase):
                 return mock.Mock(stdout="", stderr="")
 
             with (
-                mock.patch("core.production.VOICE_WORKBENCH", root / "missing-workbench.py"),
                 mock.patch("core.production.FFMPEG", root / "ffmpeg.exe"),
                 mock.patch("core.production._tool_available", return_value=True),
                 mock.patch("core.production.subprocess.run", side_effect=fake_run),
@@ -744,6 +703,11 @@ class VoiceFallbackContractTests(unittest.TestCase):
                 report = ProductionRunner._synthesize_voice(job, "固定路径语音测试", {})
 
             self.assertEqual(report["engine"], "edge_tts")
+            self.assertEqual(report["voice"], DEFAULT_VOICE_NAME)
+            self.assertEqual(report["voice_label"], "普通中文播报")
+            self.assertFalse(report["voice_selection_exposed"])
+            self.assertFalse(report["requires_api_key"])
+            self.assertTrue(report["requires_network"])
             self.assertTrue(report["natural_voice"])
             self.assertFalse(report["fallback"])
             self.assertEqual(report["requested_engine"], "edge_tts")

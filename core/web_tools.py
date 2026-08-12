@@ -182,7 +182,14 @@ class TrustedWebToolRegistry:
         parser_root = str(self.config.get("media_parser_root", "")).strip()
         if parser_root:
             command.extend(["--media-parser-root", parser_root])
-        process = subprocess.run(command, capture_output=True, text=True, timeout=660)
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=660,
+        )
         result_path = output_dir / "extraction.json"
         if not result_path.is_file():
             detail = (process.stderr or process.stdout or "提取工具未生成结果")[-1200:]

@@ -11,7 +11,7 @@ import urllib.parse
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 
 from core.capability_pack import (
     EXECUTABLE_AUDIT_STATUSES,
@@ -58,6 +58,9 @@ CANONICAL_ARTIFACTS = [
     "final.mp4",
     "run_report.json",
 ]
+DIRECTOR_ARTIFACTS = [
+    "motion_storyboard.json",
+]
 OPTIONAL_ENGINE_ARTIFACTS = [
     "material_sources.json",
     "engine_report.json",
@@ -68,6 +71,7 @@ OPTIONAL_VISUAL_QC_ARTIFACTS = [
 ]
 PUBLIC_ARTIFACTS = [
     *CANONICAL_ARTIFACTS,
+    *DIRECTOR_ARTIFACTS,
     *OPTIONAL_ENGINE_ARTIFACTS,
     *OPTIONAL_VISUAL_QC_ARTIFACTS,
 ]
@@ -695,16 +699,24 @@ class JobStore:
                     job["approvals"]["research"] = {"status": "pending"}
                     job["approvals"]["compliance"] = {"status": "pending"}
                     job.pop("automatic_research_gate", None)
-                    if not self._apply_strict_rejection(job, folder, folder / "draft" / "research.json"):
-                        if self._uses_mechanical_stage_review(job):
-                            self._apply_mechanical_research_review(
-                                job, folder, folder / "draft" / "research.json"
-                            )
-                        else:
-                            job["status"] = "awaiting_research_approval"
+                    if self._uses_mechanical_stage_review(job):
+                        # The reverse mechanical reviewer owns unattended
+                        # fallback semantics.  It may approve only an empty,
+                        # no-industry-claims scope when strict audit rejects all
+                        # web findings; it never promotes those rejected facts.
+                        self._apply_mechanical_research_review(
+                            job, folder, folder / "draft" / "research.json"
+                        )
+                    elif not self._apply_strict_rejection(
+                        job, folder, folder / "draft" / "research.json"
+                    ):
+                        job["status"] = "awaiting_research_approval"
                 elif stage == "content":
                     runner.run_content_stage(staging, job["production_input"], job["approvals"]["research"])
-                    self._publish_draft(staging, folder / "draft", ["research.json", "insight.json", "script_variants.json", "approved_script.json", "review.json"])
+                    self._publish_draft(staging, folder / "draft", [
+                        "research.json", "insight.json", "script_variants.json", "approved_script.json",
+                        "review.json", "motion_storyboard.json",
+                    ])
                     review = json.loads((staging / "review.json").read_text(encoding="utf-8"))
                     job["approvals"]["compliance"] = {"status": "pending"}
                     job.pop("automatic_content_gate", None)
@@ -765,6 +777,91 @@ class JobStore:
             if lock_path is not None and lock_path.exists():
                 lock_path.unlink()
             lock.release()
+
+    def advance_automatically(
+        self,
+        job_id: str,
+        runner_factory: Callable[[dict[str, Any]], Any],
+        idempotency_key: str,
+        *,
+        max_stage_attempts: int = 8,
+    ) -> dict[str, Any]:
+        """Run a mechanical-review job until completion or a safe stop state.
+
+        Each stage keeps its own durable idempotency key and immutable run
+        record.  Research/content rejection never gets bypassed: the loop only
+        continues from states that the reverse mechanical reviewer explicitly
+        advanced.  A bounded retry count prevents weak generated content from
+        spinning forever.
+        """
+
+        if not IDEMPOTENCY_RE.fullmatch(str(idempotency_key or "")):
+            raise UnprocessableError("Idempotency-Key必须为8到128位安全字符")
+        if not 1 <= int(max_stage_attempts) <= 16:
+            raise UnprocessableError("自动推进次数必须在1到16之间")
+        job = self.get(job_id)
+        policy = normalize_review_policy(job.get("review_policy"))
+        if policy["stage_review_mode"] != MECHANICAL_STAGE_REVIEW:
+            return self.advance(job_id, runner_factory(job), idempotency_key)
+
+        runnable = {
+            "authorized",
+            "research_approved",
+            "compliance_approved",
+            "awaiting_script_revision",
+        }
+
+        def automatically_runnable(candidate: dict[str, Any]) -> bool:
+            if candidate.get("status") in runnable:
+                return True
+            return (
+                candidate.get("status") == "failed"
+                and candidate.get("last_failed_stage") in {"research", "content", "render"}
+            )
+
+        attempts = 0
+        while automatically_runnable(job) and attempts < max_stage_attempts:
+            stage_fingerprint = {
+                "controller_key": idempotency_key,
+                "job_id": job_id,
+                "status": job.get("status"),
+                "run_count": len(job.get("runs", [])),
+            }
+            stage_key = "mechanical-" + canonical_sha256(stage_fingerprint).lower()
+            try:
+                job = self.advance(job_id, runner_factory(job), stage_key)
+            except Exception as exc:
+                # Render can prove that an otherwise compliant script is too
+                # short/long for natural portable speech.  The stage runner
+                # records this as awaiting_script_revision before re-raising;
+                # an unattended controller must ask for a fresh content
+                # candidate rather than wait for a browser edit.
+                job = self.get(job_id)
+                attempts += 1
+                if (
+                    getattr(exc, "workflow_status", None) == "awaiting_script_revision"
+                    and job.get("status") == "awaiting_script_revision"
+                ):
+                    continue
+                raise
+            attempts += 1
+            if job.get("status") == "complete":
+                break
+
+        controller_status = "complete" if job.get("status") == "complete" else (
+            "retry_limit_reached"
+            if automatically_runnable(job) and attempts >= max_stage_attempts
+            else "safe_stop"
+        )
+        result = dict(job)
+        result["automatic_controller"] = {
+            "mode": "mechanical",
+            "status": controller_status,
+            "stage_attempts": attempts,
+            "maximum_stage_attempts": max_stage_attempts,
+            "human_intervention_required_during_generation": False,
+        }
+        return result
 
     def approve_research(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         job, folder = self._load_v2(job_id)
@@ -948,10 +1045,27 @@ class JobStore:
             for finding in eligible
             for error in self._mechanical_finding_errors(finding)
         ]
-        offline_empty = (
-            not findings and str(research.get("status", "")) in {"offline", "disabled"}
+        empty_research = (
+            not findings
+            and str(research.get("status", "")) in {"offline", "disabled", "partial", "failed"}
         )
-        if not eligible and not offline_empty:
+        # A continuously running mechanical workflow must not wait for a person
+        # merely because every web finding failed the strict evidence gate.  It
+        # may continue only by approving an empty fact set and forcing the
+        # content stage onto the local no-industry-claims safety template.  This
+        # is deliberately narrower than approving any rejected finding.
+        excluded_only = (
+            bool(findings)
+            and str(research.get("status", "")) in {"partial", "complete"}
+            and all(
+                isinstance(item, dict)
+                and item.get("auto_review_status") == "excluded"
+                and item.get("script_eligible") is False
+                for item in findings
+            )
+        )
+        empty_safe_scope = empty_research or excluded_only
+        if not eligible and not empty_safe_scope:
             errors.append("研究没有可由机械审核批准的严格finding")
         digest = file_sha256(research_path)
         if errors:
@@ -978,7 +1092,7 @@ class JobStore:
             **identity,
             "reviewed_at": now_iso(),
             "artifact_sha256": digest,
-            "note": EMPTY_RESEARCH_APPROVAL_NOTE if offline_empty else MECHANICAL_RESEARCH_APPROVAL_NOTE,
+            "note": EMPTY_RESEARCH_APPROVAL_NOTE if empty_safe_scope else MECHANICAL_RESEARCH_APPROVAL_NOTE,
             "findings": [
                 {
                     "finding_id": str(item["finding_id"]),
@@ -989,11 +1103,18 @@ class JobStore:
                 for item in eligible
             ],
         }
-        if offline_empty:
+        if empty_safe_scope:
             record["empty_finding_confirmation"] = {
                 "research_status": str(research.get("status")),
                 "content_scope": "local_safe_template_without_industry_fact_claims",
+                "excluded_finding_count": len(findings) if excluded_only else 0,
             }
+            if excluded_only:
+                record["automatic_fallback"] = {
+                    "reason": "all_research_findings_failed_strict_evidence_gate",
+                    "original_finding_count": len(findings),
+                    "approved_finding_count": 0,
+                }
         job["approvals"]["research"] = record
         job["approvals"]["compliance"] = {"status": "pending"}
         job.pop("automatic_research_gate", None)
@@ -1303,6 +1424,9 @@ class JobStore:
         }
         self._write(draft / "approved_script.json", payload)
         self._write(draft / "review.json", review)
+        # A storyboard is bound to the exact approved script.  Never let a
+        # browser edit inherit directions generated for older narration.
+        (draft / "motion_storyboard.json").unlink(missing_ok=True)
         job["approvals"]["compliance"] = {"status": "pending"}
         job["status"] = "blocked_compliance" if review.get("status") == "blocked" else "awaiting_compliance_approval"
         job["updated_at"] = now_iso()
@@ -1536,7 +1660,7 @@ class JobStore:
         status = job.get("status")
         if status in {"authorized", "awaiting_research_revision"}:
             return "research"
-        if status == "research_approved":
+        if status in {"research_approved", "awaiting_script_revision"}:
             return "content"
         if status == "compliance_approved":
             return "render"
@@ -1776,7 +1900,7 @@ class JobStore:
         if not draft.exists():
             return
         for path in draft.iterdir():
-            if path.is_file() and path.name in set(CANONICAL_ARTIFACTS):
+            if path.is_file() and path.name in set(CANONICAL_ARTIFACTS) | set(DIRECTOR_ARTIFACTS):
                 shutil.copy2(path, staging / path.name)
 
     def _publish_draft(self, staging: Path, draft: Path, names: list[str]) -> None:

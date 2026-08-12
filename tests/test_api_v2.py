@@ -380,7 +380,7 @@ class ApiV2Tests(unittest.TestCase):
         create_request = {
             "selection_bundle_id": bundle_id,
             "candidate_id": candidate["id"],
-            "production_options": {"target_duration_seconds": 52, "voice_engine": "voxcpm2"},
+            "production_options": {"target_duration_seconds": 52},
         }
         create_headers = self.secure_headers(**{"Idempotency-Key": "selection-create-0001"})
 
@@ -395,6 +395,7 @@ class ApiV2Tests(unittest.TestCase):
         self.assertEqual(job["production_input"]["topic"], candidate["title"])
         self.assertEqual(job["production_input"]["candidate_id"], candidate["id"])
         self.assertEqual(job["production_input"]["selection_bundle_id"], bundle_id)
+        self.assertEqual(job["production_input"]["voice_engine"], "edge_tts")
         self.assertEqual(job["capability_pack"]["sha256"], topics["capability_pack"]["sha256"])
         self.assertNotIn("creation_request", job)
 
@@ -575,7 +576,31 @@ class ApiV2Tests(unittest.TestCase):
         job = json.loads(body)
         status, _, body = self.request("POST", f"/api/jobs/{job['id']}/approve", {}, self.secure_headers())
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["status"], "authorized")
+        authorized = json.loads(body)
+        self.assertEqual(authorized["status"], "authorized")
+
+        automatic_result = {
+            **authorized,
+            "status": "research_approved",
+            "automatic_controller": {
+                "mode": "mechanical",
+                "status": "safe_stop",
+                "stage_attempts": 1,
+            },
+        }
+        with mock.patch.object(
+            app.job_store, "advance_automatically", return_value=automatic_result
+        ) as automatic, mock.patch.object(app.job_store, "advance") as manual:
+            status, _, body = self.request(
+                "POST",
+                f"/api/jobs/{job['id']}/run",
+                {},
+                self.secure_headers(**{"Idempotency-Key": "mechanical-one-click-run-0001"}),
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["automatic_controller"]["mode"], "mechanical")
+        automatic.assert_called_once()
+        manual.assert_not_called()
 
     def test_operator_correction_becomes_scoped_rule_without_authorizing_job(self):
         pack = local_capability_pack("为本地餐饮门店制作一条新品介绍短视频")

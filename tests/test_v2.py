@@ -143,6 +143,7 @@ class StrictRejectRunner(FakeStageRunner):
         super().run_research_stage(output, production_input)
         research_path = output / "research.json"
         research = json.loads(research_path.read_text(encoding="utf-8"))
+        research["status"] = "partial"
         research["strict_audit"] = {
             "policy": "assume_all_claims_false_until_independently_proven",
             "model_review_required": True,
@@ -152,6 +153,25 @@ class StrictRejectRunner(FakeStageRunner):
         }
         research["findings"][0]["script_eligible"] = False
         research_path.write_text(json.dumps(research, ensure_ascii=False), encoding="utf-8")
+
+
+class EmptyPartialResearchRunner(FakeStageRunner):
+    def run_research_stage(self, output, production_input):
+        (output / "research.json").write_text(
+            json.dumps(
+                {
+                    "status": "partial",
+                    "findings": [],
+                    "evidence_gaps": ["研究总结结构无效，未形成可采信finding"],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (output / "insight.json").write_text(
+            json.dumps({"topic": production_input["topic"]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
 class MechanicalStageRunner(FakeStageRunner):
@@ -194,6 +214,18 @@ class MechanicalWarningRunner(MechanicalStageRunner):
         review = json.loads(review_path.read_text(encoding="utf-8"))
         review["warnings"] = ["仍需补充来源归属"]
         review_path.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+
+
+class MechanicalVoiceRevisionRunner(MechanicalStageRunner):
+    def __init__(self):
+        super().__init__()
+        self.render_calls = 0
+
+    def run_render_stage(self, output, production_input, approvals):
+        self.render_calls += 1
+        if self.render_calls == 1:
+            raise ScriptRevisionRequired("配音时长不足，需要自动重写脚本")
+        return super().run_render_stage(output, production_input, approvals)
 
 
 class ReportRebuildRunner:
@@ -456,7 +488,75 @@ class V2WorkflowTests(unittest.TestCase):
             )
             self.assertTrue(manifest["review_policy"]["final_human_acceptance_required"])
 
-    def test_mechanical_review_rejects_weak_research_and_warning_content(self):
+    def test_mechanical_controller_completes_all_stages_from_one_request(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            job = jobs.approve(job["id"])
+            runner = MechanicalStageRunner()
+            result = jobs.advance_automatically(
+                job["id"], lambda _current: runner, "one-click-controller-0001"
+            )
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["automatic_controller"]["status"], "complete")
+            self.assertEqual(result["automatic_controller"]["stage_attempts"], 3)
+            self.assertFalse(
+                result["automatic_controller"]["human_intervention_required_during_generation"]
+            )
+            self.assertEqual([row["stage"] for row in result["runs"]], ["research", "content", "render"])
+            durable = json.loads(
+                (Path(folder) / "jobs" / job["id"] / "job.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len({row["idempotency_key"] for row in durable["runs"]}), 3)
+            self.assertNotIn("waiting_human", {row["status"] for row in result["step_states"]})
+
+    def test_mechanical_controller_stops_after_bounded_content_retries(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            job = jobs.approve(job["id"])
+            runner = MechanicalWarningRunner()
+            result = jobs.advance_automatically(
+                job["id"],
+                lambda _current: runner,
+                "one-click-warning-0001",
+                max_stage_attempts=3,
+            )
+            self.assertEqual(result["status"], "research_approved")
+            self.assertEqual(
+                result["automatic_controller"]["status"], "retry_limit_reached"
+            )
+            self.assertEqual(result["automatic_controller"]["stage_attempts"], 3)
+            self.assertNotIn("waiting_human", {row["status"] for row in result["step_states"]})
+
+    def test_mechanical_controller_rewrites_script_after_natural_voice_gate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            job = jobs.approve(job["id"])
+            runner = MechanicalVoiceRevisionRunner()
+            result = jobs.advance_automatically(
+                job["id"], lambda _current: runner, "one-click-voice-revision-01"
+            )
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["automatic_controller"]["stage_attempts"], 5)
+            self.assertEqual(
+                [row["stage"] for row in result["runs"]],
+                ["research", "content", "render", "content", "render"],
+            )
+            self.assertEqual(result["runs"][2]["status"], "failed")
+            self.assertEqual(runner.render_calls, 2)
+
+    def test_mechanical_review_falls_back_from_weak_research_and_rejects_warning_content(self):
         with tempfile.TemporaryDirectory() as folder:
             jobs = JobStore(Path(folder), stage_review_mode="mechanical")
             weak = jobs.create(
@@ -464,12 +564,46 @@ class V2WorkflowTests(unittest.TestCase):
                 {"topic": VALID_TOPIC, "audience": "新房家庭"},
             )
             weak = jobs.approve(weak["id"])
-            weak = jobs.advance(weak["id"], FakeStageRunner(), "mechanical-weak-research")
-            self.assertEqual(weak["status"], "awaiting_research_revision")
+            weak = jobs.advance(weak["id"], StrictRejectRunner(), "mechanical-weak-research")
+            self.assertEqual(weak["status"], "research_approved")
             self.assertNotIn("waiting_human", {row["status"] for row in weak["step_states"]})
-            self.assertEqual(weak["approvals"]["research"], {"status": "pending"})
+            self.assertEqual(weak["approvals"]["research"]["status"], "approved")
+            self.assertEqual(weak["approvals"]["research"]["findings"], [])
             self.assertEqual(
-                weak["automatic_research_gate"]["decision"], "rejected"
+                weak["approvals"]["research"]["empty_finding_confirmation"],
+                {
+                    "research_status": "partial",
+                    "content_scope": "local_safe_template_without_industry_fact_claims",
+                    "excluded_finding_count": 1,
+                },
+            )
+            self.assertEqual(
+                weak["approvals"]["research"]["automatic_fallback"],
+                {
+                    "reason": "all_research_findings_failed_strict_evidence_gate",
+                    "original_finding_count": 1,
+                    "approved_finding_count": 0,
+                },
+            )
+            self.assertNotIn("automatic_research_gate", weak)
+
+            empty = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            empty = jobs.approve(empty["id"])
+            empty = jobs.advance(
+                empty["id"], EmptyPartialResearchRunner(), "mechanical-empty-partial"
+            )
+            self.assertEqual(empty["status"], "research_approved")
+            self.assertEqual(empty["approvals"]["research"]["findings"], [])
+            self.assertEqual(
+                empty["approvals"]["research"]["empty_finding_confirmation"],
+                {
+                    "research_status": "partial",
+                    "content_scope": "local_safe_template_without_industry_fact_claims",
+                    "excluded_finding_count": 0,
+                },
             )
 
             warning = jobs.create(
