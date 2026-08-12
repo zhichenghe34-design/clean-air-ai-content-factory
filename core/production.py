@@ -915,7 +915,7 @@ def build_local_variants(
 ) -> list[dict[str, Any]]:
     topic = str(topic).strip()
     audience = str(audience).strip()
-    if _is_legacy_pack(capability_pack) or (
+    if _is_legacy_pack(capability_pack) or _trusted_pack_allows_clean_air_domain_terms(capability_pack) or (
         capability_pack is None and any(term in topic for term in ("甲醛", "除醛", "测醛"))
     ):
         return _build_legacy_local_variants(topic, audience, approved_findings)

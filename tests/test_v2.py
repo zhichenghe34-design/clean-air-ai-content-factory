@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from core.capability_pack import local_capability_pack
 from core.orchestrator import (
     CANONICAL_ARTIFACTS,
     ConflictError,
@@ -1334,7 +1335,14 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
 
     def test_local_topic_card_label_does_not_break_unattended_narration_pacing(self):
         topic = "甲醛检测仪数值低为什么不能立刻安心入住"
-        variants = build_local_variants(f"先讲清楚：{topic}", "目标客户与内容受众")
+        pack = local_capability_pack(
+            "为上海装修后家庭制作一条除甲醛科普短视频，重点解释检测条件和适用边界"
+        )
+        variants = build_local_variants(
+            f"先讲清楚：{topic}",
+            "目标客户与内容受众",
+            capability_pack=pack,
+        )
         self.assertTrue(variants)
         for item in variants:
             self.assertIn(topic, item["script"])
