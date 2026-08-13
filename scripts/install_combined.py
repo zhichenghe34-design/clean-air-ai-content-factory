@@ -29,6 +29,11 @@ PRODUCT_OWNERSHIP_MARKERS = (
     "安装到D盘.bat",
     "tools/verify_combined_portable.pyc",
 )
+LEGACY_SCHEMA2_OWNERSHIP_MARKERS = (
+    "启动时宜Agent内容工厂.bat",
+    "安装到D盘.bat",
+    "tools/verify_combined_portable.py",
+)
 
 
 class InstallerError(RuntimeError):
@@ -316,7 +321,11 @@ def _inspect_existing_install(
     return True, identical
 
 
-def _has_explicit_product_identity(target: Path) -> bool:
+def _has_explicit_product_identity(
+    target: Path,
+    *,
+    allow_verified_legacy_schema2: bool = False,
+) -> bool:
     """Recognize a damaged install without claiming an arbitrary folder.
 
     Repair is deliberately narrower than upgrade: the target must still carry
@@ -331,19 +340,30 @@ def _has_explicit_product_identity(target: Path) -> bool:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
+    schema_version = payload.get("schema_version") if isinstance(payload, dict) else None
+    marker_sets = [PRODUCT_OWNERSHIP_MARKERS]
+    if allow_verified_legacy_schema2 and schema_version == 2:
+        # Formal schema-2 packages predate the customer sourceless build and
+        # therefore carry the verifier as .py.  Callers may enable this marker
+        # only after the complete package verifier has returned no errors.
+        marker_sets.append(LEGACY_SCHEMA2_OWNERSHIP_MARKERS)
+    markers_match = any(
+        all(
+            (target / Path(relative)).is_file()
+            and not _is_reparse_point(target / Path(relative))
+            for relative in markers
+        )
+        for markers in marker_sets
+    )
     return bool(
         isinstance(payload, dict)
-        and payload.get("schema_version") in {2, 3}
+        and schema_version in {2, 3}
         and payload.get("product") == PACKAGE_PRODUCT
         and payload.get("package_kind") == PACKAGE_KIND
         and isinstance(payload.get("source"), dict)
         and isinstance(payload["source"].get("repository_commit"), str)
         and len(payload["source"]["repository_commit"]) == 40
-        and all(
-            (target / Path(relative)).is_file()
-            and not _is_reparse_point(target / Path(relative))
-            for relative in PRODUCT_OWNERSHIP_MARKERS
-        )
+        and markers_match
     )
 
 
@@ -425,12 +445,18 @@ def _publish_staged_install(
     if previous is not None and os.path.lexists(previous):
         if not previous.is_dir() or _is_reparse_point(previous):
             raise InstallerError(f"回滚版本路径不安全，未升级：{previous}")
-        if not _has_explicit_product_identity(previous):
+        previous_errors = verifier(previous)
+        previous_owned = _has_explicit_product_identity(previous)
+        if not previous_owned and not previous_errors:
+            previous_owned = _has_explicit_product_identity(
+                previous,
+                allow_verified_legacy_schema2=True,
+            )
+        if not previous_owned:
             raise InstallerError(
                 "已有 App.previous 不是可确认归属的回滚版本，未移动、未覆盖、未删除："
                 + str(previous)
             )
-        previous_errors = verifier(previous)
         if previous_errors:
             raise InstallerError(
                 "已有 App.previous 不是完整、可确认归属的回滚版本，未移动、未覆盖、未删除："

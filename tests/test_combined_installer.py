@@ -32,6 +32,16 @@ class CombinedInstallerTests(unittest.TestCase):
         verifier.parent.mkdir(parents=True, exist_ok=True)
         verifier.write_text("# package identity marker\n", encoding="utf-8")
 
+    @classmethod
+    def _write_legacy_schema2_package(cls, folder: Path, version: str, payload: str) -> None:
+        cls._write_package(folder, version, payload)
+        compiled = folder / "tools" / "verify_combined_portable.pyc"
+        compiled.unlink()
+        (folder / "tools" / "verify_combined_portable.py").write_text(
+            "# formal schema-2 package identity marker\n",
+            encoding="utf-8",
+        )
+
     def test_eligible_d_drive_is_the_default_target(self) -> None:
         status = assess_preferred_drive(
             exists=True,
@@ -176,6 +186,29 @@ class CombinedInstallerTests(unittest.TestCase):
             self.assertFalse((target.parent / "App.previous.previous").exists())
             self.assertEqual([], list(target.parent.glob(".App-*-*")))
 
+    def test_verified_legacy_schema2_previous_is_safely_rotated(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="shiyi-installer-schema2-previous-") as temporary:
+            root = Path(temporary)
+            source = root / "客户净包新版"
+            target = root / "客户目录" / "App"
+            previous = root / "客户目录" / "App.previous"
+            self._write_package(source, "new", "new customer payload")
+            self._write_package(target, "current", "current customer payload")
+            self._write_legacy_schema2_package(previous, "legacy", "legacy schema2 payload")
+
+            installed = install_package(
+                source,
+                target,
+                verifier=lambda _: [],
+                free_bytes=lambda _: MINIMUM_FREE_BYTES,
+            )
+
+            self.assertEqual(target, installed)
+            self.assertEqual("new customer payload", (target / "payload.txt").read_text(encoding="utf-8"))
+            self.assertEqual("current customer payload", (previous / "payload.txt").read_text(encoding="utf-8"))
+            self.assertFalse((previous / "tools" / "verify_combined_portable.py").exists())
+            self.assertEqual([], list(target.parent.glob(".App-*-*")))
+
     def test_damaged_ordinary_app_is_repaired_without_becoming_the_rollback(self) -> None:
         with tempfile.TemporaryDirectory(prefix="shiyi-installer-repair-") as temporary:
             root = Path(temporary)
@@ -287,6 +320,42 @@ class CombinedInstallerTests(unittest.TestCase):
                     source,
                     target,
                     verifier=verifier,
+                    free_bytes=lambda _: MINIMUM_FREE_BYTES,
+                )
+
+            self.assertEqual("old payload", (target / "payload.txt").read_text(encoding="utf-8"))
+            self.assertEqual(b"must remain byte-for-byte", sentinel.read_bytes())
+            self.assertEqual([], list(target.parent.glob(".App-*-*")))
+            self.assertEqual([], list(target.parent.glob(".App-staging-*")))
+
+    def test_forged_legacy_marker_previous_with_foreign_identity_is_never_touched(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="shiyi-installer-forged-schema2-previous-") as temporary:
+            root = Path(temporary)
+            source = root / "新版源包"
+            target = root / "客户目录" / "App"
+            previous = root / "客户目录" / "App.previous"
+            self._write_package(source, "new", "new payload")
+            self._write_package(target, "old", "old payload")
+            previous.mkdir(parents=True)
+            (previous / "PACKAGE-MANIFEST.json").write_text(
+                '{"schema_version":2,"product":"其他产品",'
+                '"package_kind":"windows_x64_combined_portable",'
+                '"source":{"repository_commit":"' + ("f" * 40) + '"}}\n',
+                encoding="utf-8",
+            )
+            (previous / "启动时宜Agent内容工厂.bat").write_text("@echo off\r\n", encoding="ascii")
+            (previous / "安装到D盘.bat").write_text("@echo off\r\n", encoding="ascii")
+            legacy_verifier = previous / "tools" / "verify_combined_portable.py"
+            legacy_verifier.parent.mkdir(parents=True)
+            legacy_verifier.write_text("# forged marker\n", encoding="utf-8")
+            sentinel = previous / "用户自己的重要文件.txt"
+            sentinel.write_bytes(b"must remain byte-for-byte")
+
+            with self.assertRaisesRegex(InstallerError, "App.previous.*未移动、未覆盖、未删除"):
+                install_package(
+                    source,
+                    target,
+                    verifier=lambda _: [],
                     free_bytes=lambda _: MINIMUM_FREE_BYTES,
                 )
 
