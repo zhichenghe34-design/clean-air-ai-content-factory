@@ -245,11 +245,12 @@ LEGACY_MPT_REPO_FILES = (
     "third_party/moneyprinterturbo/upstream-lock.json",
 )
 REPO_TREE_ALLOWLIST: dict[str, frozenset[str]] = {
-    "core": frozenset({".py"}),
+    "core": frozenset({".py", ".ps1"}),
     "static": frozenset(
         {".css", ".html", ".js", ".json", ".jpeg", ".jpg", ".lucide", ".png", ".svg", ".webp", ".woff", ".woff2"}
     ),
 }
+CUSTOMER_TREE_EXCLUDES = frozenset({"core/sapi_tts.ps1"})
 CUSTOMER_ASSET_MAP = {
     "agent-skills/produce-dynamic-health-video/assets/animation-pack-v1.json": "product-assets/motion/animation-pack-v1.json",
     "agent-skills/produce-dynamic-health-video/assets/composition-template.html": "product-assets/motion/composition-template.html",
@@ -2577,7 +2578,12 @@ def _copy_repository_payload(repo: Path, package: Path, *, include_legacy_mpt: b
     for relative in REPO_FILE_ALLOWLIST:
         _copy_file(repo / Path(relative), package / Path(relative))
     for relative, suffixes in REPO_TREE_ALLOWLIST.items():
-        _copy_tree(repo / relative, package / relative, suffixes)
+        source_root = repo / relative
+        for source in _iter_tree_files(source_root, suffixes):
+            repo_relative = source.relative_to(repo).as_posix()
+            if repo_relative in CUSTOMER_TREE_EXCLUDES:
+                continue
+            _copy_file(source, package / Path(repo_relative))
     if include_legacy_mpt:
         for relative in LEGACY_MPT_REPO_FILES:
             _copy_file(repo / Path(relative), package / Path(relative))

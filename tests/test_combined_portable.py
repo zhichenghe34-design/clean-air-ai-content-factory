@@ -1114,6 +1114,7 @@ class CombinedPortableTests(unittest.TestCase):
         self.assertFalse((inputs.output / "runtime/python/Lib/site-packages/fixture/tests").exists())
         self.assertTrue((inputs.output / "runtime/python/Lib/site-packages/fixture/test_utils.py").is_file())
         self.assertFalse(any(path.suffix == ".py" for path in (inputs.output / "core").rglob("*")))
+        self.assertFalse((inputs.output / "core/sapi_tts.ps1").exists())
         self.assertFalse(any(path.suffix == ".py" for path in (inputs.output / "scripts").rglob("*")))
         self.assertFalse((inputs.output / "catalog").exists())
         self.assertFalse((inputs.output / "agent-skills").exists())
