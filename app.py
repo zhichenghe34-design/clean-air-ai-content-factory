@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from core.catalog import HardwareProbe, PackageCatalog
+from core.catalog import CatalogError, HardwareProbe, PackageCatalog
 from core.capability_pack import (
     local_capability_pack,
     local_topic_candidates,
@@ -127,13 +127,67 @@ PRETASK_PROVIDER_LIMIT = 3
 # operations surfaces.  Customer builds keep the implementation available for
 # audited internal use, but do not expose local paths, hardware inventory or
 # unreleased components unless an operator opts in before process start.
+INTERNAL_DIAGNOSTICS_ENABLED = False
+# CUSTOMER_BUILD_STRIP_BEGIN: internal-diagnostics-switch
 INTERNAL_DIAGNOSTICS_ENABLED = os.environ.get("SHIYI_INTERNAL_DIAGNOSTICS", "").strip() == "1"
+# CUSTOMER_BUILD_STRIP_END: internal-diagnostics-switch
 pretask_provider_budgets: OrderedDict[str, BudgetLedger] = OrderedDict()
 correction_replays: OrderedDict[str, dict] = OrderedDict()
 topic_selection_bundles: OrderedDict[str, dict] = OrderedDict()
 public_evidence_export_locks: dict[str, threading.Lock] = {}
 public_evidence_export_locks_guard = threading.Lock()
 SELECTION_BUNDLE_TTL_SECONDS = 2 * 60 * 60
+
+
+def _load_internal_catalog(*, required: bool) -> dict | None:
+    """Load the operator-only catalogue without making it a customer dependency."""
+    try:
+        return package_catalog.load()
+    except CatalogError as exc:
+        if required:
+            raise FileNotFoundError("内部能力目录未安装") from exc
+        return None
+
+
+def _customer_build_content(relative: str, content: bytes, *, force: bool = False) -> bytes:
+    """Strip line-delimited operator blocks from a customer build or response."""
+    if (INTERNAL_DIAGNOSTICS_ENABLED and not force) or Path(relative).suffix.lower() not in {".html", ".js", ".py"}:
+        return content
+    text = content.decode("utf-8")
+    kept: list[str] = []
+    stripping = False
+    for line in text.splitlines(keepends=True):
+        marker = line.lstrip()
+        begin_marker = marker.startswith((
+            "# CUSTOMER_BUILD_STRIP_BEGIN:",
+            "// CUSTOMER_BUILD_STRIP_BEGIN:",
+            "<!-- CUSTOMER_BUILD_STRIP_BEGIN:",
+        ))
+        end_marker = marker.startswith((
+            "# CUSTOMER_BUILD_STRIP_END:",
+            "// CUSTOMER_BUILD_STRIP_END:",
+            "<!-- CUSTOMER_BUILD_STRIP_END:",
+        ))
+        if begin_marker:
+            if stripping:
+                raise RuntimeError(f"客户静态资源存在嵌套净化标记: {relative}")
+            stripping = True
+            continue
+        if end_marker:
+            if not stripping:
+                raise RuntimeError(f"客户静态资源净化结束标记不匹配: {relative}")
+            stripping = False
+            continue
+        if not stripping:
+            kept.append(line)
+    if stripping:
+        raise RuntimeError(f"客户静态资源净化开始标记未闭合: {relative}")
+    return "".join(kept).encode("utf-8")
+
+
+def _customer_static_content(relative: str, content: bytes) -> bytes:
+    """Serve customer static assets without operator-only UI or JavaScript."""
+    return _customer_build_content(relative, content)
 
 
 def _public_evidence_export_lock(job_id: str) -> threading.Lock:
@@ -1029,11 +1083,11 @@ class AppHandler(BaseHTTPRequestHandler):
             elif path == "/api/catalog":
                 if not INTERNAL_DIAGNOSTICS_ENABLED:
                     raise FileNotFoundError("接口不存在")
-                self.json_response(package_catalog.load())
+                self.json_response(_load_internal_catalog(required=True))
             elif path == "/api/hardware":
                 if not INTERNAL_DIAGNOSTICS_ENABLED:
                     raise FileNotFoundError("接口不存在")
-                catalog = package_catalog.load()
+                catalog = _load_internal_catalog(required=True)
                 hardware = HardwareProbe.probe()
                 profile = package_catalog.select_profile(catalog, hardware["gpu"]["vram_gb"])
                 recommendations = package_catalog.recommendations(catalog, profile["id"])
@@ -1299,11 +1353,11 @@ class AppHandler(BaseHTTPRequestHandler):
         if INTERNAL_DIAGNOSTICS_ENABLED:
             with state_lock:
                 tools = list(app_state["tools"])
-            catalog = package_catalog.load()
+            catalog = _load_internal_catalog(required=False)
             discovered_capabilities = {cap for tool in tools for cap in tool.get("capabilities", [])}
             bundled_capabilities = {
                 cap
-                for package in catalog.get("packages", [])
+                for package in (catalog or {}).get("packages", [])
                 if package.get("trust_status") == "approved_bundled_skill"
                 for cap in package.get("capabilities", [])
             }
@@ -1311,8 +1365,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 "internal_diagnostics_enabled": True,
                 "tool_count": len(tools),
                 "capabilities": sorted(discovered_capabilities | bundled_capabilities),
-                "catalog_package_count": len(catalog.get("packages", [])),
-                "catalog_install_enabled": catalog["policy"]["auto_install_enabled"],
+                "catalog_available": catalog is not None,
+                "catalog_package_count": len((catalog or {}).get("packages", [])),
+                "catalog_install_enabled": bool((catalog or {}).get("policy", {}).get("auto_install_enabled", False)),
                 "memory_count": len(learning_store.list_memories()),
                 "learned_skill_count": len(learning_store.list_skills()),
                 "dynamic_capability_pack_count": len(capability_registry.list()),
@@ -2293,7 +2348,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if not target.is_file():
             self.error_response("not_found", "文件不存在", HTTPStatus.NOT_FOUND)
             return
-        content = target.read_bytes()
+        content = _customer_static_content(relative, target.read_bytes())
         mime = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", f"{mime}; charset=utf-8" if mime.startswith("text/") or mime == "application/javascript" else mime)

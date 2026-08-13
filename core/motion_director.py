@@ -13,16 +13,16 @@ from core.animation_registry import (
     AnimationRegistry,
     AnimationRegistryError,
     DEFAULT_PACK_PATH,
+    MOTION_ASSET_ROOT,
 )
 from core.voice_contract import estimate_voice_scene_pacing
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILL_ROOT = REPO_ROOT / "agent-skills" / "produce-dynamic-health-video"
-TEMPLATE_FILE = SKILL_ROOT / "assets" / "composition-template.html"
-CLEAN_AIR_EXPLAINER_TEMPLATE_FILE = SKILL_ROOT / "assets" / "composition-template-clean-air-explainer.html"
-CINEMATIC_TEMPLATE_FILE = SKILL_ROOT / "assets" / "composition-template-cinematic.html"
-CINEMATIC_VISUAL_FILE = SKILL_ROOT / "assets" / "media" / "clean-air-device-neutral-v1.png"
+TEMPLATE_FILE = MOTION_ASSET_ROOT / "composition-template.html"
+CLEAN_AIR_EXPLAINER_TEMPLATE_FILE = MOTION_ASSET_ROOT / "composition-template-clean-air-explainer.html"
+CINEMATIC_TEMPLATE_FILE = MOTION_ASSET_ROOT / "composition-template-cinematic.html"
+CINEMATIC_VISUAL_FILE = MOTION_ASSET_ROOT / "media" / "clean-air-device-neutral-v1.png"
 ANIMATION_PACK_FILE = DEFAULT_PACK_PATH
 FONT_REGULAR_FILE = REPO_ROOT / "docs" / "fonts" / "NotoSansSC-Regular.ttf"
 FONT_BOLD_FILE = REPO_ROOT / "docs" / "fonts" / "NotoSansSC-Bold.ttf"

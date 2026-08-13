@@ -9,7 +9,15 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXTRACT_SCRIPT = REPO_ROOT / "agent-skills" / "extract-web-platform-content" / "scripts" / "extract_url.py"
+PACKAGED_EXTRACT_SCRIPT = REPO_ROOT / "product-tools" / "extract_url.pyc"
+SOURCE_EXTRACT_SCRIPT = (
+    REPO_ROOT
+    / "agent-skills"
+    / "extract-web-platform-content"
+    / "scripts"
+    / "extract_url.py"
+)
+EXTRACT_SCRIPT = PACKAGED_EXTRACT_SCRIPT if PACKAGED_EXTRACT_SCRIPT.is_file() else SOURCE_EXTRACT_SCRIPT
 
 
 class SearchProvider(Protocol):

@@ -27,7 +27,7 @@ PACKAGE_KIND = "windows_x64_combined_portable"
 PRODUCT_OWNERSHIP_MARKERS = (
     "启动时宜Agent内容工厂.bat",
     "安装到D盘.bat",
-    "tools/verify_combined_portable.py",
+    "tools/verify_combined_portable.pyc",
 )
 
 
@@ -218,7 +218,9 @@ def select_install_target(
 
 
 def _verify_package_folder(folder: Path) -> list[str]:
-    verifier_path = folder / "tools" / "verify_combined_portable.py"
+    verifier_path = folder / "tools" / "verify_combined_portable.pyc"
+    if not verifier_path.is_file():
+        verifier_path = folder / "tools" / "verify_combined_portable.py"
     if not verifier_path.is_file() or _is_reparse_point(verifier_path):
         return ["缺少受清单约束的安装包验证器"]
     try:
@@ -331,7 +333,7 @@ def _has_explicit_product_identity(target: Path) -> bool:
         return False
     return bool(
         isinstance(payload, dict)
-        and payload.get("schema_version") == 2
+        and payload.get("schema_version") in {2, 3}
         and payload.get("product") == PACKAGE_PRODUCT
         and payload.get("package_kind") == PACKAGE_KIND
         and isinstance(payload.get("source"), dict)

@@ -28,7 +28,7 @@ class CombinedInstallerTests(unittest.TestCase):
         (folder / "payload.txt").write_text(payload, encoding="utf-8")
         (folder / "启动时宜Agent内容工厂.bat").write_text("@echo off\r\n", encoding="ascii")
         (folder / "安装到D盘.bat").write_text("@echo off\r\n", encoding="ascii")
-        verifier = folder / "tools" / "verify_combined_portable.py"
+        verifier = folder / "tools" / "verify_combined_portable.pyc"
         verifier.parent.mkdir(parents=True, exist_ok=True)
         verifier.write_text("# package identity marker\n", encoding="utf-8")
 

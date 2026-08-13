@@ -9,12 +9,20 @@ from typing import Any, Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PACK_PATH = (
+PACKAGED_MOTION_ASSET_ROOT = REPO_ROOT / "product-assets" / "motion"
+SOURCE_MOTION_ASSET_ROOT = (
     REPO_ROOT
     / "agent-skills"
     / "produce-dynamic-health-video"
     / "assets"
-    / "animation-pack-v1.json"
+)
+MOTION_ASSET_ROOT = (
+    PACKAGED_MOTION_ASSET_ROOT
+    if PACKAGED_MOTION_ASSET_ROOT.is_dir()
+    else SOURCE_MOTION_ASSET_ROOT
+)
+DEFAULT_PACK_PATH = (
+    MOTION_ASSET_ROOT / "animation-pack-v1.json"
 )
 
 PACK_SCHEMA_VERSION = "1.0"

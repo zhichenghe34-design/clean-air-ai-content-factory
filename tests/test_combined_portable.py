@@ -111,8 +111,20 @@ class CombinedPortableTests(unittest.TestCase):
         self._write(self.repo, "static/index.html", "<main>fixture</main>\n")
         self._write(self.repo, "static/app.js", "console.log('fixture');\n")
         self._write(self.repo, "catalog/tools.json", "{}\n")
-        self._write(self.repo, "agent-skills/fixture/SKILL.md", "# fixture\n")
-        self._write(self.repo, "agent-skills/fixture/assets/hero.png", b"fixture-png")
+        motion_assets = "agent-skills/produce-dynamic-health-video/assets"
+        self._write(self.repo, f"{motion_assets}/animation-pack-v1.json", "{}\n")
+        for name in (
+            "composition-template.html",
+            "composition-template-clean-air-explainer.html",
+            "composition-template-cinematic.html",
+        ):
+            self._write(self.repo, f"{motion_assets}/{name}", "<main>fixture</main>\n")
+        self._write(self.repo, f"{motion_assets}/media/clean-air-device-neutral-v1.png", b"fixture-png")
+        self._write(
+            self.repo,
+            "agent-skills/extract-web-platform-content/scripts/extract_url.py",
+            "print('fixture extractor')\n",
+        )
         self._write(self.repo, "docs/fonts/NotoSansSC-Regular.ttf", b"regular-font")
         self._write(self.repo, "docs/fonts/NotoSansSC-Bold.ttf", b"bold-font")
         self._write(self.repo, "docs/fonts/OFL.txt", "Noto OFL fixture\n")
@@ -589,6 +601,7 @@ class CombinedPortableTests(unittest.TestCase):
         )
         return replace(
             self._inputs(suffix),
+            materials=(),
             package_profile=MOTION_PACKAGE_PROFILE,
             motion_runtime=MotionRuntimeInputs(
                 node_runtime=node,
@@ -606,8 +619,23 @@ class CombinedPortableTests(unittest.TestCase):
 
         inputs = self._motion_inputs()
         manifest = build_combined_portable(inputs)
-        self.assertEqual(2, manifest["schema_version"])
+        self.assertEqual(3, manifest["schema_version"])
         self.assertEqual("motion_primary", manifest["package_profile"])
+        self.assertEqual(
+            {
+                "audience": "external_customer",
+                "first_party_python_source_included": False,
+                "internal_diagnostics_included": False,
+                "footage_engine_included": False,
+                "runtime_downloads_allowed": False,
+            },
+            manifest["customer_distribution"],
+        )
+        self.assertFalse((inputs.output / "engine").exists())
+        self.assertFalse((inputs.output / "third_party/moneyprinterturbo").exists())
+        self.assertFalse((inputs.output / "licenses/MoneyPrinterTurbo-MIT.txt").exists())
+        self.assertNotIn("moneyprinterturbo_entry", manifest["runtime"])
+        self.assertNotIn("materials", manifest)
         motion_manifest = manifest["motion_runtime"]
         self.assertEqual("offline_bundled_with_system_browser", motion_manifest["mode"])
         self.assertEqual(SYSTEM_EDGE_BROWSER_STRATEGY, motion_manifest["browser_strategy"])
@@ -673,22 +701,6 @@ class CombinedPortableTests(unittest.TestCase):
             hyperframes_manifest["patched_cli_sha256"],
             sha256_file(inputs.output / "runtime/hyperframes/node_modules/hyperframes/dist/cli.js"),
         )
-        config = tomllib.loads(
-            (inputs.output / "engine/MoneyPrinterTurbo/config.toml").read_text(encoding="utf-8")
-        )
-        self.assertEqual("h264_mf", config["app"]["video_codec"])
-        video_service = (
-            inputs.output / "engine/MoneyPrinterTurbo/app/services/video.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("SHIYI_MPT_H264_MF_CODEC_V1", video_service)
-        self.assertEqual(1, video_service.count(".write_videofile("))
-        self.assertNotIn("libx264", video_service)
-        self.assertFalse(
-            (inputs.output / "engine/MoneyPrinterTurbo/app/services/sonilo.py").exists()
-        )
-        self.assertFalse(
-            (inputs.output / "engine/MoneyPrinterTurbo/app/services/elevenlabs_music.py").exists()
-        )
         python_sbom = json.loads(
             (inputs.output / "licenses/Python-runtime-SBOM.json").read_text(encoding="utf-8")
         )
@@ -711,20 +723,6 @@ class CombinedPortableTests(unittest.TestCase):
         errors = verify_folder(inputs.output)
         self.assertTrue(any("FFmpeg runtime" in error or "SHA-256" in error for error in errors), errors)
         ffmpeg_binary.write_bytes(original_ffmpeg)
-        self.assertEqual([], verify_folder(inputs.output))
-
-        original_video_service = video_service
-        video_service_path = inputs.output / "engine/MoneyPrinterTurbo/app/services/video.py"
-        video_service_path.write_text(
-            original_video_service + '\nSHIYI_UNREVIEWED_CODEC = "h264_vaapi"\n',
-            encoding="utf-8",
-        )
-        errors = verify_folder(inputs.output)
-        self.assertTrue(
-            any("非审核 H.264 编码器" in error and "h264_vaapi" in error for error in errors),
-            errors,
-        )
-        video_service_path.write_text(original_video_service, encoding="utf-8")
         self.assertEqual([], verify_folder(inputs.output))
 
         bundled_browser = inputs.output / "runtime/browser/chrome-headless-shell.exe"
@@ -933,10 +931,11 @@ class CombinedPortableTests(unittest.TestCase):
         self.assertIn("0.7.86", completed.stdout)
 
     def test_motion_primary_rejects_network_animation_assets(self) -> None:
-        self._write(
-            self.repo,
-            "agent-skills/fixture/network.html",
-            '<script src="https://cdn.example.invalid/runtime.js"></script>\n',
+        template = self.repo / "agent-skills/produce-dynamic-health-video/assets/composition-template.html"
+        template.write_text(
+            template.read_text(encoding="utf-8")
+            + '\n<script src="https://cdn.example.invalid/runtime.js"></script>\n',
+            encoding="utf-8",
         )
         inputs = self._motion_inputs("network-motion")
         with self.assertRaisesRegex(ValueError, "网络资源"):
@@ -949,9 +948,13 @@ class CombinedPortableTests(unittest.TestCase):
 
         self.assertEqual([], verify_folder(inputs.output))
         self.assertEqual([], verify_zip(inputs.zip_path))
-        self.assertTrue((inputs.output / "tools/build_public_evidence.py").is_file())
-        self.assertTrue((inputs.output / "tools/verify_public_evidence.py").is_file())
-        self.assertTrue((inputs.output / "examples/pattern_cards.jsonl").is_file())
+        self.assertTrue((inputs.output / "tools/build_public_evidence.pyc").is_file())
+        self.assertTrue((inputs.output / "tools/verify_public_evidence.pyc").is_file())
+        self.assertFalse((inputs.output / "examples").exists())
+        self.assertFalse((inputs.output / "catalog").exists())
+        self.assertFalse((inputs.output / "agent-skills").exists())
+        self.assertTrue((inputs.output / "app.pyc").is_file())
+        self.assertFalse((inputs.output / "app.py").exists())
         self.assertTrue((inputs.output / "runtime/python/python.exe").is_file())
         self.assertTrue((inputs.output / "runtime/ffmpeg/avcodec-61.dll").is_file())
         self.assertTrue(
@@ -1012,18 +1015,12 @@ class CombinedPortableTests(unittest.TestCase):
         launcher_bytes = (inputs.output / ROOT_LAUNCHER_NAME).read_bytes()
         self.assertFalse(launcher_bytes.startswith(b"\xef\xbb\xbf"))
         launcher = launcher_bytes.decode("ascii")
-        self.assertIn("scripts\\launch_combined.ps1", launcher)
+        self.assertIn("scripts\\launch_combined.pyc", launcher)
         shared = "%~dp0runtime\\python\\python.exe"
-        self.assertIn(f'-MptPython "{shared}"', launcher)
-        self.assertIn(f'-AppPython "{shared}"', launcher)
-        self.assertIn("-MechanicalReview", launcher)
+        self.assertIn(f'set "SHIYI_LAUNCHER_PYTHON={shared}"', launcher)
+        self.assertIn("--mechanical-review", launcher)
         self.assertNotIn("verify_combined_portable.py", launcher)
-        powershell_launcher = (inputs.output / "scripts" / "launch_combined.ps1").read_text(encoding="utf-8-sig")
-        self.assertIn('@("-I", "-S", "-B", "-X", "utf8", $launcher', powershell_launcher)
-        self.assertIn("[switch]$AgentTestReview", powershell_launcher)
-        self.assertIn('if ($AgentTestReview) { $arguments += "--agent-test-review" }', powershell_launcher)
-        self.assertIn("[switch]$MechanicalReview", powershell_launcher)
-        self.assertIn('if ($MechanicalReview) { $arguments += "--mechanical-review" }', powershell_launcher)
+        self.assertFalse((inputs.output / "scripts" / "launch_combined.ps1").exists())
         self.assertNotRegex(launcher.casefold(), r"pip\s+install|uv\s+sync|npx\s+--yes")
         stop_launcher = (inputs.output / STOP_LAUNCHER_NAME).read_text(encoding="ascii")
         self.assertNotIn("verify_combined_portable.py", stop_launcher)
@@ -1033,7 +1030,7 @@ class CombinedPortableTests(unittest.TestCase):
         self.assertIn("--import-runtime", migration_launcher)
         installer_launcher = (inputs.output / INSTALLER_LAUNCHER_NAME).read_text(encoding="ascii")
         self.assertIn("runtime\\python\\python.exe", installer_launcher)
-        self.assertIn("scripts\\install_combined.py", installer_launcher)
+        self.assertIn("scripts\\install_combined.pyc", installer_launcher)
         self.assertIn("--source-root \"%~dp0.\"", installer_launcher)
         self.assertNotRegex(installer_launcher.casefold(), r"pip\s+install|npm\s+install|npx\s+")
         usage = (inputs.output / "使用说明.txt").read_text(encoding="utf-8")
@@ -1071,7 +1068,7 @@ class CombinedPortableTests(unittest.TestCase):
                 "-B",
                 "-X",
                 "utf8",
-                str(inputs.output / "tools/verify_combined_portable.py"),
+                str(inputs.output / "tools/verify_combined_portable.pyc"),
                 str(inputs.output),
                 "--startup",
             ],
@@ -1090,7 +1087,7 @@ class CombinedPortableTests(unittest.TestCase):
                 "-B",
                 "-X",
                 "utf8",
-                str(inputs.output / "scripts/launch_combined.py"),
+                str(inputs.output / "scripts/launch_combined.pyc"),
                 "--help",
             ],
             check=False,
@@ -1100,6 +1097,29 @@ class CombinedPortableTests(unittest.TestCase):
             errors="replace",
         )
         self.assertEqual(0, packaged_launcher.returncode, packaged_launcher.stdout + packaged_launcher.stderr)
+
+    def test_customer_package_freezes_sources_and_prunes_dependency_junk(self) -> None:
+        self._write(self.python_runtime, "Lib/site-packages/fixture/tests/test_hidden.py", "raise RuntimeError\n")
+        self._write(self.python_runtime, "Lib/site-packages/fixture/test_utils.py", "VALUE = 1\n")
+        record = self.python_runtime / "Lib/site-packages/fixture-1.0.dist-info/RECORD"
+        record.write_text(
+            record.read_text(encoding="utf-8")
+            + "fixture/tests/test_hidden.py,,\n"
+            + "fixture/test_utils.py,,\n",
+            encoding="utf-8",
+        )
+        inputs = self._inputs("customer-clean")
+        build_combined_portable(inputs)
+
+        self.assertFalse((inputs.output / "runtime/python/Lib/site-packages/fixture/tests").exists())
+        self.assertTrue((inputs.output / "runtime/python/Lib/site-packages/fixture/test_utils.py").is_file())
+        self.assertFalse(any(path.suffix == ".py" for path in (inputs.output / "core").rglob("*")))
+        self.assertFalse(any(path.suffix == ".py" for path in (inputs.output / "scripts").rglob("*")))
+        self.assertFalse((inputs.output / "catalog").exists())
+        self.assertFalse((inputs.output / "agent-skills").exists())
+        self.assertTrue((inputs.output / "product-assets/motion/animation-pack-v1.json").is_file())
+        self.assertTrue((inputs.output / "product-tools/extract_url.pyc").is_file())
+        self.assertEqual([], verify_folder(inputs.output))
 
     def test_verifier_rejects_redundant_runtime_binary_and_locked_mpt_components(self) -> None:
         inputs = self._inputs("forbidden-package-content")
@@ -1497,8 +1517,8 @@ class CombinedPortableTests(unittest.TestCase):
     def test_validator_recomputes_hashes_and_scans_paths_and_secrets(self) -> None:
         inputs = self._inputs("tamper")
         build_combined_portable(inputs)
-        app = inputs.output / "app.py"
-        app.write_text("print('tampered')\n", encoding="utf-8")
+        app = inputs.output / "app.pyc"
+        app.write_bytes(app.read_bytes() + b"tampered")
         errors = verify_folder(inputs.output)
         self.assertTrue(any("SHA-256" in error for error in errors), errors)
 
@@ -1621,31 +1641,45 @@ class CombinedPortableTests(unittest.TestCase):
 
     def test_formal_preflight_executes_python_ffmpeg_and_ffprobe(self) -> None:
         inputs = replace(self._inputs("preflight"), verify_runtime_executables=True)
-        results = [
+        results = iter([
             subprocess.CompletedProcess([], 0, stdout="Python 3.12.13\n", stderr=""),
             subprocess.CompletedProcess([], 0, stdout="ffmpeg version 7.1\n", stderr=""),
             subprocess.CompletedProcess([], 0, stdout="ffprobe version 7.1\n", stderr=""),
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),
-        ]
-        with patch("tools.build_combined_portable.subprocess.run", side_effect=results) as runner:
+        ])
+        real_run = subprocess.run
+
+        def fake_run(command, *args, **kwargs):
+            if any("py_compile" in str(value) for value in command):
+                return real_run([sys.executable, *command[1:]], *args, **kwargs)
+            return next(results)
+
+        with patch("tools.build_combined_portable.subprocess.run", side_effect=fake_run) as runner:
             build_combined_portable(inputs)
-        self.assertEqual(4, runner.call_count)
+        self.assertEqual(5, runner.call_count)
         self.assertEqual("--version", runner.call_args_list[0].args[0][1])
         self.assertEqual("-version", runner.call_args_list[1].args[0][1])
         self.assertEqual("-version", runner.call_args_list[2].args[0][1])
-        self.assertIn("from app.asgi import app", runner.call_args_list[3].args[0][-1])
-        self.assertIn("uvicorn.protocols.http.auto", runner.call_args_list[3].args[0][-1])
-        self.assertIn("pkg_resources", runner.call_args_list[3].args[0][-1])
+        self.assertIn("from app.asgi import app", runner.call_args_list[4].args[0][-1])
+        self.assertIn("uvicorn.protocols.http.auto", runner.call_args_list[4].args[0][-1])
+        self.assertIn("pkg_resources", runner.call_args_list[4].args[0][-1])
 
     def test_formal_preflight_fails_closed_when_mpt_subset_does_not_start(self) -> None:
         inputs = replace(self._inputs("mpt-preflight-failure"), verify_runtime_executables=True)
-        results = [
+        results = iter([
             subprocess.CompletedProcess([], 0, stdout="Python 3.12.13\n", stderr=""),
             subprocess.CompletedProcess([], 0, stdout="ffmpeg version 7.1\n", stderr=""),
             subprocess.CompletedProcess([], 0, stdout="ffprobe version 7.1\n", stderr=""),
             subprocess.CompletedProcess([], 1, stdout="", stderr="ImportError"),
-        ]
-        with patch("tools.build_combined_portable.subprocess.run", side_effect=results):
+        ])
+        real_run = subprocess.run
+
+        def fake_run(command, *args, **kwargs):
+            if any("py_compile" in str(value) for value in command):
+                return real_run([sys.executable, *command[1:]], *args, **kwargs)
+            return next(results)
+
+        with patch("tools.build_combined_portable.subprocess.run", side_effect=fake_run):
             with self.assertRaisesRegex(ValueError, "启动探针失败"):
                 build_combined_portable(inputs)
         self.assertFalse(inputs.output.exists())

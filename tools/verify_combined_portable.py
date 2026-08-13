@@ -188,19 +188,18 @@ USAGE_NAME = "使用说明.txt"
 SKIPPED_DIRECTORY_NAMES = frozenset(
     {".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__", "node_modules"}
 )
+DEPENDENCY_JUNK_DIRECTORY_NAMES = frozenset({".github", "__tests__", "test", "tests"})
 REPO_TREE_ALLOWLIST: dict[str, frozenset[str]] = {
-    "core": frozenset({".py", ".ps1"}),
+    "core": frozenset({".pyc"}),
     "static": frozenset(
         {".css", ".html", ".js", ".json", ".jpeg", ".jpg", ".lucide", ".png", ".svg", ".webp", ".woff", ".woff2"}
     ),
-    "catalog": frozenset({".json", ".md", ".txt", ".yaml", ".yml"}),
-    "agent-skills": frozenset({".css", ".html", ".js", ".json", ".md", ".png", ".py", ".txt", ".yaml", ".yml"}),
 }
 
 
 ROOT_FILES = frozenset(
     {
-        "app.py",
+        "app.pyc",
         "LICENSE",
         ROOT_LAUNCHER_NAME,
         STOP_LAUNCHER_NAME,
@@ -212,24 +211,19 @@ ROOT_FILES = frozenset(
     }
 )
 ROOT_DIRECTORIES = frozenset(
-    {"agent-skills", "catalog", "core", "docs", "engine", "examples", "licenses", "runtime", "scripts", "static", "third_party", "tools"}
+    {"core", "docs", "engine", "licenses", "product-assets", "product-tools", "runtime", "scripts", "static", "third_party", "tools"}
 )
 EXACT_FILES = frozenset(
     {
-        "examples/pattern_cards.jsonl",
         "docs/fonts/NotoSansSC-Regular.ttf",
         "docs/fonts/NotoSansSC-Bold.ttf",
         "docs/fonts/OFL.txt",
         "docs/fonts/SOURCE.md",
-        "scripts/install_combined.py",
-        "scripts/launch_combined.py",
-        "scripts/launch_combined.ps1",
-        "tools/verify_combined_portable.py",
-        "tools/build_public_evidence.py",
-        "tools/verify_public_evidence.py",
-        "third_party/moneyprinterturbo/LICENSE",
-        "third_party/moneyprinterturbo/README.md",
-        "third_party/moneyprinterturbo/upstream-lock.json",
+        "scripts/install_combined.pyc",
+        "scripts/launch_combined.pyc",
+        "tools/verify_combined_portable.pyc",
+        "tools/build_public_evidence.pyc",
+        "tools/verify_public_evidence.pyc",
         HYPERFRAMES_UPSTREAM_LICENSE,
         "third_party/hyperframes/README.md",
         HYPERFRAMES_UPSTREAM_LOCK,
@@ -240,18 +234,14 @@ EXACT_FILES = frozenset(
         "third_party/ffmpeg/licenses/FFmpeg-COPYING.LGPLv3",
         "third_party/ffmpeg/licenses/FFmpeg-LICENSE.md",
         "third_party/ffmpeg/licenses/zlib-LICENSE",
-        "tools/apply_hyperframes_windows_mf_patch.py",
-        "tools/verify_ffmpeg_distribution.py",
         "third_party/python_runtime/README.md",
         MOVIEPY_PATCH_MANIFEST,
-        MOVIEPY_PATCHER,
         PYTHON_LICENSE_OVERRIDE_MANIFEST,
         PYTHON_PRUNED_IMPORT_CONTRACT,
         "runtime/python/python.exe",
         "runtime/ffmpeg/ffmpeg.exe",
         "runtime/ffmpeg/ffprobe.exe",
         "licenses/PRODUCT-MIT.txt",
-        "licenses/MoneyPrinterTurbo-MIT.txt",
         "licenses/NotoSansSC-OFL.txt",
         FFMPEG_RUNTIME_LOCK_COPY,
         "licenses/FFmpeg-COPYING.LGPLv2.1",
@@ -261,6 +251,14 @@ EXACT_FILES = frozenset(
         "licenses/Python-license.txt",
         PYTHON_RUNTIME_SBOM,
         "licenses/README.txt",
+    }
+)
+LEGACY_MPT_EXACT_FILES = frozenset(
+    {
+        "third_party/moneyprinterturbo/LICENSE",
+        "third_party/moneyprinterturbo/README.md",
+        "third_party/moneyprinterturbo/upstream-lock.json",
+        "licenses/MoneyPrinterTurbo-MIT.txt",
         "engine/MoneyPrinterTurbo/pyproject.toml",
         "engine/MoneyPrinterTurbo/uv.lock",
         "engine/MoneyPrinterTurbo/LICENSE",
@@ -269,6 +267,16 @@ EXACT_FILES = frozenset(
         "engine/MoneyPrinterTurbo/resource/public/index.html",
         "engine/MoneyPrinterTurbo/resource/fonts/NotoSansSC-Regular.ttf",
         "engine/MoneyPrinterTurbo/storage/local_videos/MATERIALS.json",
+    }
+)
+CUSTOMER_ASSETS = frozenset(
+    {
+        "product-assets/motion/animation-pack-v1.json",
+        "product-assets/motion/composition-template.html",
+        "product-assets/motion/composition-template-clean-air-explainer.html",
+        "product-assets/motion/composition-template-cinematic.html",
+        "product-assets/motion/media/clean-air-device-neutral-v1.png",
+        "product-tools/extract_url.pyc",
     }
 )
 OPTIONAL_EXACT_FILES = frozenset()
@@ -359,8 +367,8 @@ def _role_for(relative: str) -> str:
     roles = {
         "core": "workbench_code",
         "static": "workbench_ui",
-        "catalog": "local_tool_catalog",
-        "agent-skills": "agent_capabilities",
+        "product-assets": "product_assets",
+        "product-tools": "product_runtime_helpers",
         "docs": "font_assets",
         "scripts": "launcher",
         "tools": "integrity_verifier",
@@ -486,7 +494,7 @@ def _allowed_file(relative: str) -> bool:
         or _is_forbidden_browser_payload(relative)
     ):
         return False
-    if relative in ROOT_FILES or relative in EXACT_FILES or relative in OPTIONAL_EXACT_FILES:
+    if relative in ROOT_FILES or relative in EXACT_FILES or relative in LEGACY_MPT_EXACT_FILES or relative in CUSTOMER_ASSETS or relative in OPTIONAL_EXACT_FILES:
         return True
     path = PurePosixPath(relative)
     parts = path.parts
@@ -1484,7 +1492,6 @@ def _verify_python_runtime_sbom(
             errors.append("motion_primary Python runtime 缺少正式 MoviePy Windows-MF 修改身份")
         if (
             digest(MOVIEPY_PATCH_MANIFEST) != MOVIEPY_PATCH_MANIFEST_SHA256
-            or digest(MOVIEPY_PATCHER) != MOVIEPY_PATCHER_SHA256
         ):
             errors.append("MoviePy Windows-MF patch manifest 或 patcher SHA-256 不一致")
     expected_order = sorted(seen_keys, key=lambda value: (value[0], value[1].casefold()))
@@ -1894,12 +1901,26 @@ def _verify_layout(names: list[str]) -> list[str]:
         )
         if any(part.casefold() in forbidden_parts for part in parts):
             errors.append(f"包内出现缓存、测试依赖或版本库目录：{relative}")
+        if relative.startswith(("runtime/python/", "runtime/hyperframes/")) and any(
+            part.casefold() in DEPENDENCY_JUNK_DIRECTORY_NAMES for part in parts[2:-1]
+        ):
+            errors.append(f"customer runtime contains upstream development/test directory: {relative}")
+        if relative.startswith(("runtime/python/", "runtime/hyperframes/")):
+            dependency_name = PurePosixPath(relative).name.casefold()
+            if (
+                dependency_name == "conftest.py"
+                or re.fullmatch(r".+\.(?:test|spec)\.(?:js|cjs|mjs|jsx|ts|tsx)", dependency_name)
+                or re.fullmatch(r"test[-_].+\.(?:js|cjs|mjs|ts)", dependency_name)
+            ):
+                errors.append(f"customer runtime contains upstream loose test file: {relative}")
+        if relative.startswith(("app.", "core/", "scripts/", "tools/", "product-tools/")) and PurePosixPath(relative).suffix.casefold() == ".py":
+            errors.append(f"customer package contains first-party Python source: {relative}")
         if PurePosixPath(relative).name.casefold() in SECRET_FILE_NAMES:
             errors.append(f"包内出现秘密或 Cookie 文件：{relative}")
         if not _allowed_file(relative):
             errors.append(f"包内出现非白名单文件：{relative}")
 
-    required = ROOT_FILES | EXACT_FILES
+    required = ROOT_FILES | EXACT_FILES | CUSTOMER_ASSETS
     missing = sorted(required - set(names), key=str.casefold)
     if missing:
         errors.append(f"包内缺少必需文件：{missing}")
@@ -1948,36 +1969,50 @@ def _verify_manifest(
         "materials",
         "files",
     }
-    motion_package = manifest.get("schema_version") == 2
+    schema_version = manifest.get("schema_version")
+    motion_package = schema_version in {2, 3}
+    customer_motion = schema_version == 3
     expected_keys = legacy_keys | ({"package_profile", "motion_runtime"} if motion_package else set())
+    if customer_motion:
+        expected_keys = (expected_keys - {"materials"}) | {"customer_distribution"}
     if set(manifest) != expected_keys:
         errors.append("PACKAGE-MANIFEST.json 顶层字段不符合固定协议")
-    if manifest.get("schema_version") not in {1, 2} or manifest.get("version") != PACKAGE_VERSION:
+    if not customer_motion:
+        missing_legacy = sorted(LEGACY_MPT_EXACT_FILES - set(names), key=str.casefold)
+        if missing_legacy:
+            errors.append(f"组合包缺少旧式实拍引擎合同文件：{missing_legacy}")
+    if schema_version not in {1, 2, 3} or manifest.get("version") != PACKAGE_VERSION:
         errors.append("PACKAGE-MANIFEST.json 版本不正确")
     if manifest.get("package_kind") != "windows_x64_combined_portable":
         errors.append("PACKAGE-MANIFEST.json 包类型不正确")
     source = manifest.get("source")
-    if not isinstance(source, dict) or set(source) != {
-        "repository_commit",
-        "moneyprinterturbo_version",
-        "moneyprinterturbo_commit",
-        "mpt_payload_sha256",
-    }:
+    expected_source_keys = (
+        {"repository_commit"}
+        if customer_motion
+        else {
+            "repository_commit",
+            "moneyprinterturbo_version",
+            "moneyprinterturbo_commit",
+            "mpt_payload_sha256",
+        }
+    )
+    if not isinstance(source, dict) or set(source) != expected_source_keys:
         errors.append("PACKAGE-MANIFEST.json 来源结构不正确")
     else:
         if not re.fullmatch(r"[0-9a-f]{40}", str(source.get("repository_commit", ""))):
             errors.append("PACKAGE-MANIFEST.json 缺少完整项目提交哈希")
-        if source.get("moneyprinterturbo_version") != EXPECTED_MPT_VERSION or source.get("moneyprinterturbo_commit") != EXPECTED_MPT_COMMIT:
+        if not customer_motion and (source.get("moneyprinterturbo_version") != EXPECTED_MPT_VERSION or source.get("moneyprinterturbo_commit") != EXPECTED_MPT_COMMIT):
             errors.append("PACKAGE-MANIFEST.json 的 MoneyPrinterTurbo 锁不正确")
     expected_runtime = {
         "shared_python": "runtime/python/python.exe",
-        "workbench_entry": "app.py",
-        "moneyprinterturbo_entry": "engine/MoneyPrinterTurbo/app/asgi.py",
+        "workbench_entry": "app.pyc",
         "ffmpeg": "runtime/ffmpeg/ffmpeg.exe",
         "ffprobe": "runtime/ffmpeg/ffprobe.exe",
         "runtime_downloads_allowed": False,
         "payload_sha256": "",
     }
+    if not customer_motion:
+        expected_runtime["moneyprinterturbo_entry"] = "engine/MoneyPrinterTurbo/app/asgi.py"
     if motion_package:
         expected_runtime.update(
             {
@@ -2013,14 +2048,51 @@ def _verify_manifest(
         "user_data_root": "%LOCALAPPDATA%/ShiyiContentFactory/UserData",
         "launcher_state_root": "%LOCALAPPDATA%/ShiyiContentFactory/Launcher",
         "package_runtime_mutable": False,
-        "moneyprinterturbo_root": "engine/MoneyPrinterTurbo/storage",
-        "moneyprinterturbo_immutable_children": ["local_videos"],
         "executable_files_allowed": False,
     }
+    if not customer_motion:
+        expected_mutable.update(
+            {
+                "moneyprinterturbo_root": "engine/MoneyPrinterTurbo/storage",
+                "moneyprinterturbo_immutable_children": ["local_videos"],
+            }
+        )
     if manifest.get("mutable_state") != expected_mutable:
         errors.append("PACKAGE-MANIFEST.json 可变运行状态边界不正确")
     if manifest.get("network") != {"listen_host": "127.0.0.1", "public_cloud_service": False}:
         errors.append("PACKAGE-MANIFEST.json 本机监听合同不正确")
+    if customer_motion:
+        expected_distribution = {
+            "audience": "external_customer",
+            "first_party_python_source_included": False,
+            "internal_diagnostics_included": False,
+            "footage_engine_included": False,
+            "runtime_downloads_allowed": False,
+        }
+        if manifest.get("customer_distribution") != expected_distribution:
+            errors.append("客户发行净化合同不正确")
+        forbidden_prefixes = (
+            "agent-skills/",
+            "catalog/",
+            "examples/",
+            "engine/",
+            "third_party/moneyprinterturbo/",
+        )
+        if any(name.startswith(forbidden_prefixes) for name in names):
+            errors.append("客户纯动画包混入内部能力目录、示例或实拍引擎")
+        if "licenses/MoneyPrinterTurbo-MIT.txt" in names:
+            errors.append("客户纯动画包混入未分发实拍引擎许可证")
+        customer_static_tokens = (
+            "CUSTOMER_BUILD_STRIP_",
+            "agent_test",
+            "Codex",
+            "自动化测试代理",
+            "内部能力目录",
+        )
+        for relative in ("static/index.html", "static/app.js"):
+            text = _decode_text(read(relative))
+            if any(token.casefold() in text.casefold() for token in customer_static_tokens):
+                errors.append(f"客户静态界面仍包含内部测试或构建内容：{relative}")
     motion_runtime = manifest.get("motion_runtime")
     if motion_package:
         expected_motion_keys = {
@@ -2113,7 +2185,7 @@ def _verify_manifest(
                 or not isinstance(patcher_contract, dict)
                 or patcher_contract.get("path") != "tools/apply_hyperframes_windows_mf_patch.py"
                 or str(patcher_contract.get("sha256", "")).upper()
-                != digest("tools/apply_hyperframes_windows_mf_patch.py")
+                != "AFBF8F7F85A4B30FA3E521B2428DF9D1966DBED09B45336955CC0FBC9CB093B6"
                 or not isinstance(packaging_contract, dict)
                 or packaging_contract.get("mpt_video_codec") != H264_CODEC_STRATEGY
                 or packaging_contract.get("report_fields")
@@ -2206,7 +2278,7 @@ def _verify_manifest(
         errors.append("PACKAGE-MANIFEST.json 与实际文件集合不一致")
 
     valid_entries = [entry for entry in entries if isinstance(entry, dict) and set(entry) == {"path", "size", "sha256", "role"}]
-    if isinstance(source, dict) and source.get("mpt_payload_sha256") != _canonical_payload_sha256(
+    if not customer_motion and isinstance(source, dict) and source.get("mpt_payload_sha256") != _canonical_payload_sha256(
         valid_entries, ("engine/MoneyPrinterTurbo/",)
     ):
         errors.append("source.mpt_payload_sha256 与规范化 MPT 文件集不一致")
@@ -2221,7 +2293,7 @@ def _verify_manifest(
 
     if motion_package:
         for relative in names:
-            if not relative.startswith("agent-skills/") or PurePosixPath(relative).suffix.casefold() not in {
+            if not relative.startswith("product-assets/motion/") or PurePosixPath(relative).suffix.casefold() not in {
                 ".css", ".html", ".js", ".json"
             }:
                 continue
@@ -2229,10 +2301,11 @@ def _verify_manifest(
                 errors.append(f"motion_primary 动画资产含网络资源：{relative}")
                 break
 
-    materials = manifest.get("materials")
-    material_names = [name for name in names if re.fullmatch(r"engine/MoneyPrinterTurbo/storage/local_videos/material-\d{2}\.mp4", name)]
-    if materials != {"root": "engine/MoneyPrinterTurbo/storage/local_videos", "count": len(material_names)}:
-        errors.append("PACKAGE-MANIFEST.json 素材根目录或数量不正确")
+    if not customer_motion:
+        materials = manifest.get("materials")
+        material_names = [name for name in names if re.fullmatch(r"engine/MoneyPrinterTurbo/storage/local_videos/material-\d{2}\.mp4", name)]
+        if materials != {"root": "engine/MoneyPrinterTurbo/storage/local_videos", "count": len(material_names)}:
+            errors.append("PACKAGE-MANIFEST.json 素材根目录或数量不正确")
     return errors, manifest
 
 
@@ -2407,21 +2480,18 @@ def _verify_mpt_and_launchers(
     launcher = _decode_text(read(ROOT_LAUNCHER_NAME))
     shared_python = "%~dp0runtime\\python\\python.exe"
     required_launcher_fragments = (
-        '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
-        f'-MptPython "{shared_python}"',
-        f'-AppPython "{shared_python}"',
-        '-MptRoot "%~dp0engine\\MoneyPrinterTurbo"',
-        '-Ffmpeg "%~dp0runtime\\ffmpeg\\ffmpeg.exe"',
-        '-Ffprobe "%~dp0runtime\\ffmpeg\\ffprobe.exe"',
-        '-MaterialRoot "%~dp0engine\\MoneyPrinterTurbo\\storage\\local_videos"',
-        '-MechanicalReview',
+        f'set "SHIYI_LAUNCHER_PYTHON={shared_python}"',
+        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\launch_combined.pyc"',
+        '--ffmpeg "%~dp0runtime\\ffmpeg\\ffmpeg.exe"',
+        '--ffprobe "%~dp0runtime\\ffmpeg\\ffprobe.exe"',
+        '--mechanical-review',
     )
     if any(fragment not in launcher for fragment in required_launcher_fragments):
         errors.append("根启动 BAT 未固定便携运行时、素材目录或反向机械审核模式")
     stop_launcher = _decode_text(read(STOP_LAUNCHER_NAME))
     required_stop_fragments = (
         f'set "SHIYI_LAUNCHER_PYTHON={shared_python}"',
-        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\launch_combined.py" --project-root "%~dp0." --stop',
+        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\launch_combined.pyc" --project-root "%~dp0." --stop',
     )
     if any(fragment not in stop_launcher for fragment in required_stop_fragments):
         errors.append("根关闭 BAT 未使用便携 Python 调用受约束的关闭入口。")
@@ -2430,7 +2500,7 @@ def _verify_mpt_and_launchers(
     migration_launcher = _decode_text(read(MIGRATION_LAUNCHER_NAME))
     required_migration_fragments = (
         f'set "SHIYI_LAUNCHER_PYTHON={shared_python}"',
-        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\launch_combined.py" --project-root "%~dp0." --import-runtime "%OLD_RUNTIME%"',
+        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\launch_combined.pyc" --project-root "%~dp0." --import-runtime "%OLD_RUNTIME%"',
     )
     if any(fragment not in migration_launcher for fragment in required_migration_fragments):
         errors.append("旧版数据迁移 BAT 未使用便携 Python 调用受约束的复制入口。")
@@ -2439,37 +2509,79 @@ def _verify_mpt_and_launchers(
     installer_launcher = _decode_text(read(INSTALLER_LAUNCHER_NAME))
     required_installer_fragments = (
         f'set "SHIYI_INSTALLER_PYTHON={shared_python}"',
-        '"%SHIYI_INSTALLER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\install_combined.py" --source-root "%~dp0."',
+        '"%SHIYI_INSTALLER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\install_combined.pyc" --source-root "%~dp0."',
     )
     if any(fragment not in installer_launcher for fragment in required_installer_fragments):
         errors.append("安装 BAT 未使用包内 Python 调用受约束的一键安装入口。")
-    installer_script = _decode_text(read("scripts/install_combined.py"))
-    required_installer_script_fragments = (
-        'INSTALLER_CONTRACT = "SHIYI_COMBINED_INSTALLER_V1"',
-        'ATOMIC_PUBLISH_CONTRACT = "SHIYI_ATOMIC_UPGRADE_WITH_ROLLBACK_V1"',
-        "MINIMUM_FREE_BYTES = 2 * 1024 * 1024 * 1024",
-        "staging_errors = verifier(staging)",
-        "_publish_staged_install(",
-        'target.with_name(target.name + ".previous")',
-    )
-    if any(fragment not in installer_script for fragment in required_installer_script_fragments):
-        errors.append("一键安装脚本未固定 2GB、复制后验包与同卷原子升级回滚合同。")
-    powershell_launcher = _decode_text(read("scripts/launch_combined.ps1"))
-    required_powershell_fragments = (
-        '$packageManifest = Join-Path $projectRoot "PACKAGE-MANIFEST.json"',
-        '$launcherPython = Join-Path $projectRoot "runtime\\python\\python.exe"',
-        '@("-I", "-S", "-B", "-X", "utf8", $launcher',
-    )
-    if any(fragment not in powershell_launcher for fragment in required_powershell_fragments):
-        errors.append("PowerShell 启动器未固定便携 Python 或隔离解释器启动参数。")
     for relative in (
         ROOT_LAUNCHER_NAME,
         STOP_LAUNCHER_NAME,
         MIGRATION_LAUNCHER_NAME,
         INSTALLER_LAUNCHER_NAME,
-        "scripts/install_combined.py",
-        "scripts/launch_combined.ps1",
-        "scripts/launch_combined.py",
+    ):
+        if DOWNLOAD_COMMAND_RE.search(_decode_text(read(relative))):
+            errors.append(f"{relative} 含运行时下载或安装命令")
+    return errors
+
+
+def _verify_customer_launchers(
+    read: Callable[[str], bytes],
+) -> list[str]:
+    """Verify the pure-motion customer entrypoints without an MPT payload."""
+
+    errors: list[str] = []
+    if read("docs/fonts/OFL.txt") != read("licenses/NotoSansSC-OFL.txt"):
+        errors.append("Noto Sans SC 许可证副本不一致")
+    if read("LICENSE") != read("licenses/PRODUCT-MIT.txt"):
+        errors.append("产品许可证副本不一致")
+    shared_python = "%~dp0runtime\\python\\python.exe"
+    launcher = _decode_text(read(ROOT_LAUNCHER_NAME))
+    required_launcher_fragments = (
+        f'set "SHIYI_LAUNCHER_PYTHON={shared_python}"',
+        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\launch_combined.pyc"',
+        '--ffmpeg "%~dp0runtime\\ffmpeg\\ffmpeg.exe"',
+        '--ffprobe "%~dp0runtime\\ffmpeg\\ffprobe.exe"',
+        "--mechanical-review",
+    )
+    if any(fragment not in launcher for fragment in required_launcher_fragments):
+        errors.append("客户根启动 BAT 未固定纯动画运行时和反向机械审核模式")
+    forbidden_launcher_tokens = (
+        "MoneyPrinterTurbo",
+        "--mpt-root",
+        "--mpt-python",
+        "--material-root",
+        "launch_combined.ps1",
+    )
+    if any(token.casefold() in launcher.casefold() for token in forbidden_launcher_tokens):
+        errors.append("客户根启动 BAT 仍携带实拍引擎或 PowerShell 中转参数")
+
+    stop_launcher = _decode_text(read(STOP_LAUNCHER_NAME))
+    expected_stop = (
+        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 '
+        '"%~dp0scripts\\launch_combined.pyc" --project-root "%~dp0." --stop'
+    )
+    if expected_stop not in stop_launcher:
+        errors.append("客户关闭 BAT 未使用受约束的字节码入口")
+    migration_launcher = _decode_text(read(MIGRATION_LAUNCHER_NAME))
+    expected_migration = (
+        '"%SHIYI_LAUNCHER_PYTHON%" -I -S -B -X utf8 '
+        '"%~dp0scripts\\launch_combined.pyc" --project-root "%~dp0." '
+        '--import-runtime "%OLD_RUNTIME%"'
+    )
+    if expected_migration not in migration_launcher:
+        errors.append("客户数据迁移 BAT 未使用受约束的字节码入口")
+    installer_launcher = _decode_text(read(INSTALLER_LAUNCHER_NAME))
+    expected_installer = (
+        '"%SHIYI_INSTALLER_PYTHON%" -I -S -B -X utf8 '
+        '"%~dp0scripts\\install_combined.pyc" --source-root "%~dp0."'
+    )
+    if expected_installer not in installer_launcher:
+        errors.append("客户安装 BAT 未使用受约束的字节码入口")
+    for relative in (
+        ROOT_LAUNCHER_NAME,
+        STOP_LAUNCHER_NAME,
+        MIGRATION_LAUNCHER_NAME,
+        INSTALLER_LAUNCHER_NAME,
     ):
         if DOWNLOAD_COMMAND_RE.search(_decode_text(read(relative))):
             errors.append(f"{relative} 含运行时下载或安装命令")
@@ -2537,7 +2649,7 @@ def _verify_package(
                 read,
                 size,
                 digest,
-                formal=isinstance(manifest, dict) and manifest.get("schema_version") == 2,
+                formal=isinstance(manifest, dict) and manifest.get("schema_version") in {2, 3},
             )
         )
         errors.extend(
@@ -2546,10 +2658,13 @@ def _verify_package(
                 read,
                 size,
                 digest,
-                formal=isinstance(manifest, dict) and manifest.get("schema_version") == 2,
+                formal=isinstance(manifest, dict) and manifest.get("schema_version") in {2, 3},
             )
         )
-        errors.extend(_verify_mpt_and_launchers(names, read, size, digest))
+        if isinstance(manifest, dict) and manifest.get("schema_version") == 3:
+            errors.extend(_verify_customer_launchers(read))
+        else:
+            errors.extend(_verify_mpt_and_launchers(names, read, size, digest))
         errors.extend(_verify_runtime_relocation_metadata(names))
         errors.extend(_verify_scans(names, read, size))
     except KeyError as exc:

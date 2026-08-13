@@ -119,6 +119,7 @@
         <article class="panel job-detail" id="jobDetailPanel" hidden>
           <div class="panel-head"><div><p class="eyebrow">阶段记录详情</p><h3>证据核验、脚本记录与产物</h3></div><span id="jobDetailBadge" class="pill"></span></div>
           <div id="jobSummary" class="job-summary"></div>
+          <!-- CUSTOMER_BUILD_STRIP_BEGIN: internal-review-ui -->
           <section id="researchApprovalPanel" class="approval-panel" hidden>
             <h3>研究证据审核</h3><p class="lead">严格审核 Agent 以“所有内容默认虚假”为前提反向举证；测试模式由 Codex 逐项审查，正式模式仍由用户确认。</p>
             <div id="researchFindings" class="finding-list"></div>
@@ -130,9 +131,10 @@
             <div class="approval-fields"><label>审查执行者<input id="complianceReviewer" autocomplete="off"></label><label>审核结论<select id="complianceDecision"><option value="approved">批准脚本并进入渲染</option><option value="rejected">退回脚本并要求改稿</option></select></label><label>审查备注<input id="complianceNote" autocomplete="off" placeholder="测试代理必须说明核验范围"></label></div>
             <div class="action-row"><button id="submitComplianceBtn" class="primary" type="button">提交审核并进入渲染</button></div>
           </section>
+          <!-- CUSTOMER_BUILD_STRIP_END: internal-review-ui -->
           <label id="approvedScriptLabel"><span id="approvedScriptLabelText">当前待审脚本</span><textarea id="approvedScriptInput" rows="9" placeholder="内容阶段完成后在此显示待审脚本"></textarea></label><div id="durationEstimate" class="hint"></div>
           <div class="action-row"><button id="saveScriptBtn" class="secondary" type="button">保存浏览器改稿并重算合规</button><button id="rerunJobBtn" class="primary" type="button">推进到下一阶段</button><button id="retryFailedJobBtn" class="primary" type="button" hidden>重新生成这个选题</button><button id="continueExactScriptBtn" class="primary" type="button" hidden>继续修改已保存文案</button></div>
-          <h3 class="subhead">成片与内部诊断</h3><div id="runHistory" class="run-history"></div><div id="artifactLinks" class="artifact-links"></div><video id="artifactVideo" class="artifact-video" controls playsinline hidden></video>
+          <h3 class="subhead">成片与处理记录</h3><div id="runHistory" class="run-history"></div><div id="artifactLinks" class="artifact-links"></div><video id="artifactVideo" class="artifact-video" controls playsinline hidden></video>
         </article>
       </section>
 

@@ -126,11 +126,12 @@ class ApiV2Tests(unittest.TestCase):
 
     def test_customer_runtime_hides_internal_tool_and_catalog_surfaces(self):
         with mock.patch.object(app, "INTERNAL_DIAGNOSTICS_ENABLED", False):
-            status, _, body = self.request("GET", "/api/status")
+            with mock.patch.object(app.package_catalog, "load", side_effect=AssertionError("customer touched catalog")):
+                status, _, body = self.request("GET", "/api/status")
             self.assertEqual(status, 200)
             public_status = json.loads(body)
             for key in (
-                "tool_count", "capabilities", "catalog_package_count", "catalog_install_enabled",
+                "tool_count", "capabilities", "catalog_available", "catalog_package_count", "catalog_install_enabled",
                 "memory_count", "learned_skill_count", "dynamic_capability_pack_count",
                 "internal_diagnostics_enabled",
             ):
@@ -188,6 +189,44 @@ class ApiV2Tests(unittest.TestCase):
                 )
                 self.assertEqual(status, 404)
                 self.assertEqual(json.loads(body)["error"]["code"], "not_found")
+
+            status, _, customer_html = self.request("GET", "/")
+            self.assertEqual(status, 200)
+            self.assertNotIn("researchApprovalPanel", customer_html)
+            self.assertNotIn("complianceApprovalPanel", customer_html)
+            self.assertNotIn("CUSTOMER_BUILD_STRIP", customer_html)
+            self.assertNotIn("Codex", customer_html)
+
+            status, _, customer_js = self.request("GET", "/app.js")
+            self.assertEqual(status, 200)
+            self.assertNotIn("agent_test", customer_js)
+            self.assertNotIn("测试代理", customer_js)
+            self.assertNotIn("CUSTOMER_BUILD_STRIP", customer_js)
+
+            source = Path(app.__file__).read_bytes()
+            customer_source = app._customer_build_content("app.py", source, force=True)
+            self.assertNotIn(b"SHIYI_INTERNAL_DIAGNOSTICS", customer_source)
+            self.assertNotIn(b"\n# CUSTOMER_BUILD_STRIP", customer_source)
+            compile(customer_source, "customer-app.py", "exec")
+
+    def test_internal_diagnostics_degrade_cleanly_when_catalog_is_absent(self):
+        missing_catalog = app.PackageCatalog(Path(self.temp.name) / "missing-catalog.json")
+        with mock.patch.object(app, "INTERNAL_DIAGNOSTICS_ENABLED", True), mock.patch.object(
+            app, "package_catalog", missing_catalog
+        ):
+            status, _, body = self.request("GET", "/api/status")
+            self.assertEqual(status, 200)
+            diagnostics = json.loads(body)
+            self.assertFalse(diagnostics["catalog_available"])
+            self.assertEqual(diagnostics["catalog_package_count"], 0)
+            self.assertFalse(diagnostics["catalog_install_enabled"])
+
+            for path in ("/api/catalog", "/api/hardware"):
+                status, _, body = self.request("GET", path)
+                self.assertEqual(status, 404, path)
+                error = json.loads(body)["error"]
+                self.assertEqual(error["code"], "not_found", path)
+                self.assertEqual(error["message"], "内部能力目录未安装", path)
 
         status, _, body = self.request("GET", "/api/status")
         self.assertEqual(status, 200)

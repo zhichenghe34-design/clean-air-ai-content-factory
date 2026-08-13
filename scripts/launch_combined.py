@@ -196,8 +196,8 @@ def _looks_like_packaged_root(project_root: Path) -> bool:
         (project_root / "PACKAGE-MANIFEST.json").is_file()
         or (
             (project_root / "runtime" / "python" / "python.exe").is_file()
-            and (project_root / "tools" / "verify_combined_portable.py").is_file()
-            and (project_root / "scripts" / "launch_combined.py").is_file()
+            and any((project_root / "tools" / name).is_file() for name in ("verify_combined_portable.pyc", "verify_combined_portable.py"))
+            and any((project_root / "scripts" / name).is_file() for name in ("launch_combined.pyc", "launch_combined.py"))
         )
     )
 
@@ -951,7 +951,9 @@ def verify_packaged_integrity(project_root: Path) -> None:
         # A source checkout has no release manifest. Its Git/source checks are
         # handled by the build pipeline; packaged releases must always have one.
         return
-    verifier = project_root / "tools" / "verify_combined_portable.py"
+    verifier = project_root / "tools" / "verify_combined_portable.pyc"
+    if not verifier.is_file():
+        verifier = project_root / "tools" / "verify_combined_portable.py"
     _require_file(verifier, "PACKAGE_VERIFIER_MISSING", "组合包完整性验证器")
     try:
         spec = importlib.util.spec_from_file_location("_shiyi_packaged_verifier", verifier)
@@ -2207,7 +2209,7 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
             preflight_only=args.preflight_only,
             app_executable=None,
             app_python=shared_python,
-            app_script=(project_root / "app.py").resolve(),
+            app_script=(project_root / "app.pyc").resolve(),
             agent_test_review=bool(args.agent_test_review),
             mechanical_review=bool(args.mechanical_review),
             motion_runtime_required=motion_required,

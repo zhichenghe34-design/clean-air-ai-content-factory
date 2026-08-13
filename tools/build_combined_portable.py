@@ -215,10 +215,8 @@ PYTHON_RUNTIME_PRUNED_REQUIREMENTS = {
 REPO_FILE_ALLOWLIST = (
     "app.py",
     "LICENSE",
-    "examples/pattern_cards.jsonl",
     "scripts/install_combined.py",
     "scripts/launch_combined.py",
-    "scripts/launch_combined.ps1",
     "tools/verify_combined_portable.py",
     "tools/build_public_evidence.py",
     "tools/verify_public_evidence.py",
@@ -226,9 +224,6 @@ REPO_FILE_ALLOWLIST = (
     "docs/fonts/NotoSansSC-Bold.ttf",
     "docs/fonts/OFL.txt",
     "docs/fonts/SOURCE.md",
-    "third_party/moneyprinterturbo/LICENSE",
-    "third_party/moneyprinterturbo/README.md",
-    "third_party/moneyprinterturbo/upstream-lock.json",
     "third_party/hyperframes/LICENSE",
     "third_party/hyperframes/README.md",
     "third_party/hyperframes/upstream-lock.json",
@@ -239,22 +234,34 @@ REPO_FILE_ALLOWLIST = (
     "third_party/ffmpeg/licenses/FFmpeg-COPYING.LGPLv3",
     "third_party/ffmpeg/licenses/FFmpeg-LICENSE.md",
     "third_party/ffmpeg/licenses/zlib-LICENSE",
-    "tools/apply_hyperframes_windows_mf_patch.py",
-    "tools/verify_ffmpeg_distribution.py",
     "third_party/python_runtime/moviepy-windows-mf-patch.json",
-    "tools/apply_moviepy_windows_mf_patch.py",
     "third_party/python_runtime/README.md",
     "third_party/python_runtime/dependency-license-overrides.json",
     "third_party/python_runtime/pruned-import-boundary.json",
 )
+LEGACY_MPT_REPO_FILES = (
+    "third_party/moneyprinterturbo/LICENSE",
+    "third_party/moneyprinterturbo/README.md",
+    "third_party/moneyprinterturbo/upstream-lock.json",
+)
 REPO_TREE_ALLOWLIST: dict[str, frozenset[str]] = {
-    "core": frozenset({".py", ".ps1"}),
+    "core": frozenset({".py"}),
     "static": frozenset(
         {".css", ".html", ".js", ".json", ".jpeg", ".jpg", ".lucide", ".png", ".svg", ".webp", ".woff", ".woff2"}
     ),
-    "catalog": frozenset({".json", ".md", ".txt", ".yaml", ".yml"}),
-    "agent-skills": frozenset({".css", ".html", ".js", ".json", ".md", ".png", ".py", ".txt", ".yaml", ".yml"}),
 }
+CUSTOMER_ASSET_MAP = {
+    "agent-skills/produce-dynamic-health-video/assets/animation-pack-v1.json": "product-assets/motion/animation-pack-v1.json",
+    "agent-skills/produce-dynamic-health-video/assets/composition-template.html": "product-assets/motion/composition-template.html",
+    "agent-skills/produce-dynamic-health-video/assets/composition-template-clean-air-explainer.html": "product-assets/motion/composition-template-clean-air-explainer.html",
+    "agent-skills/produce-dynamic-health-video/assets/composition-template-cinematic.html": "product-assets/motion/composition-template-cinematic.html",
+    "agent-skills/produce-dynamic-health-video/assets/media/clean-air-device-neutral-v1.png": "product-assets/motion/media/clean-air-device-neutral-v1.png",
+    "agent-skills/extract-web-platform-content/scripts/extract_url.py": "product-tools/extract_url.py",
+}
+FIRST_PARTY_PYTHON_ROOTS = ("app.py", "core", "scripts", "tools", "product-tools")
+DEPENDENCY_JUNK_DIRECTORY_NAMES = frozenset(
+    {".github", "__tests__", "test", "tests"}
+)
 MPT_APP_SUFFIX_ALLOWLIST = frozenset({".py", ".json"})
 SKIPPED_DIRECTORY_NAMES = frozenset(
     {".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__", "node_modules"}
@@ -443,9 +450,23 @@ def _copy_python_runtime(source: Path, destination: Path) -> None:
         if (
             relative_posix in pruned_paths
             or _is_redundant_imageio_ffmpeg_executable(relative_posix)
+            or _is_dependency_junk_relative(relative)
         ):
             continue
         _copy_file(path, destination / relative)
+
+
+def _is_dependency_junk_relative(relative: Path) -> bool:
+    """Exclude upstream development/test directories, never importable modules."""
+
+    if any(part.casefold() in DEPENDENCY_JUNK_DIRECTORY_NAMES for part in relative.parts[:-1]):
+        return True
+    name = relative.name.casefold()
+    return bool(
+        name == "conftest.py"
+        or re.fullmatch(r".+\.(?:test|spec)\.(?:js|cjs|mjs|jsx|ts|tsx)", name)
+        or re.fullmatch(r"test[-_].+\.(?:js|cjs|mjs|ts)", name)
+    )
 
 
 def _normalize_python_distribution_name(value: str) -> str:
@@ -1484,7 +1505,10 @@ def _build_python_runtime_sbom(
 
 def _copy_motion_tree(source: Path, destination: Path) -> None:
     for path in _iter_tree_files(source, allow_node_modules=True):
-        _copy_file(path, destination / path.relative_to(source))
+        relative = path.relative_to(source)
+        if _is_dependency_junk_relative(relative):
+            continue
+        _copy_file(path, destination / relative)
 
 
 def _read_node_package(path: Path) -> dict[str, object]:
@@ -2494,7 +2518,10 @@ def _validate_inputs(inputs: BuildInputs) -> tuple[str, Path, frozenset[str]]:
         raise ValueError("输出目录与 ZIP 必须是互不嵌套的独立目标")
     if output.exists() or zip_path.exists():
         raise FileExistsError("输出目录或 ZIP 已存在；为避免覆盖上一成功包，已拒绝构建")
-    if not 1 <= len(inputs.materials) <= 24:
+    if inputs.package_profile == MOTION_PACKAGE_PROFILE:
+        if inputs.materials:
+            raise ValueError("纯动画客户包不得捆绑实拍素材")
+    elif not 1 <= len(inputs.materials) <= 24:
         raise ValueError("本地素材必须包含 1 到 24 个 MP4 文件")
     seen_materials: set[Path] = set()
     for material in inputs.materials:
@@ -2546,11 +2573,109 @@ def _validate_inputs(inputs: BuildInputs) -> tuple[str, Path, frozenset[str]]:
     return repo_commit, python_license, excluded_components
 
 
-def _copy_repository_payload(repo: Path, package: Path) -> None:
+def _copy_repository_payload(repo: Path, package: Path, *, include_legacy_mpt: bool) -> None:
     for relative in REPO_FILE_ALLOWLIST:
         _copy_file(repo / Path(relative), package / Path(relative))
     for relative, suffixes in REPO_TREE_ALLOWLIST.items():
         _copy_tree(repo / relative, package / relative, suffixes)
+    if include_legacy_mpt:
+        for relative in LEGACY_MPT_REPO_FILES:
+            _copy_file(repo / Path(relative), package / Path(relative))
+    for source_relative, destination_relative in CUSTOMER_ASSET_MAP.items():
+        _copy_file(repo / Path(source_relative), package / Path(destination_relative))
+    _strip_customer_static_assets(package / "static")
+
+
+def _strip_customer_static_assets(static_root: Path) -> None:
+    _strip_customer_markers(static_root, {".html", ".js"})
+
+
+def _strip_customer_markers(root: Path, suffixes: set[str]) -> None:
+    begin = re.compile(r"CUSTOMER_BUILD_STRIP_BEGIN:[^\r\n]*")
+    end = re.compile(r"CUSTOMER_BUILD_STRIP_END:[^\r\n]*")
+    candidates = [root] if root.is_file() else sorted(root.rglob("*"))
+    for path in candidates:
+        if not path.is_file() or path.suffix.casefold() not in suffixes:
+            continue
+        text = path.read_text(encoding="utf-8")
+        output: list[str] = []
+        stripping = False
+        for line in text.splitlines(keepends=True):
+            if begin.search(line):
+                if stripping:
+                    raise ValueError(f"nested customer strip marker: {path.name}")
+                stripping = True
+                continue
+            if end.search(line):
+                if not stripping:
+                    raise ValueError(f"unmatched customer strip marker: {path.name}")
+                stripping = False
+                continue
+            if not stripping:
+                output.append(line)
+        if stripping:
+            raise ValueError(f"unclosed customer strip marker: {path.name}")
+        cleaned = "".join(output)
+        if path.suffix.casefold() == ".py":
+            cleaned = cleaned.replace('    "SHIYI_INTERNAL_DIAGNOSTICS",\n', "")
+        forbidden = r"(?!)"
+        if path.suffix.casefold() in {".html", ".js"}:
+            forbidden = r"(?i)CUSTOMER_BUILD_STRIP_|\bCodex\b|agent_test"
+        elif path.name.casefold() == "app.py":
+            forbidden = r"(?i)SHIYI_INTERNAL_DIAGNOSTICS"
+        if re.search(forbidden, cleaned):
+            raise ValueError(f"customer static asset retains internal marker or label: {path.name}")
+        path.write_text(cleaned, encoding="utf-8", newline="")
+
+
+def _freeze_first_party_python(package: Path, *, compiler_python: Path | None = None) -> None:
+    """Compile customer-shipped Python with the bundled interpreter, then remove sources.
+
+    Direct ``module.pyc`` files are intentionally used instead of ``__pycache__`` so
+    CPython's sourceless loader can import them.  ``dfile`` is package-relative to
+    avoid leaking a staging or developer-machine path into code objects.
+    """
+
+    python = compiler_python or (package / "runtime" / "python" / "python.exe")
+    _require_file(python, "bundled Python compiler")
+    for root_name in FIRST_PARTY_PYTHON_ROOTS:
+        target = package / root_name
+        if target.exists():
+            _strip_customer_markers(target, {".py"})
+    compiler = (
+        "import pathlib, py_compile, sys\n"
+        "root = pathlib.Path(sys.argv[1]).resolve()\n"
+        f"roots = {FIRST_PARTY_PYTHON_ROOTS!r}\n"
+        "sources = []\n"
+        "for item in roots:\n"
+        "    path = root / item\n"
+        "    if path.is_file() and path.suffix == '.py': sources.append(path)\n"
+        "    elif path.is_dir(): sources.extend(sorted(path.rglob('*.py')))\n"
+        "for source in sources:\n"
+        "    relative = source.relative_to(root).as_posix()\n"
+        "    py_compile.compile(str(source), cfile=str(source.with_suffix('.pyc')), "
+        "dfile=relative, doraise=True, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)\n"
+        "for source in sources: source.unlink()\n"
+    )
+    completed = subprocess.run(
+        [str(python), "-I", "-S", "-B", "-X", "utf8", "-c", compiler, str(package)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "unknown compiler error"
+        raise ValueError(f"customer Python bytecode freeze failed: {detail}")
+    remaining = sorted(
+        path.relative_to(package).as_posix()
+        for root_name in FIRST_PARTY_PYTHON_ROOTS
+        for path in ([package / root_name] if (package / root_name).is_file() else (package / root_name).rglob("*.py") if (package / root_name).is_dir() else [])
+        if path.is_file() and path.suffix == ".py"
+    )
+    if remaining:
+        raise ValueError("customer package still contains first-party Python source: " + ", ".join(remaining[:8]))
 
 
 def _mpt_component_is_excluded(relative: str, excluded_components: frozenset[str]) -> bool:
@@ -2873,7 +2998,7 @@ def _write_root_launcher(package: Path) -> None:
         "cd /d \"%~dp0\"\r\n"
         "set \"SHIYI_INSTALLER_PYTHON=%~dp0runtime\\python\\python.exe\"\r\n"
         "echo Checking the package and choosing a safe per-user install location...\r\n"
-        "\"%SHIYI_INSTALLER_PYTHON%\" -I -S -B -X utf8 \"%~dp0scripts\\install_combined.py\" --source-root \"%~dp0.\"\r\n"
+        "\"%SHIYI_INSTALLER_PYTHON%\" -I -S -B -X utf8 \"%~dp0scripts\\install_combined.pyc\" --source-root \"%~dp0.\"\r\n"
         "set \"SHIYI_EXIT_CODE=%ERRORLEVEL%\"\r\n"
         "echo.\r\n"
         "pause\r\n"
@@ -2885,15 +3010,12 @@ def _write_root_launcher(package: Path) -> None:
         "@echo off\r\n"
         "setlocal\r\n"
         "cd /d \"%~dp0\"\r\n"
+        "set \"SHIYI_LAUNCHER_PYTHON=%~dp0runtime\\python\\python.exe\"\r\n"
         "echo Verifying the offline package once, then starting the local workbench. Please wait...\r\n"
-        "\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"%~dp0scripts\\launch_combined.ps1\" "
-        "-MptRoot \"%~dp0engine\\MoneyPrinterTurbo\" "
-        "-MptPython \"%~dp0runtime\\python\\python.exe\" "
-        "-AppPython \"%~dp0runtime\\python\\python.exe\" "
-        "-Ffmpeg \"%~dp0runtime\\ffmpeg\\ffmpeg.exe\" "
-        "-Ffprobe \"%~dp0runtime\\ffmpeg\\ffprobe.exe\" "
-        "-MaterialRoot \"%~dp0engine\\MoneyPrinterTurbo\\storage\\local_videos\" "
-        "-MechanicalReview\r\n"
+        "\"%SHIYI_LAUNCHER_PYTHON%\" -I -S -B -X utf8 \"%~dp0scripts\\launch_combined.pyc\" "
+        "--project-root \"%~dp0.\" --app-python \"%SHIYI_LAUNCHER_PYTHON%\" "
+        "--ffmpeg \"%~dp0runtime\\ffmpeg\\ffmpeg.exe\" --ffprobe \"%~dp0runtime\\ffmpeg\\ffprobe.exe\" "
+        "--mechanical-review\r\n"
         "set \"SHIYI_EXIT_CODE=%ERRORLEVEL%\"\r\n"
         "if not \"%SHIYI_EXIT_CODE%\"==\"0\" pause\r\n"
         "exit /b %SHIYI_EXIT_CODE%\r\n",
@@ -2906,7 +3028,7 @@ def _write_root_launcher(package: Path) -> None:
         "cd /d \"%~dp0\"\r\n"
         "set \"SHIYI_LAUNCHER_PYTHON=%~dp0runtime\\python\\python.exe\"\r\n"
         "echo Checking recorded process identity, then stopping only this product process tree...\r\n"
-        "\"%SHIYI_LAUNCHER_PYTHON%\" -I -S -B -X utf8 \"%~dp0scripts\\launch_combined.py\" --project-root \"%~dp0.\" --stop\r\n"
+        "\"%SHIYI_LAUNCHER_PYTHON%\" -I -S -B -X utf8 \"%~dp0scripts\\launch_combined.pyc\" --project-root \"%~dp0.\" --stop\r\n"
         "set \"SHIYI_EXIT_CODE=%ERRORLEVEL%\"\r\n"
         "if not \"%SHIYI_EXIT_CODE%\"==\"0\" pause\r\n"
         "exit /b %SHIYI_EXIT_CODE%\r\n",
@@ -2926,7 +3048,7 @@ def _write_root_launcher(package: Path) -> None:
         ")\r\n"
         "set \"SHIYI_LAUNCHER_PYTHON=%~dp0runtime\\python\\python.exe\"\r\n"
         "echo Validating old user data, then copying it without deleting the source...\r\n"
-        "\"%SHIYI_LAUNCHER_PYTHON%\" -I -S -B -X utf8 \"%~dp0scripts\\launch_combined.py\" --project-root \"%~dp0.\" --import-runtime \"%OLD_RUNTIME%\"\r\n"
+        "\"%SHIYI_LAUNCHER_PYTHON%\" -I -S -B -X utf8 \"%~dp0scripts\\launch_combined.pyc\" --project-root \"%~dp0.\" --import-runtime \"%OLD_RUNTIME%\"\r\n"
         "set \"SHIYI_EXIT_CODE=%ERRORLEVEL%\"\r\n"
         "pause\r\n"
         "exit /b %SHIYI_EXIT_CODE%\r\n",
@@ -2952,8 +3074,8 @@ def _write_root_launcher(package: Path) -> None:
         "11. 安装位置和数据位置是两回事：App 只放程序；任务、历史成片、设置和本机 DPAPI 加密 Key 固定保存在当前 Windows 用户的 LocalAppData\\ShiyiContentFactory\\UserData。相同版本会复核后直接复用；新版会先完整校验，再原子替换 App 并保留一个 App.previous 回滚版本；损坏的 App 可由同一入口安全修复。\n"
         f"12. 从旧便携版升级时，请在第一次启动新版前，把旧包的 runtime 文件夹拖到“{MIGRATION_LAUNCHER_NAME}”上；它只复制任务、配置和 DPAPI 加密 Key，不删除旧目录。若新版已产生不同数据会拒绝覆盖。\n"
         f"13. 使用完毕请双击“{STOP_LAUNCHER_NAME}”。关闭浏览器本身不会停止本地服务。\n"
-        "14. 启动失败时先查看 %LOCALAPPDATA%\\ShiyiContentFactory\\Launcher\\mpt-api.log 和控制台中的结构化错误；不要重复双击多个实例。\n"
-        "15. 工作台和可选实拍引擎只监听 127.0.0.1，不提供公网云服务；对外发布仍由企业负责人最终确认。\n",
+        "14. 启动失败时查看启动窗口中的结构化错误；不要重复双击多个实例。\n"
+        "15. 工作台只监听 127.0.0.1，不提供公网云服务；实拍引擎和示例素材未随本版分发，对外发布仍由企业负责人最终确认。\n",
         encoding="utf-8",
     )
 
@@ -3007,7 +3129,8 @@ def _copy_runtime_and_licenses(inputs: BuildInputs, package: Path, python_licens
 
     license_dir = package / "licenses"
     _copy_file(repo / "LICENSE", license_dir / "PRODUCT-MIT.txt")
-    _copy_file(inputs.mpt_source.resolve() / "LICENSE", license_dir / "MoneyPrinterTurbo-MIT.txt")
+    if inputs.motion_runtime is None:
+        _copy_file(inputs.mpt_source.resolve() / "LICENSE", license_dir / "MoneyPrinterTurbo-MIT.txt")
     _copy_file(repo / "docs" / "fonts" / "OFL.txt", license_dir / "NotoSansSC-OFL.txt")
     _copy_file(repo / FFMPEG_LOCK_RELATIVE, package / FFMPEG_RUNTIME_LOCK_COPY)
     for name in FFMPEG_LICENSE_FILES:
@@ -3072,8 +3195,13 @@ def _copy_runtime_and_licenses(inputs: BuildInputs, package: Path, python_licens
             json.dumps(hyperframes_sbom, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
     motion_label = "、Node 与 HyperFrames" if inputs.motion_runtime is not None else ""
+    component_label = (
+        f"产品、Noto Sans SC、FFmpeg、Python{motion_label}"
+        if inputs.motion_runtime is not None
+        else f"产品、MoneyPrinterTurbo、Noto Sans SC、FFmpeg、Python{motion_label}"
+    )
     (license_dir / "README.txt").write_text(
-        f"本目录集中保存产品、MoneyPrinterTurbo、Noto Sans SC、FFmpeg、Python{motion_label} 的许可证副本。\n"
+        f"本目录集中保存{component_label}的许可证副本。\n"
         f"FFmpeg 对象码仅来自项目内 {FFMPEG_RUNTIME_RELATIVE.as_posix()}；完整 LGPL 构建、精确九文件哈希、"
         f"源代码伴随包身份及发布配对规则见 {FFMPEG_RUNTIME_LOCK_COPY.name}。\n"
         f"Python 第三方 distribution 的逐文件哈希、许可证声明与正文证据见 {PYTHON_RUNTIME_SBOM}；"
@@ -3094,8 +3222,8 @@ def _role_for(relative: str) -> str:
     roles = {
         "core": "workbench_code",
         "static": "workbench_ui",
-        "catalog": "local_tool_catalog",
-        "agent-skills": "agent_capabilities",
+        "product-assets": "product_assets",
+        "product-tools": "product_runtime_helpers",
         "docs": "font_assets",
         "scripts": "launcher",
         "tools": "integrity_verifier",
@@ -3135,21 +3263,25 @@ def _write_manifests(package: Path, repo_commit: str, inputs: BuildInputs) -> di
         files.append(
             {"path": relative, "size": path.stat().st_size, "sha256": sha256_file(path), "role": _role_for(relative)}
         )
+    customer_motion = inputs.motion_runtime is not None
     manifest: dict[str, object] = {
-        "schema_version": 2 if inputs.motion_runtime is not None else 1,
+        "schema_version": 3 if customer_motion else 1,
         "product": "时宜 Agent 内容工厂",
         "version": PACKAGE_VERSION,
         "package_kind": "windows_x64_combined_portable",
-        "source": {
-            "repository_commit": repo_commit,
-            "moneyprinterturbo_version": EXPECTED_MPT_VERSION,
-            "moneyprinterturbo_commit": EXPECTED_MPT_COMMIT,
-            "mpt_payload_sha256": _canonical_payload_sha256(files, ("engine/MoneyPrinterTurbo/",)),
-        },
+        "source": (
+            {"repository_commit": repo_commit}
+            if customer_motion
+            else {
+                "repository_commit": repo_commit,
+                "moneyprinterturbo_version": EXPECTED_MPT_VERSION,
+                "moneyprinterturbo_commit": EXPECTED_MPT_COMMIT,
+                "mpt_payload_sha256": _canonical_payload_sha256(files, ("engine/MoneyPrinterTurbo/",)),
+            }
+        ),
         "runtime": {
             "shared_python": "runtime/python/python.exe",
-            "workbench_entry": "app.py",
-            "moneyprinterturbo_entry": "engine/MoneyPrinterTurbo/app/asgi.py",
+            "workbench_entry": "app.pyc",
             "ffmpeg": "runtime/ffmpeg/ffmpeg.exe",
             "ffprobe": "runtime/ffmpeg/ffprobe.exe",
             "runtime_downloads_allowed": False,
@@ -3159,14 +3291,26 @@ def _write_manifests(package: Path, repo_commit: str, inputs: BuildInputs) -> di
             "user_data_root": "%LOCALAPPDATA%/ShiyiContentFactory/UserData",
             "launcher_state_root": "%LOCALAPPDATA%/ShiyiContentFactory/Launcher",
             "package_runtime_mutable": False,
-            "moneyprinterturbo_root": "engine/MoneyPrinterTurbo/storage",
-            "moneyprinterturbo_immutable_children": ["local_videos"],
             "executable_files_allowed": False,
         },
         "network": {"listen_host": "127.0.0.1", "public_cloud_service": False},
-        "materials": {"root": "engine/MoneyPrinterTurbo/storage/local_videos", "count": len([p for p in files if p["path"].endswith(".mp4")])},
         "files": files,
     }
+    if not customer_motion:
+        runtime_contract = manifest["runtime"]
+        mutable_contract = manifest["mutable_state"]
+        assert isinstance(runtime_contract, dict) and isinstance(mutable_contract, dict)
+        runtime_contract["moneyprinterturbo_entry"] = "engine/MoneyPrinterTurbo/app/asgi.py"
+        mutable_contract.update(
+            {
+                "moneyprinterturbo_root": "engine/MoneyPrinterTurbo/storage",
+                "moneyprinterturbo_immutable_children": ["local_videos"],
+            }
+        )
+        manifest["materials"] = {
+            "root": "engine/MoneyPrinterTurbo/storage/local_videos",
+            "count": len([p for p in files if p["path"].endswith(".mp4")]),
+        }
     if inputs.motion_runtime is not None:
         motion = inputs.motion_runtime
         ffmpeg_lock, _ffmpeg_runtime = _read_ffmpeg_distribution_contract(
@@ -3202,6 +3346,13 @@ def _write_manifests(package: Path, repo_commit: str, inputs: BuildInputs) -> di
             "source_companion_sha256": str(ffmpeg_source_companion["sha256"]).upper(),
         }
         manifest["package_profile"] = MOTION_PACKAGE_PROFILE
+        manifest["customer_distribution"] = {
+            "audience": "external_customer",
+            "first_party_python_source_included": False,
+            "internal_diagnostics_included": False,
+            "footage_engine_included": False,
+            "runtime_downloads_allowed": False,
+        }
         manifest["motion_runtime"] = {
             "mode": "offline_bundled_with_system_browser",
             "node": "runtime/node/node.exe",
@@ -3254,16 +3405,31 @@ def build_combined_portable(inputs: BuildInputs) -> dict[str, object]:
     published_zip = False
     try:
         package.mkdir()
-        _copy_repository_payload(inputs.repo.resolve(), package)
-        _copy_mpt_payload(
-            inputs.mpt_source.resolve(),
-            package / "engine" / "MoneyPrinterTurbo",
-            inputs.repo.resolve() / "docs" / "fonts" / "NotoSansSC-Regular.ttf",
-            mpt_excluded_components,
+        customer_motion = inputs.motion_runtime is not None
+        _copy_repository_payload(
+            inputs.repo.resolve(), package, include_legacy_mpt=not customer_motion
         )
-        _copy_materials(inputs.materials, package / "engine" / "MoneyPrinterTurbo" / "storage" / "local_videos")
+        if not customer_motion:
+            _copy_mpt_payload(
+                inputs.mpt_source.resolve(),
+                package / "engine" / "MoneyPrinterTurbo",
+                inputs.repo.resolve() / "docs" / "fonts" / "NotoSansSC-Regular.ttf",
+                mpt_excluded_components,
+            )
+            _copy_materials(
+                inputs.materials,
+                package / "engine" / "MoneyPrinterTurbo" / "storage" / "local_videos",
+            )
         _copy_runtime_and_licenses(inputs, package, python_license)
-        if inputs.verify_runtime_executables:
+        _validate_formal_python_import_boundary(
+            package,
+            _read_python_pruned_import_contract(inputs.repo.resolve()),
+        )
+        _freeze_first_party_python(
+            package,
+            compiler_python=None if inputs.verify_runtime_executables else Path(sys.executable),
+        )
+        if not customer_motion and inputs.verify_runtime_executables:
             _verify_mpt_offline_subset_executable(package)
         if inputs.motion_runtime is not None and inputs.verify_runtime_executables:
             _verify_motion_executables(package, inputs.motion_runtime)
@@ -3309,7 +3475,7 @@ def main() -> int:
     parser.add_argument("--hyperframes-runtime", type=Path, required=True)
     parser.add_argument("--node-version", required=True)
     parser.add_argument("--hyperframes-version", required=True)
-    parser.add_argument("--material", action="append", type=Path, required=True)
+    parser.add_argument("--material", action="append", type=Path, default=[])
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--zip", dest="zip_path", type=Path, required=True)
     args = parser.parse_args()
