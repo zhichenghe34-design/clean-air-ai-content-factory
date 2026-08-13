@@ -43,6 +43,7 @@ from tools.build_combined_portable import (
     SYSTEM_EDGE_MINIMUM_MAJOR,
     build_combined_portable,
     _read_hyperframes_license_contract,
+    _strip_customer_markers,
     _validate_hyperframes_dependency_closure,
     sha256_file,
 )
@@ -1097,6 +1098,7 @@ class CombinedPortableTests(unittest.TestCase):
             errors="replace",
         )
         self.assertEqual(0, packaged_launcher.returncode, packaged_launcher.stdout + packaged_launcher.stderr)
+        self.assertNotIn("--agent-test-review", packaged_launcher.stdout)
 
     def test_customer_package_freezes_sources_and_prunes_dependency_junk(self) -> None:
         self._write(self.python_runtime, "Lib/site-packages/fixture/tests/test_hidden.py", "raise RuntimeError\n")
@@ -1121,6 +1123,50 @@ class CombinedPortableTests(unittest.TestCase):
         self.assertTrue((inputs.output / "product-assets/motion/animation-pack-v1.json").is_file())
         self.assertTrue((inputs.output / "product-tools/extract_url.pyc").is_file())
         self.assertEqual([], verify_folder(inputs.output))
+
+    def test_customer_strip_markers_only_match_complete_comment_lines(self) -> None:
+        source = self._write(
+            self.root,
+            "customer-strip/app.py",
+            "before = True\n"
+            "# CUSTOMER_BUILD_STRIP_BEGIN: internal-switch\n"
+            "secret = 'remove me'\n"
+            "# CUSTOMER_BUILD_STRIP_END: internal-switch\n"
+            "markers = (\n"
+            "    \"# CUSTOMER_BUILD_STRIP_BEGIN:\",\n"
+            "    \"// CUSTOMER_BUILD_STRIP_BEGIN:\",\n"
+            "    \"<!-- CUSTOMER_BUILD_STRIP_BEGIN:\",\n"
+            ")\n"
+            "after = True\n",
+        )
+
+        _strip_customer_markers(source, {".py"})
+
+        cleaned = source.read_text(encoding="utf-8")
+        self.assertNotIn("remove me", cleaned)
+        self.assertIn('"# CUSTOMER_BUILD_STRIP_BEGIN:"', cleaned)
+        self.assertIn('"// CUSTOMER_BUILD_STRIP_BEGIN:"', cleaned)
+        self.assertIn('"<!-- CUSTOMER_BUILD_STRIP_BEGIN:"', cleaned)
+        compile(cleaned, "customer-strip-app.py", "exec")
+
+    def test_customer_strip_markers_fail_closed_on_invalid_structure(self) -> None:
+        cases = {
+            "nested": (
+                "# CUSTOMER_BUILD_STRIP_BEGIN: outer\n"
+                "# CUSTOMER_BUILD_STRIP_BEGIN: inner\n"
+            ),
+            "orphan": "# CUSTOMER_BUILD_STRIP_END: orphan\n",
+            "unclosed": "# CUSTOMER_BUILD_STRIP_BEGIN: open\n",
+            "mismatch": (
+                "# CUSTOMER_BUILD_STRIP_BEGIN: first\n"
+                "# CUSTOMER_BUILD_STRIP_END: second\n"
+            ),
+        }
+        for name, content in cases.items():
+            with self.subTest(name=name):
+                source = self._write(self.root, f"customer-strip-invalid/{name}.py", content)
+                with self.assertRaises(ValueError):
+                    _strip_customer_markers(source, {".py"})
 
     def test_verifier_rejects_redundant_runtime_binary_and_locked_mpt_components(self) -> None:
         inputs = self._inputs("forbidden-package-content")

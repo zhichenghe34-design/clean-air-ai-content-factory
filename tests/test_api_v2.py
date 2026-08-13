@@ -206,6 +206,9 @@ class ApiV2Tests(unittest.TestCase):
             source = Path(app.__file__).read_bytes()
             customer_source = app._customer_build_content("app.py", source, force=True)
             self.assertNotIn(b"SHIYI_INTERNAL_DIAGNOSTICS", customer_source)
+            self.assertNotIn(b"SHIYI_AGENT_TEST_REVIEW", customer_source)
+            self.assertNotIn(b"SHIYI_STAGE_REVIEW_MODE", customer_source)
+            self.assertIn(b"STAGE_REVIEW_MODE = MECHANICAL_STAGE_REVIEW", customer_source)
             self.assertNotIn(b"\n# CUSTOMER_BUILD_STRIP", customer_source)
             compile(customer_source, "customer-app.py", "exec")
 

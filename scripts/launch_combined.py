@@ -2210,7 +2210,7 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
             app_executable=None,
             app_python=shared_python,
             app_script=(project_root / "app.pyc").resolve(),
-            agent_test_review=bool(args.agent_test_review),
+            agent_test_review=bool(getattr(args, "agent_test_review", False)),
             mechanical_review=bool(args.mechanical_review),
             motion_runtime_required=motion_required,
             node_executable=node_executable,
@@ -2295,7 +2295,7 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
         app_executable=app_executable,
         app_python=app_python,
         app_script=app_script,
-        agent_test_review=bool(args.agent_test_review),
+        agent_test_review=bool(getattr(args, "agent_test_review", False)),
         mechanical_review=bool(args.mechanical_review),
         motion_runtime_required=motion_required,
         node_executable=node_executable,
@@ -2339,11 +2339,13 @@ def build_parser() -> argparse.ArgumentParser:
     maintenance.add_argument("--stop", action="store_true", help="只停止由当前便携包记录的进程树")
     maintenance.add_argument("--import-runtime", help="从旧版包内 runtime 复制任务、配置和本机加密 Key")
     review_mode = parser.add_mutually_exclusive_group()
+    # CUSTOMER_BUILD_STRIP_BEGIN: internal-agent-test-cli
     review_mode.add_argument(
         "--agent-test-review",
         action="store_true",
         help="仅用于受控测试：两道阶段门禁由Codex浏览器操作，记录不冒充人审",
     )
+    # CUSTOMER_BUILD_STRIP_END: internal-agent-test-cli
     review_mode.add_argument(
         "--mechanical-review",
         action="store_true",

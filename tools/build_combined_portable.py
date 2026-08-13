@@ -2597,36 +2597,45 @@ def _strip_customer_static_assets(static_root: Path) -> None:
 
 
 def _strip_customer_markers(root: Path, suffixes: set[str]) -> None:
-    begin = re.compile(r"CUSTOMER_BUILD_STRIP_BEGIN:[^\r\n]*")
-    end = re.compile(r"CUSTOMER_BUILD_STRIP_END:[^\r\n]*")
+    marker = re.compile(
+        r"^\s*(?:#|//|<!--)\s*CUSTOMER_BUILD_STRIP_(BEGIN|END):\s*"
+        r"([A-Za-z0-9_.-]+)\s*(?:-->)?\s*$"
+    )
     candidates = [root] if root.is_file() else sorted(root.rglob("*"))
     for path in candidates:
         if not path.is_file() or path.suffix.casefold() not in suffixes:
             continue
         text = path.read_text(encoding="utf-8")
         output: list[str] = []
-        stripping = False
+        active_marker: str | None = None
         for line in text.splitlines(keepends=True):
-            if begin.search(line):
-                if stripping:
+            marker_match = marker.fullmatch(line.rstrip("\r\n"))
+            if marker_match and marker_match.group(1) == "BEGIN":
+                if active_marker is not None:
                     raise ValueError(f"nested customer strip marker: {path.name}")
-                stripping = True
+                active_marker = marker_match.group(2)
                 continue
-            if end.search(line):
-                if not stripping:
+            if marker_match:
+                closing_marker = marker_match.group(2)
+                if active_marker is None:
                     raise ValueError(f"unmatched customer strip marker: {path.name}")
-                stripping = False
+                if closing_marker != active_marker:
+                    raise ValueError(f"mismatched customer strip marker: {path.name}")
+                active_marker = None
                 continue
-            if not stripping:
+            if active_marker is None:
                 output.append(line)
-        if stripping:
+        if active_marker is not None:
             raise ValueError(f"unclosed customer strip marker: {path.name}")
         cleaned = "".join(output)
         if path.suffix.casefold() == ".py":
             cleaned = cleaned.replace('    "SHIYI_INTERNAL_DIAGNOSTICS",\n', "")
         forbidden = r"(?!)"
         if path.suffix.casefold() in {".html", ".js"}:
-            forbidden = r"(?i)CUSTOMER_BUILD_STRIP_|\bCodex\b|agent_test"
+            forbidden = (
+                r"(?i)CUSTOMER_BUILD_STRIP_|\bCodex\b|agent_test|agentTestReview|"
+                r"internalReviewUi|自动化测试代理|测试代理|测试成片|内部诊断"
+            )
         elif path.name.casefold() == "app.py":
             forbidden = r"(?i)SHIYI_INTERNAL_DIAGNOSTICS"
         if re.search(forbidden, cleaned):

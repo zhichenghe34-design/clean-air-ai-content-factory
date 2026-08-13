@@ -105,6 +105,8 @@ LAUNCH_INSTANCE_SHA256 = (
 del _launch_instance_token
 
 config_store = ConfigStore(RUNTIME_DIR)
+STAGE_REVIEW_MODE = MECHANICAL_STAGE_REVIEW
+# CUSTOMER_BUILD_STRIP_BEGIN: internal-review-mode-switch
 _explicit_review_mode = os.environ.get("SHIYI_STAGE_REVIEW_MODE", "").strip()
 if _explicit_review_mode and _explicit_review_mode not in STAGE_REVIEW_MODES:
     raise RuntimeError("SHIYI_STAGE_REVIEW_MODE必须是human、agent_test或mechanical")
@@ -113,6 +115,7 @@ STAGE_REVIEW_MODE = _explicit_review_mode or (
     if os.environ.get("SHIYI_AGENT_TEST_REVIEW", "").strip() == "1"
     else MECHANICAL_STAGE_REVIEW
 )
+# CUSTOMER_BUILD_STRIP_END: internal-review-mode-switch
 job_store = JobStore(RUNTIME_DIR, stage_review_mode=STAGE_REVIEW_MODE)
 learning_store = LearningStore(RUNTIME_DIR)
 capability_registry = CapabilityPackRegistry(RUNTIME_DIR)

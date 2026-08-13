@@ -2086,7 +2086,12 @@ def _verify_manifest(
             "CUSTOMER_BUILD_STRIP_",
             "agent_test",
             "Codex",
+            "agentTestReview",
+            "internalReviewUi",
             "自动化测试代理",
+            "测试代理",
+            "测试成片",
+            "内部诊断",
             "内部能力目录",
         )
         for relative in ("static/index.html", "static/app.js"):
