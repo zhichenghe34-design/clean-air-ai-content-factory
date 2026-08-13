@@ -1103,6 +1103,24 @@ class CombinedPortableTests(unittest.TestCase):
     def test_customer_package_freezes_sources_and_prunes_dependency_junk(self) -> None:
         self._write(self.python_runtime, "Lib/site-packages/fixture/tests/test_hidden.py", "raise RuntimeError\n")
         self._write(self.python_runtime, "Lib/site-packages/fixture/test_utils.py", "VALUE = 1\n")
+        motion_inputs = self._motion_inputs("customer-clean")
+        assert motion_inputs.motion_runtime is not None
+        hyperframes_source = motion_inputs.motion_runtime.hyperframes_runtime
+        self._write(
+            hyperframes_source,
+            "node_modules/esbuild/tests/test_hidden.js",
+            "throw new Error('not for customers');\n",
+        )
+        self._write(
+            hyperframes_source,
+            "node_modules/esbuild/.github/FUNDING.yml",
+            "fixture: true\n",
+        )
+        self._write(
+            hyperframes_source,
+            "node_modules/esbuild/test_utils.js",
+            "export const publicHelper = true;\n",
+        )
         record = self.python_runtime / "Lib/site-packages/fixture-1.0.dist-info/RECORD"
         record.write_text(
             record.read_text(encoding="utf-8")
@@ -1110,11 +1128,14 @@ class CombinedPortableTests(unittest.TestCase):
             + "fixture/test_utils.py,,\n",
             encoding="utf-8",
         )
-        inputs = self._inputs("customer-clean")
+        inputs = motion_inputs
         build_combined_portable(inputs)
 
         self.assertFalse((inputs.output / "runtime/python/Lib/site-packages/fixture/tests").exists())
         self.assertTrue((inputs.output / "runtime/python/Lib/site-packages/fixture/test_utils.py").is_file())
+        self.assertFalse((inputs.output / "runtime/hyperframes/node_modules/esbuild/tests").exists())
+        self.assertFalse((inputs.output / "runtime/hyperframes/node_modules/esbuild/.github").exists())
+        self.assertFalse((inputs.output / "runtime/hyperframes/node_modules/esbuild/test_utils.js").exists())
         self.assertFalse(any(path.suffix == ".py" for path in (inputs.output / "core").rglob("*")))
         self.assertFalse((inputs.output / "core/sapi_tts.ps1").exists())
         self.assertFalse(any(path.suffix == ".py" for path in (inputs.output / "scripts").rglob("*")))

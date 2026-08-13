@@ -2091,7 +2091,7 @@ def _validate_hyperframes_dependency_closure(runtime_root: Path, expected_versio
 def _copy_hyperframes_dependency_closure(source_root: Path, destination_root: Path) -> None:
     for package_root in _collect_hyperframes_dependency_roots(source_root):
         relative = package_root.relative_to(source_root)
-        _copy_tree(package_root, destination_root / relative)
+        _copy_motion_tree(package_root, destination_root / relative)
 
 
 def _apply_hyperframes_windows_mf_patch(repo: Path, runtime_root: Path) -> None:
