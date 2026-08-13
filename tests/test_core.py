@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from core.capability_pack import legacy_clean_air_pack
-from core.config import ConfigStore
+from core.config import CONFIG_SCHEMA_VERSION, ConfigStore
 from core.catalog import CatalogError, PackageCatalog
 from core.discovery import ProjectDiscovery
 from core.motion_director import MotionPlanError, build_motion_plan, build_motion_project, derive_motion_segments, validate_motion_plan
@@ -22,10 +22,10 @@ class ConfigTests(unittest.TestCase):
     def test_defaults_and_safe_key_handling(self):
         with tempfile.TemporaryDirectory() as folder:
             store = ConfigStore(Path(folder))
-            self.assertEqual(store.load()["provider"]["model"], "deepseek-v4-flash")
+            self.assertEqual(store.load()["provider"]["model"], "deepseek-v4-pro")
             self.assertEqual(store.load()["research"]["max_model_turns"], 2)
-            public = store.save({"provider": {"model": "custom-model", "api_key": "secret", "persist_api_key": False}})
-            self.assertEqual(public["provider"]["model"], "custom-model")
+            public = store.save({"provider": {"model": "deepseek-v4-pro", "api_key": "secret", "persist_api_key": False}})
+            self.assertEqual(public["provider"]["model"], "deepseek-v4-pro")
             self.assertTrue(public["provider"]["has_api_key"])
             self.assertFalse((Path(folder) / "secrets.json").exists())
             self.assertNotIn("secret", (Path(folder) / "config.json").read_text(encoding="utf-8"))
@@ -40,6 +40,25 @@ class ConfigTests(unittest.TestCase):
             for name in ("tools", "models", "downloads", "cache", "temp", "logs", "projects"):
                 self.assertTrue((storage / name).is_dir())
 
+    def test_saving_only_provider_does_not_create_unused_resource_catalogue(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = Path(folder) / "runtime"
+            runtime.mkdir()
+            unused = Path(folder) / "unused-resource-catalogue"
+            (runtime / "config.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": CONFIG_SCHEMA_VERSION,
+                        "provider": {"model": "deepseek-v4-pro"},
+                        "storage": {"root": str(unused)},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            ConfigStore(runtime).save({"provider": {"model": "deepseek-v4-pro"}})
+            self.assertFalse(unused.exists())
+
     def test_storage_rejects_drive_root(self):
         if os.name != "nt":
             self.skipTest("Windows drive-root rule")
@@ -47,6 +66,34 @@ class ConfigTests(unittest.TestCase):
             store = ConfigStore(Path(folder) / "runtime")
             with self.assertRaises(ValueError):
                 store.save({"storage": {"root": Path(folder).anchor}})
+
+    def test_legacy_shipped_flash_default_is_migrated_to_pro_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = Path(folder)
+            path = runtime / "config.json"
+            path.write_text(
+                json.dumps({"provider": {"model": "deepseek-v4-flash"}}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            store = ConfigStore(runtime)
+            self.assertEqual("deepseek-v4-pro", store.load()["provider"]["model"])
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(CONFIG_SCHEMA_VERSION, persisted["schema_version"])
+            self.assertEqual("deepseek-v4-pro", persisted["provider"]["model"])
+
+    def test_legacy_custom_model_is_preserved_while_schema_is_marked(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = Path(folder)
+            path = runtime / "config.json"
+            path.write_text(
+                json.dumps({"provider": {"model": "customer-model"}}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            store = ConfigStore(runtime)
+            self.assertEqual("customer-model", store.load()["provider"]["model"])
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(CONFIG_SCHEMA_VERSION, persisted["schema_version"])
+            self.assertEqual("customer-model", persisted["provider"]["model"])
 
 
 class CatalogTests(unittest.TestCase):
@@ -90,6 +137,12 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class ProviderTests(unittest.TestCase):
+    def test_provider_fallback_matches_new_install_default(self):
+        with tempfile.TemporaryDirectory() as folder:
+            default_model = ConfigStore(Path(folder)).load()["provider"]["model"]
+        provider = OpenAICompatibleProvider({"base_url": "https://api.deepseek.com"}, "")
+        self.assertEqual(provider.model, default_model)
+
     def test_parse_fenced_json(self):
         value = OpenAICompatibleProvider.parse_json_content('```json\n{"goal":"x","steps":[]}\n```')
         self.assertEqual(value["goal"], "x")

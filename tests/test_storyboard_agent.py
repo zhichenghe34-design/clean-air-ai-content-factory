@@ -217,6 +217,57 @@ class StoryboardMechanicalReviewTests(unittest.TestCase):
         ))
         self.assertEqual("".join(captions), script)
 
+    def test_approved_failed_script_keeps_source_attribution_leadin_with_its_claim(self):
+        script = (
+            "看到一条高比例除醛率宣传，先问一句：这个数字是在什么条件下得到的？"
+            "央视网转载的上观新闻文章称："
+            "甲醛检测盒只能看出室内甲醛浓度的大致范围。"
+            "这项内容只适用于原来源的对象和范围，不能外推到所有产品或场景。"
+            "判断除醛信息，还要核对剂量、空间体积、作用时间、初始浓度、检测方法和报告来源。"
+            "实验条件与真实房间不同，结论不能直接照搬；证据不完整，也不能理解成入住保证。"
+            "最后保留原始报告和核对记录，再结合真实房屋情况判断。"
+        )
+
+        storyboard = build_local_storyboard(
+            "为什么除甲醛后数值反弹？适用边界不是所有人都会告诉你",
+            script,
+        )
+        captions = [scene["caption"] for scene in storyboard["scenes"]]
+        leadin_index = captions.index("央视网转载的上观新闻文章称：")
+
+        self.assertEqual("".join(captions), script)
+        self.assertEqual(storyboard["scenes"][leadin_index]["layout"], "explain_points")
+        self.assertEqual(storyboard["scenes"][leadin_index + 1]["layout"], "explain_points")
+        self.assertEqual(
+            storyboard["scenes"][leadin_index + 1]["caption"],
+            "甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+        )
+
+    def test_arbitrary_colon_fragment_does_not_allow_adjacent_sparse_explanations(self):
+        value = raw_storyboard()
+        value["scenes"][1].update({
+            "caption": "这篇文章说明：",
+            "kicker": "这篇文章说明",
+            "title": "这篇文章说明",
+            "summary": "这篇文章说明",
+            "layout": "explain_points",
+            "items": ["这篇文章说明"],
+            "focus_order": [0],
+        })
+        value["scenes"][2].update({
+            "caption": "这项内容不能外推到所有场景。",
+            "kicker": "这项内容不能外推到所有场景",
+            "title": "这项内容不能外推到所有场景",
+            "summary": "这项内容不能外推到所有场景",
+            "layout": "explain_points",
+            "items": ["这项内容不能外推到所有场景"],
+            "focus_order": [0],
+        })
+        script = "".join(scene["caption"] for scene in value["scenes"])
+
+        with self.assertRaisesRegex(StoryboardError, "重复同一信息结构"):
+            validate_storyboard(value, script, source="DeepSeek")
+
     def test_local_storyboard_splits_a_dense_clause_for_the_faster_fixed_voice(self):
         script = (
             "对于“甲醛检测数值低，就能安心入住吗？”，不能只凭一个低数值下结论。"

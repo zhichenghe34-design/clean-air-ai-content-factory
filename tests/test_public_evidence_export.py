@@ -11,8 +11,9 @@ from unittest import mock
 
 import app
 from core.orchestrator import ConflictError, JobStore, WorkflowError, local_fallback_plan
+from core.evidence_report import HUMAN_REPORT_NAME, HUMAN_REPORT_STYLE
 from tools import build_public_evidence as evidence_builder
-from tools.verify_public_evidence import verify_archive
+from tools.verify_public_evidence import REQUIRED, validate_human_report_html, verify, verify_archive
 
 
 class PublicEvidenceExportTests(unittest.TestCase):
@@ -98,6 +99,7 @@ class PublicEvidenceExportTests(unittest.TestCase):
         public_manifest = {
             **self.source_manifest,
             "public_package": True,
+            "public_package_schema_version": 2,
             "source_manifest_sha256": source_sha256,
         }
         manifest_bytes = (json.dumps(public_manifest, ensure_ascii=False) + "\n").encode("utf-8")
@@ -145,8 +147,11 @@ class PublicEvidenceExportTests(unittest.TestCase):
 
     def test_ui_exposes_only_the_server_owned_current_export_route(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("下载公开证据包", script)
+        self.assertIn("下载交付材料（ZIP）", script)
+        self.assertIn("查看验收报告", script)
+        self.assertIn("/evidence-report.html", script)
         self.assertIn("/public-evidence.zip", script)
+        self.assertNotIn("查看证据清单", script)
         self.assertNotIn("public-evidence.zip?", script)
 
     def test_packaged_export_requires_the_exact_bundled_ffprobe(self) -> None:
@@ -233,6 +238,81 @@ class PublicEvidenceExportTests(unittest.TestCase):
         )
         manifest = json.loads((self.root / "public-one" / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["packaged_at"], source_manifest["finished_at"])
+        self.assertEqual(manifest["public_package_schema_version"], 2)
+        report_path = self.root / "public-one" / HUMAN_REPORT_NAME
+        report_text = report_path.read_text(encoding="utf-8")
+        self.assertIn("给运营与负责人看的成片说明 · 不是动画代码", report_text)
+        self.assertIn('download="final.mp4"', report_text)
+        self.assertIn("请先把 ZIP 完整解压", report_text)
+        self.assertNotIn("data:video/", report_text)
+        self.assertIn("技术附件（开发或复核人员使用）", report_text)
+        self.assertEqual(
+            (self.root / "public-one" / HUMAN_REPORT_NAME).read_bytes(),
+            (self.root / "public-two" / HUMAN_REPORT_NAME).read_bytes(),
+        )
+        with zipfile.ZipFile(self.root / "public-one.zip") as archive:
+            self.assertEqual(archive.namelist()[0], HUMAN_REPORT_NAME)
+            self.assertEqual(archive.read(HUMAN_REPORT_NAME), report_path.read_bytes())
+
+    def test_public_schema_v2_fails_closed_without_human_report(self) -> None:
+        folder = self.root / "missing-human-report"
+        folder.mkdir()
+        for name in REQUIRED:
+            path = folder / name
+            if name == "manifest.json":
+                path.write_text(json.dumps({
+                    "schema_version": 2,
+                    "stage": "render",
+                    "status": "complete",
+                    "public_package_schema_version": 2,
+                }), encoding="utf-8")
+            elif path.suffix == ".json":
+                path.write_text("{}\n", encoding="utf-8")
+            else:
+                path.write_bytes(b"fixture")
+        errors, media = verify(folder, ffprobe_path=self.ffprobe)
+        self.assertEqual(media, {})
+        self.assertTrue(any(HUMAN_REPORT_NAME in item for item in errors), errors)
+
+    def test_public_schema_and_human_report_active_content_fail_closed(self) -> None:
+        folder = self.root / "unsafe-human-report"
+        folder.mkdir()
+        for name in REQUIRED:
+            path = folder / name
+            if name == "manifest.json":
+                path.write_text(json.dumps({
+                    "schema_version": 2,
+                    "stage": "render",
+                    "status": "complete",
+                    "public_package_schema_version": "two",
+                }), encoding="utf-8")
+            elif path.suffix == ".json":
+                path.write_text("{}\n", encoding="utf-8")
+            else:
+                path.write_bytes(b"fixture")
+        errors, media = verify(folder, ffprobe_path=self.ffprobe)
+        self.assertEqual(media, {})
+        self.assertTrue(any("public_package_schema_version" in item for item in errors), errors)
+
+        valid_report = (
+            f'<style>{HUMAN_REPORT_STYLE}</style>'
+            f'<meta name="shiyi-report-contract" content="shiyi-human-evidence-report-v1">'
+            '给运营与负责人看的成片说明 · 不是动画代码 等待负责人最终验收 '
+            '<a download="final.mp4" href="final.mp4">成片</a> 技术附件（开发或复核人员使用）'
+        )
+        for payload in (
+            '<img src="final.mp4" onerror="alert(1)">',
+            '<a href="data:text/html,boom">boom</a>',
+            '<a href="//evil.example">boom</a>',
+            '<a href="mailto:evil@example.test">boom</a>',
+            '<style>@import url(//evil.example/a.css)</style>',
+            '<style>@\\69mport "https://example.com/x.css";</style>',
+            '<style>body{background-image:image-set("https://example.com/x.png" 1x)}</style>',
+            '<style>@font-face{src:"https://example.com/x.woff"}</style>',
+        ):
+            with self.subTest(payload=payload):
+                errors = validate_human_report_html(valid_report + payload)
+                self.assertTrue(errors, payload)
 
 
 if __name__ == "__main__":

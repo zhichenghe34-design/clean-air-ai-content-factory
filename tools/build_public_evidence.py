@@ -16,6 +16,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from core.review_policy import approval_validation_line, script_edit_validation_line
+from core.evidence_report import (
+    HUMAN_REPORT_NAME,
+    build_human_evidence_report,
+)
 
 from tools.verify_public_evidence import (
     CANONICAL,
@@ -190,8 +194,25 @@ def build_public_evidence(
         )
         (temporary / "VALIDATION.md").write_text(validation, encoding="utf-8")
 
+        (temporary / HUMAN_REPORT_NAME).write_text(
+            build_human_evidence_report(
+                temporary,
+                job_id=str(source_manifest.get("job_id", "")),
+                run_id=str(source_manifest.get("run_id", "")),
+                # The report and media are extracted as sibling files.  Keep
+                # the HTML small and deterministic instead of duplicating the
+                # entire MP4 as base64 in both the player and download link.
+                embed_media=False,
+            ),
+            encoding="utf-8",
+        )
+        human_report_findings = scan_text(temporary / HUMAN_REPORT_NAME)
+        if human_report_findings:
+            raise RuntimeError("普通人验收报告脱敏失败：" + "; ".join(human_report_findings))
+
         manifest = dict(source_manifest)
         manifest["public_package"] = True
+        manifest["public_package_schema_version"] = 2
         manifest["source_manifest_sha256"] = sha256(source_manifest_path)
         # A public package is a deterministic projection of an immutable run.
         # Reusing the source completion time avoids changing bytes on replay.
@@ -201,12 +222,16 @@ def build_public_evidence(
             or datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(timespec="seconds")
         )
         manifest["artifacts"] = []
-        public_files = REQUIRED | evidence_artifacts_for_contract(evidence_contract)
+        public_files = REQUIRED | {HUMAN_REPORT_NAME} | evidence_artifacts_for_contract(evidence_contract)
         for name in sorted(public_files - {"manifest.json"}):
             path = temporary / name
             manifest["artifacts"].append({
                 "name": name,
-                "stage": source_stage if name != "VALIDATION.md" else "validation",
+                "stage": (
+                    "validation" if name == "VALIDATION.md"
+                    else "human_report" if name == HUMAN_REPORT_NAME
+                    else source_stage
+                ),
                 "mime": mimetypes.guess_type(name)[0] or "application/octet-stream",
                 "size": path.stat().st_size,
                 "sha256": sha256(path),

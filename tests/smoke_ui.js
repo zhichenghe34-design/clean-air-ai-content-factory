@@ -24,8 +24,9 @@ const batches = [
   let providerVerified = false;
   let mptReady = false;
   let clearKeyPayload = null;
+  let settingsSavePayload = null;
   let configSnapshot = null;
-  let auxiliaryToolsSettled = false;
+  const internalApiRequests = [];
   page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', err => errors.push(err.message));
   await page.route('**/api/status', async route => {
@@ -45,7 +46,12 @@ const batches = [
         production_engines: {
           default_mode: 'motion',
           motion: { name: 'HyperFrames', version: '0.7.86', enabled: true, health: 'ready', role: 'primary', selectable: true },
-          footage: { name: 'MoneyPrinterTurbo', version: '1.3.3', enabled: mptReady, health: mptReady ? 'ready' : 'disabled', role: 'secondary', selectable: mptReady },
+          footage: {
+            name: 'MoneyPrinterTurbo', version: '1.3.3',
+            enabled: mptReady, health: mptReady ? 'ready' : 'disabled', role: 'secondary',
+            operator_ready: false, selectable: false,
+            disabled_reason: '当前版本尚未开放实拍素材；本版本仅支持纯动画',
+          },
         },
       }),
     });
@@ -55,7 +61,13 @@ const batches = [
     if (method === 'GET') {
       if (!configSnapshot) {
         const response = await route.fetch();
-        configSnapshot = await response.json();
+        const fetched = await response.json();
+        // Customer settings must display and preserve a previously selected
+        // custom model when the operator saves only a new API Key.
+        configSnapshot = {
+          ...fetched,
+          provider: { ...fetched.provider, model: 'customer-reviewed-model' },
+        };
       }
       return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(configSnapshot) });
     }
@@ -70,21 +82,30 @@ const batches = [
       };
       return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(configSnapshot) });
     }
-    return route.fulfill({ status: 422, contentType: 'application/json; charset=utf-8', body: JSON.stringify({ error: { message: 'unexpected config mutation' } }) });
+    settingsSavePayload = payload;
+    providerConfigured = Boolean(payload?.provider?.api_key) || providerConfigured;
+    configSnapshot = {
+      ...configSnapshot,
+      provider: {
+        ...configSnapshot.provider,
+        model: payload?.provider?.model || configSnapshot.provider.model,
+        has_api_key: providerConfigured,
+        persisted_api_key: Boolean(payload?.provider?.api_key && payload?.provider?.persist_api_key) || configSnapshot.provider.persisted_api_key,
+      },
+    };
+    return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(configSnapshot) });
   });
   await page.route('**/api/provider/test', async route => {
     providerVerified = true;
     await route.fulfill({
       status: 200,
       contentType: 'application/json; charset=utf-8',
-      body: JSON.stringify({ ok: true, models: ['deepseek-v4-flash'], configured_model_available: true, connection_verified: true }),
+      body: JSON.stringify({ ok: true, models: ['deepseek-v4-pro'], configured_model_available: true, connection_verified: true }),
     });
   });
-  await page.route('**/api/tools', async route => {
-    const response = await route.fetch();
-    await new Promise(resolve => setTimeout(resolve, 2500));
-    auxiliaryToolsSettled = true;
-    await route.fulfill({ response });
+  await page.route(/\/api\/(?:tools|catalog|hardware)(?:\?|$)/, async route => {
+    internalApiRequests.push(route.request().url());
+    await route.fulfill({ status: 500, contentType: 'application/json; charset=utf-8', body: JSON.stringify({ error: { message: 'ordinary UI must not request internal endpoints' } }) });
   });
   await page.route('**/api/jobs', async route => {
     const response = await route.fetch();
@@ -131,7 +152,7 @@ const batches = [
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.locator('#topicCandidates .topic-option').first().waitFor();
-  const criticalRenderedBeforeAuxiliary = !auxiliaryToolsSettled;
+  const ordinaryInterfaceLoadedWithoutInternalApi = internalApiRequests.length === 0;
   const providerBadge = await page.locator('#providerBadge').innerText();
   const providerConfiguredClass = await page.locator('#providerQuickButton').evaluate(node => node.classList.contains('configured'));
   const initialScreening = await page.locator('#topicScreening').innerText();
@@ -144,9 +165,8 @@ const batches = [
   const visibleVersion = await page.locator('#editionBadge').innerText();
   mptReady = true;
   await page.evaluate(() => refresh({ syncHomeView: false }));
-  await page.waitForFunction(() => !document.querySelector('#productionModeFootage')?.disabled);
-  await page.locator('#productionModeFootage').check();
-  const footageSelectableWhenReady = await page.locator('input[name="productionMode"]:checked').inputValue() === 'footage';
+  await page.waitForFunction(() => document.querySelector('#footageEngineStatus')?.textContent.includes('尚未开放') || document.querySelector('#footageEngineStatus')?.textContent.includes('仅支持纯动画'));
+  const footageRemainsDisabledWhenReady = await page.locator('#productionModeFootage').isDisabled();
   mptReady = false;
   await page.evaluate(() => refresh({ syncHomeView: false }));
   await page.waitForFunction(() => document.querySelector('#productionModeFootage')?.disabled);
@@ -211,16 +231,26 @@ const batches = [
 
   await page.locator('#appMenuButton').click();
   await page.locator('#appMenu:not([hidden])').waitFor();
-  await page.locator('#appMenu [data-view="catalog"]').click();
-  await page.locator('#view-catalog.active').waitFor();
-  await page.screenshot({ path: 'runtime/catalog-smoke.png', fullPage: true });
-  const installRoot = await page.locator('#hardwareFacts .wide strong').innerText();
-
-  await page.locator('#appMenuButton').click();
+  const menuLabels = await page.locator('#appMenu [role="menuitem"]').allInnerTexts();
+  const internalMenuEntries = await page.locator('#appMenu [data-view="discovery"], #appMenu [data-view="catalog"]').count();
+  const internalPages = await page.locator('#view-discovery, #view-catalog').count();
   await page.locator('#appMenu [data-view="settings"]').click();
   await page.locator('#view-settings.active').waitFor();
-  const storageRoot = await page.locator('#storageRoot').inputValue();
-  const storageDirectories = await page.locator('#storageDirectories > div').count();
+  const modelDisplay = await page.locator('#modelName').innerText();
+  const modelDisplayTag = await page.locator('#modelName').evaluate(node => node.tagName);
+  const developerFieldCount = await page.locator('#providerName, #baseUrl, #researchEnabled, #mediaParserRoot, #rootsInput, #storageRoot').count();
+  const runtimeCopy = await page.locator('.runtime-settings').innerText();
+  const dataLocationCopy = await page.locator('.data-location-note').innerText();
+  await page.locator('#apiKey').fill('smoke-pro-key');
+  await page.locator('#persistKey').check();
+  await page.locator('#saveSettings').click();
+  await page.waitForFunction(() => document.querySelector('#apiKey')?.value === '');
+  const settingsSavePreservesHidden = !Object.hasOwn(settingsSavePayload.provider, 'model')
+    && configSnapshot.provider.model === 'customer-reviewed-model'
+    && !Object.hasOwn(settingsSavePayload.provider, 'base_url')
+    && !Object.hasOwn(settingsSavePayload, 'research')
+    && !Object.hasOwn(settingsSavePayload, 'discovery')
+    && !Object.hasOwn(settingsSavePayload, 'storage');
   await page.locator('#testProvider').click();
   await page.waitForFunction(() => document.querySelector('#providerBadge')?.textContent === 'DeepSeek · 当前连接已验证');
   const providerVerifiedBadge = await page.locator('#providerBadge').innerText();
@@ -277,7 +307,7 @@ const batches = [
     motionEngineText,
     footageEngineText,
     visibleVersion,
-    footageSelectableWhenReady,
+    footageRemainsDisabledWhenReady,
     modeFallsBackToMotion,
     homeDecisionSelects,
     homeHasApproveRejectPair,
@@ -295,24 +325,28 @@ const batches = [
     mobileComposer,
     stageButtons: await page.locator('.stage-tab').count(),
     persistentSideRails: await page.locator('.context-rail, .utility-nav').count(),
-    packageCards: await page.locator('#packageGrid .package-card').count(),
-    hardwareProfile: await page.locator('#hardwareProfile').innerText(),
-    installPolicy: await page.locator('#installPolicyBadge').innerText(),
-    installRoot,
-    storageRoot,
-    storageDirectories,
+    menuLabels,
+    internalMenuEntries,
+    internalPages,
+    internalApiRequests,
+    modelDisplay,
+    modelDisplayTag,
+    developerFieldCount,
+    runtimeCopy,
+    dataLocationCopy,
+    settingsSavePreservesHidden,
     mobileNoOverflow,
     topicCalls,
-    criticalRenderedBeforeAuxiliary,
+    ordinaryInterfaceLoadedWithoutInternalApi,
     errors,
   };
   process.stdout.write(JSON.stringify(result));
   await browser.close();
   const mobileBoxesFit = Object.values(mobileComposer.boxes).every(box => box.left >= 0 && box.right <= mobileComposer.viewportWidth + 0.5 && box.width > 0);
-  const composerContractOk = composerSemantics.label === '给 Agent 说明任务'
-    && composerSemantics.help.includes('先推荐 3 个选题')
-    && composerSemantics.help.includes('补充或修改要求')
-    && composerSemantics.send === '发送要求'
+  const composerContractOk = composerSemantics.label === '想换选题方向？（可选）'
+    && composerSemantics.help.includes('直接点“就做这个”')
+    && composerSemantics.help.includes('不用再发送')
+    && composerSemantics.send === '按新要求换选题'
     && composerSemantics.paperclips === 0
     && composerIme.composingSubmits === 0
     && composerIme.normalSubmits === 1
@@ -328,5 +362,22 @@ const batches = [
     && mobileComposer.textareaScrollHeight <= mobileComposer.textareaClientHeight + 2
     && mobileComposer.boxes.sendGoalBtn.height >= 44
     && mobileBoxesFit;
-  if (errors.length || !criticalRenderedBeforeAuxiliary || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 当前连接已验证' || !providerVerifiedClass || providerClearedBadge !== 'DeepSeek · 未配置' || clearKeyPayload?.provider?.clear_api_key !== true || defaultProductionMode !== 'motion' || !footageModeDisabled || !footageSelectableWhenReady || !modeFallsBackToMotion || !motionEngineText.includes('HyperFrames 0.7.86') || !footageEngineText.includes('MoneyPrinterTurbo 1.3.3') || visibleVersion !== 'v0.3.0' || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('项目启动结构含未知字段') || !initialScreening.includes('反证审核未执行') || initialScreening.includes('needs_evidence') || initialScreening.includes('候选1') || initialScreening.includes('ORIGINAL REVIEWED TITLE') || initialScreening.includes('<redacted-unknown-field>') || !refreshedScreening.includes('2/3') || !refreshedScreening.includes('项目启动结构校验通过') || !refreshedScreening.includes('被审核候选“测醛前为什么要先确认封闭时间？”') || refreshedScreening.includes('候选1') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow || !composerContractOk) process.exit(1);
+  const externalSurfaceOk = ordinaryInterfaceLoadedWithoutInternalApi
+    && internalApiRequests.length === 0
+    && internalMenuEntries === 0
+    && internalPages === 0
+    && menuLabels.length === 2
+    && modelDisplay === '沿用已有自定义模型：customer-reviewed-model'
+    && modelDisplayTag === 'OUTPUT'
+    && developerFieldCount === 0
+    && runtimeCopy.includes('无需另外安装 Python、Node 或 FFmpeg')
+    && runtimeCopy.includes('Windows 10/11 64 位')
+    && runtimeCopy.includes('Microsoft Edge 151')
+    && runtimeCopy.includes('自己的 DeepSeek API Key')
+    && runtimeCopy.includes('实拍素材功能尚未开放')
+    && dataLocationCopy.includes('安装入口默认在 D 盘创建软件文件夹')
+    && dataLocationCopy.includes('任务、成片和加密 Key 保存在当前 Windows 使用者的本机数据目录')
+    && dataLocationCopy.includes('两者分开')
+    && settingsSavePreservesHidden;
+  if (errors.length || !externalSurfaceOk || providerBadge !== 'DeepSeek · Key 已就绪' || !providerConfiguredClass || providerVerifiedBadge !== 'DeepSeek · 当前连接已验证' || !providerVerifiedClass || providerClearedBadge !== 'DeepSeek · 未配置' || clearKeyPayload?.provider?.clear_api_key !== true || defaultProductionMode !== 'motion' || !footageModeDisabled || !footageRemainsDisabledWhenReady || !modeFallsBackToMotion || !motionEngineText.includes('视频生成组件已就绪') || !footageEngineText.includes('尚未开放') && !footageEngineText.includes('仅支持纯动画') || visibleVersion !== 'v0.3.0' || !initialScreening.includes('1/3') || screeningAfterSelection !== initialScreening || !initialScreening.includes('项目启动结构含未知字段') || !initialScreening.includes('反证审核未执行') || initialScreening.includes('needs_evidence') || initialScreening.includes('候选1') || initialScreening.includes('ORIGINAL REVIEWED TITLE') || initialScreening.includes('<redacted-unknown-field>') || !refreshedScreening.includes('2/3') || !refreshedScreening.includes('项目启动结构校验通过') || !refreshedScreening.includes('被审核候选“测醛前为什么要先确认封闭时间？”') || refreshedScreening.includes('候选1') || initialTopics !== 3 || initialSelected !== 1 || homeDecisionSelects !== 0 || homeHasApproveRejectPair || detailedRejectOptions < 2 || result.stageButtons !== 0 || result.persistentSideRails !== 0 || !composerFocused || !mobileNoOverflow || !composerContractOk) process.exit(1);
 })();

@@ -11,7 +11,7 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
-from core.capability_pack import local_capability_pack, local_topic_candidates
+from core.capability_pack import legacy_clean_air_pack, local_capability_pack, local_topic_candidates
 from core.orchestrator import (
     CANONICAL_ARTIFACTS,
     ConflictError,
@@ -224,6 +224,19 @@ class FakeStageRunner:
             }, ensure_ascii=False),
             encoding="utf-8",
         )
+
+
+class ExactScriptRenderRunner(FakeStageRunner):
+    def run_render_stage(self, output, production_input, approvals):
+        script = json.loads(
+            (output / "approved_script.json").read_text(encoding="utf-8")
+        )["script"]
+        original = globals()["LONG_SAFE_SCRIPT"]
+        try:
+            globals()["LONG_SAFE_SCRIPT"] = script
+            return super().run_render_stage(output, production_input, approvals)
+        finally:
+            globals()["LONG_SAFE_SCRIPT"] = original
 
 
 class FakeEngineStageRunner(FakeStageRunner):
@@ -727,6 +740,314 @@ class V2WorkflowTests(unittest.TestCase):
                 "mechanically_reviewed_internal_candidate_pending_human_release",
             )
             self.assertTrue(manifest["review_policy"]["final_human_acceptance_required"])
+
+    def test_mechanical_complete_run_accepts_exact_full_script_revision_and_preserves_old_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            runner = MechanicalStageRunner()
+            job = jobs.approve(job["id"])
+            job = jobs.advance(job["id"], runner, "exact-revision-research")
+            job = jobs.advance(job["id"], runner, "exact-revision-content")
+            job = jobs.advance(job["id"], runner, "exact-revision-render")
+            previous_run = job["current_run_id"]
+            previous_video = jobs.resolve_artifact(job["id"], "final.mp4").read_bytes()
+            source_path = jobs.resolve_artifact(job["id"], "approved_script.json")
+            source_script = json.loads(source_path.read_text(encoding="utf-8"))["script"]
+            source_artifact_sha256 = file_sha256(source_path)
+            revised_script = source_script.replace(
+                "持续通风",
+                "记录检测时间、门窗状态、仪器位置和异常情况，持续有效通风",
+            )
+            pacing = review_narration_pacing(revised_script)
+            self.assertEqual(pacing["status"], "passed")
+
+            revised = jobs.update_script(
+                job["id"],
+                revised_script,
+                review_script(
+                    revised_script,
+                    jobs.approved_findings(job["id"]),
+                    job["production_input"]["capability_pack"],
+                ),
+                pacing,
+                MECHANICAL_REVIEWER,
+                base_run_id=previous_run,
+                base_approved_script_sha256=source_artifact_sha256,
+                idempotency_key="exact-full-script-revision-0001",
+            )
+            self.assertEqual(revised["status"], "compliance_approved")
+            self.assertEqual(revised["current_run_id"], previous_run)
+            self.assertEqual(
+                jobs.resolve_artifact(job["id"], "final.mp4").read_bytes(),
+                previous_video,
+            )
+            stored = json.loads(
+                jobs.resolve_review_artifact(job["id"], "approved_script.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(stored["script"], revised_script)
+            self.assertEqual(stored["editor_identity"]["editor"], "本地浏览器用户")
+            self.assertEqual(stored["editor_identity"]["actor_type"], "human")
+            self.assertTrue(stored["editor_identity"]["human_edit_claimed"])
+            self.assertEqual(stored["base_run_id"], previous_run)
+            self.assertEqual(stored["base_approved_script_sha256"], source_artifact_sha256)
+            self.assertFalse(
+                (Path(folder) / "jobs" / job["id"] / "draft" / "motion_storyboard.json").exists()
+            )
+            self.assertEqual(
+                revised["approvals"]["compliance"]["reviewer"], MECHANICAL_REVIEWER
+            )
+            self.assertFalse(
+                revised["approvals"]["compliance"]["human_approval_claimed"]
+            )
+
+            replay = jobs.update_script(
+                job["id"],
+                revised_script,
+                review_script(
+                    revised_script,
+                    jobs.approved_findings(job["id"]),
+                    job["production_input"]["capability_pack"],
+                ),
+                pacing,
+                MECHANICAL_REVIEWER,
+                base_run_id=previous_run,
+                base_approved_script_sha256=source_artifact_sha256,
+                idempotency_key="exact-full-script-revision-0001",
+            )
+            self.assertTrue(replay["replayed"])
+            self.assertEqual(replay["status"], "compliance_approved")
+            with self.assertRaises(ConflictError):
+                jobs.update_script(
+                    job["id"],
+                    revised_script + "不应复用同一个幂等键。",
+                    review_script(revised_script),
+                    pacing,
+                    MECHANICAL_REVIEWER,
+                    base_run_id=previous_run,
+                    base_approved_script_sha256=source_artifact_sha256,
+                    idempotency_key="exact-full-script-revision-0001",
+                )
+
+            job = jobs.advance(job["id"], ExactScriptRenderRunner(), "exact-revision-rerender")
+            self.assertEqual(job["status"], "complete")
+            self.assertNotEqual(job["current_run_id"], previous_run)
+            published_script = json.loads(
+                jobs.resolve_artifact(job["id"], "approved_script.json").read_text(
+                    encoding="utf-8"
+                )
+            )["script"]
+            self.assertEqual(published_script, revised_script)
+            self.assertEqual(job["script_revision"]["status"], "complete")
+
+    def test_mechanical_exact_revision_rejects_stale_or_unchanged_base(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            runner = MechanicalStageRunner()
+            job = jobs.approve(job["id"])
+            job = jobs.advance(job["id"], runner, "stale-revision-research")
+            job = jobs.advance(job["id"], runner, "stale-revision-content")
+            job = jobs.advance(job["id"], runner, "stale-revision-render")
+            source_path = jobs.resolve_artifact(job["id"], "approved_script.json")
+            source_script = json.loads(source_path.read_text(encoding="utf-8"))["script"]
+            pacing = review_narration_pacing(source_script)
+            for index, (base_run_id, digest, message) in enumerate((
+                ("stale-run", file_sha256(source_path), "成片版本已过期"),
+                (job["current_run_id"], "0" * 64, "文案版本已过期"),
+            )):
+                with self.subTest(message=message), self.assertRaisesRegex(ConflictError, message):
+                    jobs.update_script(
+                        job["id"], source_script + "修改。", review_script(source_script), pacing,
+                        MECHANICAL_REVIEWER, base_run_id=base_run_id,
+                        base_approved_script_sha256=digest,
+                        idempotency_key=f"stale-revision-{index:04d}",
+                    )
+            with self.assertRaisesRegex(UnprocessableError, "必须与当前成片文案不同"):
+                jobs.update_script(
+                    job["id"], source_script, review_script(source_script), pacing,
+                    MECHANICAL_REVIEWER, base_run_id=job["current_run_id"],
+                    base_approved_script_sha256=file_sha256(source_path),
+                    idempotency_key="unchanged-revision-0001",
+                )
+
+    def test_mechanical_exact_revision_render_failure_never_regenerates_or_overwrites_script(self):
+        class ExactRevisionRenderFailure(FakeStageRunner):
+            def run_content_stage(self, *_args, **_kwargs):
+                raise AssertionError("exact browser revision must never re-enter content")
+
+            def run_render_stage(self, *_args, **_kwargs):
+                raise ScriptRevisionRequired("精确全文的配音时长不合格")
+
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            runner = MechanicalStageRunner()
+            job = jobs.approve(job["id"])
+            job = jobs.advance(job["id"], runner, "failed-exact-research")
+            job = jobs.advance(job["id"], runner, "failed-exact-content")
+            job = jobs.advance(job["id"], runner, "failed-exact-render")
+            previous_run = job["current_run_id"]
+            previous_video = jobs.resolve_artifact(job["id"], "final.mp4").read_bytes()
+            source_path = jobs.resolve_artifact(job["id"], "approved_script.json")
+            source_script = json.loads(source_path.read_text(encoding="utf-8"))["script"]
+            revised_script = source_script.replace(
+                "持续通风",
+                "记录检测时间、门窗状态、仪器位置和异常情况，持续有效通风",
+            )
+            revised = jobs.update_script(
+                job["id"], revised_script,
+                review_script(
+                    revised_script,
+                    jobs.approved_findings(job["id"]),
+                    job["production_input"]["capability_pack"],
+                ),
+                review_narration_pacing(revised_script), MECHANICAL_REVIEWER,
+                base_run_id=previous_run,
+                base_approved_script_sha256=file_sha256(source_path),
+                idempotency_key="failed-exact-revision-0001",
+            )
+            self.assertEqual(revised["status"], "compliance_approved")
+            stopped = jobs.advance_automatically(
+                job["id"], lambda _job: ExactRevisionRenderFailure(),
+                "failed-exact-controller-0001",
+            )
+            self.assertEqual(stopped["status"], "failed")
+            self.assertEqual(
+                stopped["automatic_controller_failure"]["code"],
+                "exact_script_render_failed_preserved",
+            )
+            self.assertEqual(stopped["script_revision"]["status"], "render_failed")
+            self.assertEqual(stopped["current_run_id"], previous_run)
+            self.assertEqual(
+                jobs.resolve_artifact(job["id"], "final.mp4").read_bytes(),
+                previous_video,
+            )
+            self.assertEqual(
+                json.loads(
+                    jobs.resolve_review_artifact(job["id"], "approved_script.json").read_text(
+                        encoding="utf-8"
+                    )
+                )["script"],
+                revised_script,
+            )
+            # Retrying from the preserved browser script may submit the same
+            # text again.  The accepted mutation supersedes the old terminal
+            # controller state and render must not re-enter content.
+            recovered = jobs.update_script(
+                job["id"], revised_script,
+                review_script(
+                    revised_script,
+                    jobs.approved_findings(job["id"]),
+                    job["production_input"]["capability_pack"],
+                ),
+                review_narration_pacing(revised_script), MECHANICAL_REVIEWER,
+                base_run_id=previous_run,
+                base_approved_script_sha256=file_sha256(source_path),
+                idempotency_key="recovered-exact-revision-0001",
+            )
+            self.assertEqual(recovered["status"], "compliance_approved")
+            self.assertNotIn("automatic_controller_failure", recovered)
+            self.assertNotIn("automatic_controller", recovered)
+            completed = jobs.advance_automatically(
+                job["id"], lambda _job: ExactScriptRenderRunner(),
+                "recovered-exact-controller-0001",
+            )
+            self.assertEqual(completed["status"], "complete")
+            durable = jobs.get(job["id"])
+            self.assertEqual(durable["status"], "complete")
+            self.assertNotIn("automatic_controller_failure", durable)
+            self.assertNotIn("automatic_controller", durable)
+            self.assertEqual(
+                json.loads(
+                    jobs.resolve_artifact(job["id"], "approved_script.json").read_text(
+                        encoding="utf-8"
+                    )
+                )["script"],
+                revised_script,
+            )
+
+    def test_mechanical_exact_revision_generic_render_failure_preserves_draft_after_retries(self):
+        class GenericRenderFailure(FakeStageRunner):
+            def __init__(self):
+                super().__init__()
+                self.render_calls = 0
+
+            def run_content_stage(self, *_args, **_kwargs):
+                raise AssertionError("exact browser revision must never re-enter content")
+
+            def run_render_stage(self, *_args, **_kwargs):
+                self.render_calls += 1
+                raise RuntimeError("temporary Edge TTS transport failure")
+
+        with tempfile.TemporaryDirectory() as folder:
+            jobs = JobStore(Path(folder), stage_review_mode="mechanical")
+            job = jobs.create(
+                local_fallback_plan("生成赛题视频", []),
+                {"topic": VALID_TOPIC, "audience": "新房家庭"},
+            )
+            runner = MechanicalStageRunner()
+            job = jobs.approve(job["id"])
+            job = jobs.advance(job["id"], runner, "generic-exact-research")
+            job = jobs.advance(job["id"], runner, "generic-exact-content")
+            job = jobs.advance(job["id"], runner, "generic-exact-render")
+            previous_run = job["current_run_id"]
+            previous_video = jobs.resolve_artifact(job["id"], "final.mp4").read_bytes()
+            source_path = jobs.resolve_artifact(job["id"], "approved_script.json")
+            source_script = json.loads(source_path.read_text(encoding="utf-8"))["script"]
+            revised_script = source_script.replace(
+                "持续通风",
+                "记录检测时间、门窗状态、仪器位置和异常情况，持续有效通风",
+            )
+            jobs.update_script(
+                job["id"], revised_script,
+                review_script(
+                    revised_script,
+                    jobs.approved_findings(job["id"]),
+                    job["production_input"]["capability_pack"],
+                ),
+                review_narration_pacing(revised_script), MECHANICAL_REVIEWER,
+                base_run_id=previous_run,
+                base_approved_script_sha256=file_sha256(source_path),
+                idempotency_key="generic-exact-revision-0001",
+            )
+            failure = GenericRenderFailure()
+            stopped = jobs.advance_automatically(
+                job["id"], lambda _job: failure,
+                "generic-exact-controller-0001", max_stage_attempts=3,
+            )
+
+            self.assertEqual(3, failure.render_calls)
+            self.assertEqual("failed", stopped["status"])
+            self.assertEqual(
+                "exact_script_render_failed_preserved",
+                stopped["automatic_controller_failure"]["code"],
+            )
+            self.assertEqual("render_failed", stopped["script_revision"]["status"])
+            self.assertEqual(previous_run, stopped["current_run_id"])
+            self.assertEqual(
+                previous_video,
+                jobs.resolve_artifact(job["id"], "final.mp4").read_bytes(),
+            )
+            self.assertEqual(
+                revised_script,
+                json.loads(
+                    jobs.resolve_review_artifact(job["id"], "approved_script.json").read_text(
+                        encoding="utf-8"
+                    )
+                )["script"],
+            )
 
     def test_mechanical_controller_completes_all_stages_from_one_request(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2061,6 +2382,103 @@ class V2SecurityAndBudgetTests(unittest.TestCase):
             self.assertEqual(report["render"]["mode"], "fake_ci")
             self.assertEqual(report["adoption_proxy"]["provisionally_usable_count"], 1)
             self.assertEqual(report["adoption_proxy"]["evidence_binding"], "approved_research_findings")
+
+    def test_exact_browser_revision_regenerates_storyboard_for_the_exact_script(self):
+        class StoryboardProbeRunner(ProductionRunner):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.storyboard_call = None
+
+            def _generate_motion_storyboard(self, config, insight, script, *, prefer_provider):
+                self.storyboard_call = {
+                    "script": script,
+                    "prefer_provider": prefer_provider,
+                }
+                from core.storyboard_agent import build_local_storyboard
+                return build_local_storyboard(
+                    config["topic"], script, config.get("capability_pack")
+                ), {
+                    "source": "test_exact_revision_director",
+                    "fallback_used": False,
+                    "mechanical_review": "passed",
+                }
+
+        capability_pack = legacy_clean_air_pack()
+        exact_script = build_local_variants(
+            VALID_TOPIC, "新房家庭", [], capability_pack, []
+        )[0]["script"].replace(
+            "不能只凭一个低数值下结论",
+            "先说结论：不能只凭一个低数值判断入住安全",
+        )
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+            ProductionRunner, "_audio_duration", return_value=52.0
+        ):
+            root = Path(folder)
+            for name, value in {
+                "research.json": {"findings": []},
+                "insight.json": {"topic": VALID_TOPIC},
+                "script_variants.json": {"variants": [], "provider": {"source": "old"}},
+                "approved_script.json": {
+                    "id": "browser-edited",
+                    "hook_type": "浏览器改稿",
+                    "selected_by": "browser_editor",
+                    "script": exact_script,
+                    "base_run_id": "20260813-120000-abcdef12",
+                    "base_approved_script_sha256": "a" * 64,
+                    "base_script_text_sha256": "b" * 64,
+                },
+                "review.json": review_script(exact_script, []),
+            }.items():
+                (root / name).write_text(
+                    json.dumps(value, ensure_ascii=False), encoding="utf-8"
+                )
+
+            def fake_voice(output, script, config):
+                (output / "voice.wav").write_bytes(b"RIFF" + b"\0" * 64)
+                return {"engine": "fake_ci"}
+
+            def fake_render(output, motion_plan, config):
+                (output / "final.mp4").write_bytes(b"fake-ci-video")
+                return {
+                    "mode": "fake_ci", "duration_seconds": 52.0,
+                    "width": 1080, "height": 1920,
+                    "video_codec": "h264", "audio_codec": "aac",
+                }
+
+            runner = StoryboardProbeRunner(
+                voice_adapter=fake_voice,
+                render_adapter=fake_render,
+                visual_qc_adapter=fake_visual_qc,
+            )
+            report = runner.run_render_stage(
+                root,
+                {
+                    "topic": VALID_TOPIC,
+                    "audience": "新房家庭",
+                    "capability_pack": capability_pack,
+                },
+                {"research": {"status": "approved"}, "compliance": {"status": "approved"}},
+            )
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(runner.storyboard_call, {
+                "script": exact_script,
+                "prefer_provider": True,
+            })
+            storyboard = json.loads(
+                (root / "motion_storyboard.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(storyboard["script_sha256"], hashlib.sha256(
+                exact_script.encode("utf-8")
+            ).hexdigest().upper())
+            variant_report = json.loads(
+                (root / "script_variants.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                variant_report["variants"][0]["script"], exact_script
+            )
+            self.assertTrue(
+                variant_report["provider"]["script_generation_bypassed"]
+            )
 
     def test_production_runner_uses_coarse_engine_only_after_both_approvals(self):
         from core.production import ProductionRunner

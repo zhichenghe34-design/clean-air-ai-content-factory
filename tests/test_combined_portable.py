@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import importlib.metadata as importlib_metadata
 import json
 import os
 import shutil
@@ -28,6 +29,7 @@ from tools.build_combined_portable import (
     EXPECTED_MPT_DETERMINISTIC_MODIFICATIONS,
     EXPECTED_MPT_REQUIRED_PROBE,
     FIXED_ZIP_TIME,
+    INSTALLER_LAUNCHER_NAME,
     PACKAGE_MANIFEST,
     PACKAGE_ROOT_NAME,
     MIGRATION_LAUNCHER_NAME,
@@ -116,6 +118,11 @@ class CombinedPortableTests(unittest.TestCase):
         self._write(self.repo, "docs/fonts/OFL.txt", "Noto OFL fixture\n")
         self._write(self.repo, "docs/fonts/SOURCE.md", "Noto source fixture\n")
         source_root = Path(__file__).resolve().parents[1]
+        self._write(
+            self.repo,
+            "scripts/install_combined.py",
+            (source_root / "scripts/install_combined.py").read_bytes(),
+        )
         self._write(
             self.repo,
             "scripts/launch_combined.py",
@@ -494,22 +501,59 @@ class CombinedPortableTests(unittest.TestCase):
         if fixture_ffmpeg.exists():
             shutil.rmtree(fixture_ffmpeg)
         shutil.copytree(source_ffmpeg, fixture_ffmpeg)
-        reviewed_python = (
-            source_root.parents[1]
-            / "08_产出与验收"
-            / "v0.3发布闭环"
-            / "20260810-motion-primary-candidate-94311a8"
-            / "runtime"
-            / "python"
-            / "Lib"
-            / "site-packages"
-        )
+        raw_reviewed_python = os.environ.get("SHIYI_REVIEWED_PYTHON_SITE_PACKAGES", "").strip()
+        if raw_reviewed_python:
+            reviewed_python = Path(raw_reviewed_python)
+        else:
+            try:
+                reviewed_python = Path(importlib_metadata.distribution("moviepy").locate_file(""))
+            except importlib_metadata.PackageNotFoundError:
+                self.skipTest(
+                    "motion-primary package integration requires the frozen external MoviePy 2.2.1 runtime input; "
+                    "set SHIYI_REVIEWED_PYTHON_SITE_PACKAGES for release-gate runs"
+                )
+        reviewed_python = reviewed_python.resolve()
+        reviewed_writer = reviewed_python / "moviepy/video/io/ffmpeg_writer.py"
+        reviewed_record = reviewed_python / "moviepy-2.2.1.dist-info/RECORD"
+        if (
+            not reviewed_writer.is_file()
+            or not reviewed_record.is_file()
+            or sha256_file(reviewed_writer)
+            != "347E9EE5403A0CBFFDDF6205D7DE9A8B38708BDC9853F22383CFE4987AFA62D3"
+            or sha256_file(reviewed_record)
+            not in {
+                # Exact frozen uv-installed runtime input.
+                "F8D61AAAE58D557D0F67AF5016B5AD15D791A9D79E3B7121BC3CD9C296D78ED8",
+                # The same official wheel archive before uv adds INSTALLER and REQUESTED.
+                "290DB0D8A3047B66AC881C733121587FDA59B5DF95811D17DF86457A3014186B",
+            }
+        ):
+            self.fail(
+                "motion-primary tests require the exact reviewed MoviePy 2.2.1 site-packages; "
+                "set SHIYI_REVIEWED_PYTHON_SITE_PACKAGES to the protected release input"
+            )
         for name in ("moviepy", "moviepy-2.2.1.dist-info"):
             shutil.copytree(
                 reviewed_python / name,
                 self.python_runtime / "Lib" / "site-packages" / name,
                 dirs_exist_ok=True,
             )
+        staged_dist = self.python_runtime / "Lib/site-packages/moviepy-2.2.1.dist-info"
+        staged_record = staged_dist / "RECORD"
+        if sha256_file(staged_record) == "290DB0D8A3047B66AC881C733121587FDA59B5DF95811D17DF86457A3014186B":
+            (staged_dist / "INSTALLER").write_bytes(b"uv")
+            (staged_dist / "REQUESTED").write_bytes(b"")
+            record_lines = staged_record.read_text(encoding="utf-8").splitlines()
+            record_lines.extend((
+                "moviepy-2.2.1.dist-info/INSTALLER,sha256=5hhM4Q4mYTT9z6QB6PGpUAW81PGNFrYrdXMj4oM_6ak,2",
+                "moviepy-2.2.1.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0",
+            ))
+            record_lines.sort(key=lambda line: line.split(",", 1)[0])
+            staged_record.write_text("\n".join(record_lines) + "\n", encoding="utf-8", newline="\n")
+        self.assertEqual(
+            "F8D61AAAE58D557D0F67AF5016B5AD15D791A9D79E3B7121BC3CD9C296D78ED8",
+            sha256_file(staged_record),
+        )
         node = self.root / "node-runtime"
         hyperframes = self.root / "hyperframes-runtime"
         self._write(node, "node.exe", b"fixed-node")
@@ -987,8 +1031,20 @@ class CombinedPortableTests(unittest.TestCase):
         migration_launcher = (inputs.output / MIGRATION_LAUNCHER_NAME).read_text(encoding="ascii")
         self.assertNotIn("verify_combined_portable.py", migration_launcher)
         self.assertIn("--import-runtime", migration_launcher)
+        installer_launcher = (inputs.output / INSTALLER_LAUNCHER_NAME).read_text(encoding="ascii")
+        self.assertIn("runtime\\python\\python.exe", installer_launcher)
+        self.assertIn("scripts\\install_combined.py", installer_launcher)
+        self.assertIn("--source-root \"%~dp0.\"", installer_launcher)
+        self.assertNotRegex(installer_launcher.casefold(), r"pip\s+install|npm\s+install|npx\s+")
         usage = (inputs.output / "使用说明.txt").read_text(encoding="utf-8")
         self.assertIn("LocalAppData\\ShiyiContentFactory\\UserData", usage)
+        self.assertIn(INSTALLER_LAUNCHER_NAME, usage)
+        self.assertIn("安装位置和数据位置是两回事", usage)
+        self.assertIn("纯动画视频组件", usage)
+        self.assertIn("实拍素材功能本版未开放", usage)
+        self.assertIn("技术 JSON 仅作附件", usage)
+        self.assertNotIn("HyperFrames", usage)
+        self.assertNotIn("MoneyPrinterTurbo", usage)
         self.assertIn(STOP_LAUNCHER_NAME, usage)
         self.assertIn(MIGRATION_LAUNCHER_NAME, usage)
         self.assertIn("反向机械证据审核", usage)

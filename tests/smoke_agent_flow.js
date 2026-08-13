@@ -1,4 +1,5 @@
 const { chromium } = require('playwright');
+const { createHash } = require('node:crypto');
 
 const AGENT_TEST_POLICY = {
   stage_review_mode: 'agent_test',
@@ -20,7 +21,8 @@ const AGENT_TEST_IDENTITY = {
 (async () => {
   const executablePath = process.env.CODEX_UI_BROWSER || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
   const browser = await chromium.launch({ headless: true, executablePath });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1024 }, deviceScaleFactor: 1 });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1024 }, deviceScaleFactor: 1 });
+  const page = await context.newPage();
   const baseUrl = process.env.CONTENT_FACTORY_URL || 'http://127.0.0.1:8765';
   const errors = [];
   const calls = [];
@@ -46,6 +48,25 @@ const AGENT_TEST_IDENTITY = {
   let detailRunRequests = 0;
   let mechanicalRevisionJobReads = 0;
   let mechanicalRevisionArtifactRequests = 0;
+  let retryRequests = 0;
+  let retryRunRequests = 0;
+  const retryKeys = [];
+  let retriedJob = null;
+  let legacyCorrectionRequests = 0;
+  let revisionPatchRequests = 0;
+  const revisionPatchPayloads = [];
+  const revisionPatchKeys = [];
+  const baseApprovedScript = '这是经过证据约束的安全测试脚本。';
+  const revisedApprovedScript = '这是用户直接修改后的完整安全测试脚本，明确说明检测条件、适用边界和行动建议。';
+  const baseApprovedArtifactBody = JSON.stringify({ script: baseApprovedScript });
+  const revisedApprovedArtifactBody = JSON.stringify({
+    script: revisedApprovedScript,
+    selected_by: 'browser_editor',
+  });
+  const baseApprovedArtifactSha256 = createHash('sha256').update(baseApprovedArtifactBody).digest('hex');
+  let evidenceReportRequests = 0;
+  let publicEvidenceRequests = 0;
+  const expectedZipFilename = 'shiyi-public-evidence-fake-job-render-run-5-0123456789ab.zip';
   let detailJob = {
     schema_version: 2,
     id: 'running-detail-job',
@@ -75,7 +96,7 @@ const AGENT_TEST_IDENTITY = {
       created_at: '2026-08-01T16:00:00+08:00',
       provider_state: 'unconfigured',
       provider_name: 'DeepSeek',
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-v4-pro',
       connection_verified_at: null,
       topic_source: 'local_safe_agent',
       selection_bundle_id: 'selection-mechanical-fixture',
@@ -110,13 +131,36 @@ const AGENT_TEST_IDENTITY = {
       human_intervention_required_during_generation: false,
     },
     automatic_controller_failure: {
-      code: 'automatic_content_recovery_exhausted',
+      code: 'automatic_stage_attempts_exhausted',
       reason: '脚本自动生成已达到重试上限，本次未发布不合格脚本。',
+      source_error: '场景3与上一幕重复同一信息结构',
+      stage: 'content',
+      stage_attempts: 4,
+      maximum_stage_attempts: 4,
     },
   };
 
   page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
   page.on('pageerror', err => errors.push(err.message));
+
+  await page.context().route('**/api/jobs/fake-job/evidence-report.html', route => {
+    evidenceReportRequests += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      headers: { 'Content-Disposition': 'inline; filename="evidence-report.html"' },
+      body: '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>成片验收报告</title></head><body><main><h1>给运营与负责人看的成片说明 · 不是动画代码</h1><p>请先播放成片，再核对文案、声音、字幕和证据边界。</p><p>这份报告使用普通人能看懂的说明；技术记录另行折叠保存。</p></main></body></html>',
+    });
+  });
+  await page.context().route('**/api/jobs/fake-job/public-evidence.zip', route => {
+    publicEvidenceRequests += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/zip',
+      headers: { 'Content-Disposition': `attachment; filename="${expectedZipFilename}"` },
+      body: 'PK\u0005\u0006\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000',
+    });
+  });
 
   await page.route('**/api/agent/topics', route => route.fulfill({
     status: 200,
@@ -135,7 +179,7 @@ const AGENT_TEST_IDENTITY = {
   await page.route('**/api/jobs', route => route.fulfill({
     status: 200,
     contentType: 'application/json; charset=utf-8',
-    body: JSON.stringify({ jobs: job ? [job, detailJob, mechanicalRevisionJob] : [detailJob, mechanicalRevisionJob] }),
+    body: JSON.stringify({ jobs: [job, retriedJob, detailJob, mechanicalRevisionJob].filter(Boolean) }),
   }));
   await page.route('**/api/demo-job', async route => {
     createRequests += 1;
@@ -232,6 +276,54 @@ const AGENT_TEST_IDENTITY = {
       body: JSON.stringify(mechanicalRevisionJob),
     });
   });
+  await page.route('**/api/jobs/mechanical-revision-job/retry', async route => {
+    retryRequests += 1;
+    retryKeys.push(route.request().headers()['idempotency-key']);
+    if (!retriedJob) {
+      retriedJob = {
+        ...mechanicalRevisionJob,
+        id: 'mechanical-retry-job',
+        status: 'authorized',
+        retry_of_job_id: mechanicalRevisionJob.id,
+        budget: { limit: 7, attempted: 0, succeeded: 0, failed: 0, events: [] },
+        runs: [],
+        last_error: null,
+        automatic_controller: undefined,
+        automatic_controller_failure: undefined,
+      };
+    }
+    if (retryRequests === 1) return route.abort('connectionfailed');
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json; charset=utf-8',
+      body: JSON.stringify(retriedJob),
+    });
+  });
+  await page.route('**/api/jobs/mechanical-retry-job', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json; charset=utf-8',
+    body: JSON.stringify(retriedJob),
+  }));
+  await page.route('**/api/jobs/mechanical-retry-job/run', route => {
+    retryRunRequests += 1;
+    retriedJob = {
+      ...retriedJob,
+      status: 'complete',
+      current_run_id: 'mechanical-retry-render',
+      artifacts: ['final.mp4'],
+      runs: [{ run_id: 'mechanical-retry-render', stage: 'render', status: 'complete' }],
+      automatic_controller: {
+        mode: 'mechanical',
+        status: 'complete',
+        human_intervention_required_during_generation: false,
+      },
+    };
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json; charset=utf-8',
+      body: JSON.stringify(retriedJob),
+    });
+  });
   await page.route('**/api/jobs/mechanical-revision-job/review-artifacts/approved_script.json', route => {
     mechanicalRevisionArtifactRequests += 1;
     return route.fulfill({
@@ -290,14 +382,25 @@ const AGENT_TEST_IDENTITY = {
         await new Promise(resolve => setTimeout(resolve, 1400));
       }
       const status = runRequests === 3 ? 'awaiting_compliance_approval' : 'complete';
+      const completedRunId = runRequests >= 5 ? 'render-run-5' : 'render-run-4';
       job = {
         ...job,
         status,
+        ...(status === 'complete' ? {
+          // The shipped workbench uses mechanical review.  The earlier
+          // agent_test stages above exercise the explicit approval UI; switch
+          // this completed fixture to the shipped policy before exercising
+          // the customer-facing exact full-text revision flow.
+          review_policy: {
+            stage_review_mode: 'mechanical',
+            final_human_acceptance_required: true,
+          },
+        } : {}),
         active_run_id: null,
         last_error: null,
         budget: { ...job.budget, attempted: runRequests },
         ...(status === 'complete' ? {
-          current_run_id: 'render-run-4',
+          current_run_id: completedRunId,
           artifacts: ['final.mp4', 'manifest.json'],
           runs: (job.runs || []).map(run => run.run_id === 'render-run-4' ? { ...run, status: 'complete' } : run),
         } : {}),
@@ -327,7 +430,14 @@ const AGENT_TEST_IDENTITY = {
   await page.route('**/api/jobs/fake-job/review-artifacts/approved_script.json', route => route.fulfill({
     status: 200,
     contentType: 'application/json; charset=utf-8',
-    body: JSON.stringify({ script: '这是经过证据约束的安全测试脚本。' }),
+    body: baseApprovedArtifactBody,
+  }));
+  await page.route('**/api/jobs/fake-job/artifacts/approved_script.json', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json; charset=utf-8',
+    body: job?.current_run_id === 'render-run-5'
+      ? revisedApprovedArtifactBody
+      : baseApprovedArtifactBody,
   }));
   await page.route('**/api/jobs/fake-job/review-artifacts/review.json', route => route.fulfill({
     status: 200,
@@ -359,6 +469,48 @@ const AGENT_TEST_IDENTITY = {
       },
     };
     return route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(job) });
+  });
+  await page.route('**/api/jobs/fake-job/script', async route => {
+    revisionPatchRequests += 1;
+    const payload = await route.request().postDataJSON();
+    const requestKey = route.request().headers()['idempotency-key'];
+    revisionPatchPayloads.push(payload);
+    revisionPatchKeys.push(requestKey);
+    job = {
+      ...job,
+      status: 'compliance_approved',
+      last_error: null,
+      approvals: {
+        ...job.approvals,
+        compliance: {
+          status: 'approved',
+          reviewer: '反向机械审核器',
+          actor_type: 'mechanical_reviewer',
+          review_mode: 'mechanical',
+          human_approval_claimed: false,
+        },
+      },
+      script_revision: {
+        status: 'accepted_pending_render',
+        editor: '本地浏览器用户',
+        base_run_id: 'render-run-4',
+        previous_success_run_preserved: 'render-run-4',
+      },
+    };
+    if (revisionPatchRequests === 1) return route.abort('connectionfailed');
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json; charset=utf-8',
+      body: JSON.stringify({ ...job, replayed: true }),
+    });
+  });
+  await page.route('**/api/agent/corrections', route => {
+    legacyCorrectionRequests += 1;
+    return route.fulfill({
+      status: 500,
+      contentType: 'application/json; charset=utf-8',
+      body: JSON.stringify({ error: { message: '完整文案改稿不应再调用学习纠错接口' } }),
+    });
   });
 
   await page.goto(baseUrl, { waitUntil: 'networkidle' });
@@ -424,12 +576,89 @@ const AGENT_TEST_IDENTITY = {
     && document.querySelector('#artifactVideo')?.getAttribute('src')?.endsWith('/final.mp4'));
   const completedDetailUpdated = await page.locator('#artifactVideo:not([hidden])[src$="/final.mp4"]').count() === 1
     && await page.locator('#artifactLinks a[download][href$="/final.mp4"]').count() === 1;
+  const technicalArtifacts = page.locator('#artifactLinks details.technical-artifacts');
+  const technicalArtifactsCollapsed = await technicalArtifacts.count() === 1
+    && !(await technicalArtifacts.evaluate(node => node.open));
+  const rawManifestOnlyInTechnicalAttachments = await page.locator('#artifactLinks').evaluate(node => {
+    const manifestLinks = [...node.querySelectorAll('a')].filter(link => link.getAttribute('href')?.endsWith('/manifest.json'));
+    return manifestLinks.length === 1
+      && Boolean(manifestLinks[0].closest('details.technical-artifacts'))
+      && !manifestLinks[0].closest('details.technical-artifacts').open;
+  });
+  const rawManifestHiddenByDefault = await technicalArtifacts.locator('a[href$="/manifest.json"]').count() === 1
+    && !await technicalArtifacts.locator('a[href$="/manifest.json"]').isVisible();
   await page.locator('#homeButton').click();
-  await page.getByRole('heading', { name: '测试成片已经完成，等待用户最终验收' }).waitFor();
+  await page.getByRole('heading', { name: '自动成片已经完成' }).waitFor();
   const explicitComplianceAdvance = runRequests === 4;
   const latestDownloadAvailable = await page.locator('#latestArtifact a[download][href$="/final.mp4"]').count() === 1;
+  const completedHumanActionsVisible = await page.locator('#latestArtifact #latestEditButton', { hasText: '修改文案并重新生成' }).isVisible()
+    && await page.locator('#latestArtifact a[href$="/evidence-report.html"]', { hasText: '查看验收报告' }).isVisible()
+    && await page.locator('#latestArtifact a[href$="/public-evidence.zip"]', { hasText: '下载交付材料（ZIP）' }).isVisible();
+  const deliveryHint = await page.locator('#latestArtifact .delivery-hint').innerText();
+  const deliveryHintIsOperatorFriendly = deliveryHint.includes('给运营和审核人员使用')
+    && deliveryHint.includes('00-验收报告.html');
+
+  await page.locator('#latestEditButton').click();
+  await page.locator('#revisionCurrentScript').waitFor();
+  const revisionCurrentScriptVisible = await page.locator('#revisionCurrentScript').isVisible()
+    && await page.locator('#revisionCurrentScript').inputValue() === baseApprovedScript
+    && !await page.locator('#revisionCurrentScript').evaluate(node => node.readOnly);
+  const revisionExactEditGuidanceVisible = (await page.locator('#activeJobPanel').innerText()).includes('当前成片实际使用的完整文案')
+    && (await page.locator('#activeJobPanel').innerText()).includes('直接改正文')
+    && (await page.locator('#activeJobPanel').innerText()).includes('上一版成片');
+  await page.locator('#revisionCurrentScript').fill(revisedApprovedScript);
+  const runRequestsBeforeRevision = runRequests;
+  await page.locator('button[data-home-action="submit-script-revision"]').click();
+  await page.getByRole('heading', { name: '自动成片已经完成' }).waitFor();
+  const revisionRunRequests = runRequests - runRequestsBeforeRevision;
+  const revisionExactContract = revisionPatchRequests === 2
+    && legacyCorrectionRequests === 0
+    && revisionPatchKeys[0]
+    && revisionPatchKeys[0] === revisionPatchKeys[1]
+    && JSON.stringify(revisionPatchPayloads[0]) === JSON.stringify(revisionPatchPayloads[1])
+    && revisionPatchPayloads[0]?.script === revisedApprovedScript
+    && revisionPatchPayloads[0]?.base_run_id === 'render-run-4'
+    && revisionPatchPayloads[0]?.base_approved_script_sha256 === baseApprovedArtifactSha256;
+  const revisionTriggeredExactlyOneRun = revisionRunRequests === 1;
+
+  const reportLink = page.locator('#latestArtifact a[href$="/evidence-report.html"]');
+  const reportHref = await reportLink.getAttribute('href');
+  const reportPage = await page.context().newPage();
+  const reportResponse = await reportPage.goto(new URL(reportHref, baseUrl).href, { waitUntil: 'domcontentloaded' });
+  const reportContentType = reportResponse?.headers()['content-type'] || '';
+  const reportBodyText = await reportPage.locator('body').innerText();
+  const evidenceReportOpenedAsHumanHtml = evidenceReportRequests === 1
+    && reportContentType.toLowerCase().startsWith('text/html')
+    && reportBodyText.includes('给运营与负责人看的成片说明')
+    && reportBodyText.includes('不是动画代码')
+    && reportBodyText.includes('普通人能看懂')
+    && !reportBodyText.trim().startsWith('{');
+  await reportPage.close();
+
+  const publicEvidenceLink = page.locator('#latestArtifact a[href$="/public-evidence.zip"]');
+  const [publicEvidenceDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    publicEvidenceLink.click(),
+  ]);
+  const zipDownloadNamingCorrect = publicEvidenceRequests === 1
+    && publicEvidenceDownload.suggestedFilename() === expectedZipFilename;
+  await publicEvidenceDownload.cancel().catch(() => {});
   const completedOpenEnabled = await page.locator('#jobList button[data-action="open"][data-job-id="fake-job"]').isEnabled();
 
+  await page.locator('#appMenuButton').click();
+  await page.locator('#appMenu [data-view="jobs"]').click();
+  job = { ...job, review_policy: { ...AGENT_TEST_POLICY } };
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.getByRole('heading', { name: '测试成片已经完成，等待用户最终验收' }).waitFor();
+  const nonMechanicalCompletionHidesExactRevision = await page.locator('#activeJobPanel [data-home-action="edit-script"]').count() === 0
+    && await page.locator('#latestArtifact #latestEditButton').count() === 0;
+  job = {
+    ...job,
+    review_policy: {
+      stage_review_mode: 'mechanical',
+      final_human_acceptance_required: true,
+    },
+  };
   await page.locator('#appMenuButton').click();
   await page.locator('#appMenu [data-view="jobs"]').click();
   await page.locator('#researchFindings').evaluate(node => {
@@ -446,8 +675,33 @@ const AGENT_TEST_IDENTITY = {
   // bounded content retries before either approved_script.json or review.json
   // exists, and the user opens its details.  This state is terminal until the
   // Agent starts a new automatic attempt; a 404 here is not "still publishing".
+  const listRetryVisible = await page.locator('#jobList button[data-action="retry"][data-job-id="mechanical-revision-job"]').isVisible();
   await page.locator('#jobList button[data-action="open"][data-job-id="mechanical-revision-job"]').click();
-  await page.waitForFunction(() => document.querySelector('#jobDetailBadge')?.textContent === '自动生成未通过');
+  await page.waitForFunction(() => document.querySelector('#jobDetailBadge')?.textContent === '本次生成未完成');
+  const detailRetryButtonVisible = await page.locator('#retryFailedJobBtn').evaluate(node => node.checkVisibility());
+  const detailRetryButtonText = await page.locator('#retryFailedJobBtn').innerText();
+  const detailRetryButtonState = await page.locator('#retryFailedJobBtn').evaluate(node => ({
+    hidden: node.hidden,
+    disabled: node.disabled,
+    display: getComputedStyle(node).display,
+    width: node.getBoundingClientRect().width,
+    height: node.getBoundingClientRect().height,
+    visibility: getComputedStyle(node).visibility,
+    opacity: getComputedStyle(node).opacity,
+    checkVisibility: node.checkVisibility(),
+    parentDisplay: getComputedStyle(node.parentElement).display,
+    parentVisibility: getComputedStyle(node.parentElement).visibility,
+    parentWidth: node.parentElement.getBoundingClientRect().width,
+    parentHeight: node.parentElement.getBoundingClientRect().height,
+    detailHidden: document.querySelector('#jobDetailPanel')?.hidden,
+    viewActive: document.querySelector('#view-jobs')?.classList.contains('active'),
+  }));
+  const detailJobSummaryText = await page.locator('#jobSummary').innerText();
+  const detailRetryVisible = detailRetryButtonVisible
+    && detailRetryButtonText.trim() === '重新生成这个选题'
+    && detailJobSummaryText.includes('选题没有被否决')
+    && detailJobSummaryText.includes('分镜阶段生成了相邻重复的画面结构');
+  await page.screenshot({ path: process.env.FLOW_SMOKE_OUTPUT || 'runtime/agent-flow-smoke.png', fullPage: false });
   const mechanicalTaskHasNoManualRun = await page.locator('#jobList button[data-action="run"][data-job-id="mechanical-revision-job"]').count() === 0;
   const mechanicalReviewLabel = await page.locator('#jobSummary').innerText();
   const mechanicalReviewIsAutomatic = mechanicalReviewLabel.includes('反向机械审核（全自动）')
@@ -483,10 +737,27 @@ const AGENT_TEST_IDENTITY = {
   const mechanicalTerminalPollingStopped = mechanicalRevisionJobReads === mechanicalReadsBeforeWait
     && mechanicalRevisionArtifactRequests === mechanicalArtifactsBeforeWait;
 
-  const expectedCalls = ['create-network-uncertain', 'create-replay', 'authorize-network-uncertain', 'run-long', 'research-approval', 'run-2-failed', 'run-3', 'compliance-approval', 'run-4'];
+  await page.evaluate(() => sessionStorage.setItem('shiyi_home_job_id', 'mechanical-revision-job'));
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.getByRole('heading', { name: '选题没有被否决，这次生成没成功' }).waitFor();
+  const retryFailureReasonVisible = (await page.locator('#activeJobPanel').innerText())
+    .includes('分镜阶段生成了相邻重复的画面结构');
+  const retryButton = page.locator('#activeJobPanel [data-home-action="retry-failed"]');
+  const sameTopicRetryVisible = await retryButton.isVisible()
+    && (await retryButton.innerText()) === '重新生成这个选题';
+  await retryButton.click();
+  await page.getByRole('heading', { name: '自动成片已经完成' }).waitFor();
+  const retryReplayReusedKey = retryKeys.length === 2 && retryKeys[0] === retryKeys[1];
+  const retryCreatedFreshJob = retriedJob?.id === 'mechanical-retry-job'
+    && retriedJob?.retry_of_job_id === mechanicalRevisionJob.id
+    && retriedJob?.production_input?.topic === mechanicalRevisionJob.production_input.topic
+    && retriedJob?.budget?.attempted === 0;
+  const retryTriggeredExactlyOneRun = retryRunRequests === 1;
+
+  const expectedCalls = ['create-network-uncertain', 'create-replay', 'authorize-network-uncertain', 'run-long', 'research-approval', 'run-2-failed', 'run-3', 'compliance-approval', 'run-4', 'run-5'];
   const createReplayReusedKey = createKeys[0] && createKeys[0] === createKeys[1];
-  const noAutomaticRunReplay = runRequests === 4;
-  const logicalAttemptKeysAreUnique = runKeys.length === 4 && new Set(runKeys).size === 4;
+  const noAutomaticRunReplay = runRequestsBeforeRevision === 4;
+  const logicalAttemptKeysAreUnique = runKeys.length === 5 && new Set(runKeys).size === 5;
   const emptyResearchBoundaryConfirmed = researchApprovalPayload
     && Array.isArray(researchApprovalPayload.findings)
     && researchApprovalPayload.findings.length === 0
@@ -496,8 +767,9 @@ const AGENT_TEST_IDENTITY = {
     && job.approvals.research?.human_approval_claimed === false
     && job.approvals.compliance?.human_approval_claimed === false;
   const unexpectedErrors = errors.filter(message => !/net::ERR_CONNECTION_FAILED|status of 404 \(Not Found\)|status of 500 \(Internal Server Error\)/.test(message));
-  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, createProductionMode, latestDownloadAvailable, authorizeRequests, runKeys, noAutomaticRunReplay, logicalAttemptKeysAreUnique, maxConcurrentRunRequests, pollsDuringLongRun, injectedPollFailures, recoveredPolls, researchArtifactRequests, detailJobReads, detailArtifactRequests, detailRunRequests, staleFindingClearedDuringPending, staleFindingAbsentAfterRecovery, mechanicalRevisionJobReads, mechanicalRevisionArtifactRequests, mechanicalTaskHasNoManualRun, mechanicalReviewIsAutomatic, mechanicalProviderSourceIsExplicit, mechanicalHumanControlsHidden, diagnosticHistoryPresent, diagnosticHistoryCollapsed, diagnosticHistorySummary, diagnosticHistoryExplainsFailures, failedRunDetailsHidden, mechanicalScrollBefore, mechanicalScrollAfter, mechanicalScrollStable, mechanicalTerminalPollingStopped, completedOpenEnabled, completedDetailUpdated, emptyResearchBoundaryConfirmed, researchHomeRequiresDetails, researchHomeDidNotApprove, researchReviewerLocked, researchNotePrefilled, researchApprovalDidNotAutoRun, researchApprovalIsAgentTest, explicitResearchAdvance, complianceHomeRequiresDetails, complianceHomeDidNotApprove, complianceReviewerLocked, complianceNotePrefilled, complianceApprovalDidNotAutoRun, complianceApprovalIsAgentTest, explicitComplianceAdvance, humanImpersonationAbsent, expectedFailureSignals: errors, unexpectedErrors };
+  const result = { status: job.status, calls, expectedCalls, createKeys, createReplayReusedKey, createProductionMode, latestDownloadAvailable, completedHumanActionsVisible, deliveryHintIsOperatorFriendly, technicalArtifactsCollapsed, rawManifestOnlyInTechnicalAttachments, rawManifestHiddenByDefault, revisionCurrentScriptVisible, revisionExactEditGuidanceVisible, revisionExactContract, revisionTriggeredExactlyOneRun, revisionPatchRequests, legacyCorrectionRequests, revisionRunRequests, nonMechanicalCompletionHidesExactRevision, evidenceReportRequests, evidenceReportOpenedAsHumanHtml, reportContentType, publicEvidenceRequests, zipDownloadNamingCorrect, expectedZipFilename, authorizeRequests, runKeys, noAutomaticRunReplay, logicalAttemptKeysAreUnique, maxConcurrentRunRequests, pollsDuringLongRun, injectedPollFailures, recoveredPolls, researchArtifactRequests, detailJobReads, detailArtifactRequests, detailRunRequests, staleFindingClearedDuringPending, staleFindingAbsentAfterRecovery, mechanicalRevisionJobReads, mechanicalRevisionArtifactRequests, mechanicalTaskHasNoManualRun, mechanicalReviewIsAutomatic, mechanicalProviderSourceIsExplicit, mechanicalHumanControlsHidden, listRetryVisible, detailRetryButtonVisible, detailRetryButtonText, detailRetryButtonState, detailJobSummaryText, detailRetryVisible, diagnosticHistoryPresent, diagnosticHistoryCollapsed, diagnosticHistorySummary, diagnosticHistoryExplainsFailures, failedRunDetailsHidden, mechanicalScrollBefore, mechanicalScrollAfter, mechanicalScrollStable, mechanicalTerminalPollingStopped, retryRequests, retryReplayReusedKey, retryFailureReasonVisible, sameTopicRetryVisible, retryCreatedFreshJob, retryTriggeredExactlyOneRun, completedOpenEnabled, completedDetailUpdated, emptyResearchBoundaryConfirmed, researchHomeRequiresDetails, researchHomeDidNotApprove, researchReviewerLocked, researchNotePrefilled, researchApprovalDidNotAutoRun, researchApprovalIsAgentTest, explicitResearchAdvance, complianceHomeRequiresDetails, complianceHomeDidNotApprove, complianceReviewerLocked, complianceNotePrefilled, complianceApprovalDidNotAutoRun, complianceApprovalIsAgentTest, explicitComplianceAdvance, humanImpersonationAbsent, expectedFailureSignals: errors, unexpectedErrors };
   process.stdout.write(JSON.stringify(result));
+  await context.close();
   await browser.close();
-  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || createProductionMode !== 'motion' || !latestDownloadAvailable || authorizeRequests !== 1 || !noAutomaticRunReplay || !logicalAttemptKeysAreUnique || maxConcurrentRunRequests !== 1 || pollsDuringLongRun < 2 || injectedPollFailures !== 1 || recoveredPolls < 1 || researchArtifactRequests < 2 || detailJobReads < 3 || detailArtifactRequests < 2 || detailRunRequests !== 0 || !staleFindingClearedDuringPending || !staleFindingAbsentAfterRecovery || !mechanicalTaskHasNoManualRun || !mechanicalReviewIsAutomatic || !mechanicalProviderSourceIsExplicit || !mechanicalHumanControlsHidden || !diagnosticHistoryPresent || !diagnosticHistoryCollapsed || !diagnosticHistoryExplainsFailures || !failedRunDetailsHidden || !mechanicalScrollStable || !mechanicalTerminalPollingStopped || !completedOpenEnabled || !completedDetailUpdated || !emptyResearchBoundaryConfirmed || !researchHomeRequiresDetails || !researchHomeDidNotApprove || !researchReviewerLocked || !researchNotePrefilled || !researchApprovalDidNotAutoRun || !researchApprovalIsAgentTest || !explicitResearchAdvance || !complianceHomeRequiresDetails || !complianceHomeDidNotApprove || !complianceReviewerLocked || !complianceNotePrefilled || !complianceApprovalDidNotAutoRun || !complianceApprovalIsAgentTest || !explicitComplianceAdvance || !humanImpersonationAbsent) process.exit(1);
+  if (unexpectedErrors.length || job.status !== 'complete' || JSON.stringify(calls) !== JSON.stringify(expectedCalls) || createRequests !== 2 || !createReplayReusedKey || createProductionMode !== 'motion' || !latestDownloadAvailable || !completedHumanActionsVisible || !deliveryHintIsOperatorFriendly || !technicalArtifactsCollapsed || !rawManifestOnlyInTechnicalAttachments || !rawManifestHiddenByDefault || !revisionCurrentScriptVisible || !revisionExactEditGuidanceVisible || !revisionExactContract || !revisionTriggeredExactlyOneRun || !nonMechanicalCompletionHidesExactRevision || !evidenceReportOpenedAsHumanHtml || !zipDownloadNamingCorrect || authorizeRequests !== 1 || !noAutomaticRunReplay || !logicalAttemptKeysAreUnique || maxConcurrentRunRequests !== 1 || pollsDuringLongRun < 2 || injectedPollFailures !== 1 || recoveredPolls < 1 || researchArtifactRequests < 2 || detailJobReads < 3 || detailArtifactRequests < 2 || detailRunRequests !== 0 || !staleFindingClearedDuringPending || !staleFindingAbsentAfterRecovery || !mechanicalTaskHasNoManualRun || !mechanicalReviewIsAutomatic || !mechanicalProviderSourceIsExplicit || !mechanicalHumanControlsHidden || !listRetryVisible || !detailRetryVisible || !diagnosticHistoryPresent || !diagnosticHistoryCollapsed || !diagnosticHistoryExplainsFailures || !failedRunDetailsHidden || !mechanicalScrollStable || !mechanicalTerminalPollingStopped || retryRequests !== 2 || !retryReplayReusedKey || !retryFailureReasonVisible || !sameTopicRetryVisible || !retryCreatedFreshJob || !retryTriggeredExactlyOneRun || !completedOpenEnabled || !completedDetailUpdated || !emptyResearchBoundaryConfirmed || !researchHomeRequiresDetails || !researchHomeDidNotApprove || !researchReviewerLocked || !researchNotePrefilled || !researchApprovalDidNotAutoRun || !researchApprovalIsAgentTest || !explicitResearchAdvance || !complianceHomeRequiresDetails || !complianceHomeDidNotApprove || !complianceReviewerLocked || !complianceNotePrefilled || !complianceApprovalDidNotAutoRun || !complianceApprovalIsAgentTest || !explicitComplianceAdvance || !humanImpersonationAbsent) process.exit(1);
 })();

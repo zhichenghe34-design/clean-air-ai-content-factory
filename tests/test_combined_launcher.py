@@ -357,6 +357,7 @@ class CombinedLauncherTests(unittest.TestCase):
             "SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS": "1",
             "SHIYI_AGENT_TEST_REVIEW": "1",
             "SHIYI_STAGE_REVIEW_MODE": "mechanical",
+            "SHIYI_INTERNAL_DIAGNOSTICS": "1",
             "SHIYI_LAUNCH_INSTANCE_TOKEN": "host-controlled-token",
             "PYTHONPATH": "C:\\outside-injection",
             "PYTHONHOME": "C:\\outside-runtime",
@@ -385,6 +386,7 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertNotIn("SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS", app_env)
         self.assertNotIn("SHIYI_AGENT_TEST_REVIEW", app_env)
         self.assertNotIn("SHIYI_STAGE_REVIEW_MODE", app_env)
+        self.assertNotIn("SHIYI_INTERNAL_DIAGNOSTICS", app_env)
         self.assertNotIn("SHIYI_LAUNCH_INSTANCE_TOKEN", app_env)
         self.assertNotIn("PYTHONPATH", app_env)
         self.assertNotIn("PYTHONHOME", app_env)
@@ -1069,9 +1071,6 @@ class CombinedLauncherTests(unittest.TestCase):
         for path in (node, cli, bundle):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"fixture")
-        sapi_script = self.project / "core" / "sapi_tts.ps1"
-        sapi_script.parent.mkdir(parents=True, exist_ok=True)
-        sapi_script.write_text("# fixture\n", encoding="utf-8")
         motion = LauncherConfig(
             **{
                 **self.config.__dict__,
@@ -1136,8 +1135,6 @@ class CombinedLauncherTests(unittest.TestCase):
                 if command == [str(node), "--version"]
                 else b"0.7.86"
                 if command == [str(node), str(cli), "--version"]
-                else b"SAPI_VOICE=Fixture;CULTURE=zh-CN"
-                if "-ProbeOnly" in command
                 else b""
             )
             return subprocess.CompletedProcess(command, 0, stdout, b"")
@@ -1152,7 +1149,7 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertTrue(any("Get-AuthenticodeSignature" in command[-1] for command in probe_commands))
         self.assertTrue(any("check" in command and "--strict" in command for command in probe_commands))
         self.assertFalse(any(command[:2] == [str(self.edge), "--version"] for command in probe_commands))
-        self.assertTrue(any("-ProbeOnly" in command and "zh-CN" in command for command in probe_commands))
+        self.assertFalse(any("-ProbeOnly" in command or "sapi_tts.ps1" in " ".join(command) for command in probe_commands))
         encode_command = next(command for command in probe_commands if command[0] == str(self.config.ffmpeg))
         self.assertIn("h264_mf", encode_command)
         self.assertIn("quality", encode_command)
@@ -1161,17 +1158,6 @@ class CombinedLauncherTests(unittest.TestCase):
         self.assertNotIn("lavfi", encode_command)
         for forbidden in ("libx264", "-crf", "-preset", "-x264-params"):
             self.assertNotIn(forbidden, encode_command)
-        def missing_voice_runner(command, **kwargs):
-            if "-ProbeOnly" in command:
-                return subprocess.CompletedProcess(command, 1, b"", b"missing zh-CN voice")
-            return fake_motion_probe(command, **kwargs)
-
-        with (
-            patch("scripts.launch_combined._trusted_program_files_roots", return_value=(self.program_files,)),
-            self.assertRaises(LauncherError) as missing_voice,
-        ):
-            probe_preinstalled_runtimes(motion, runner=missing_voice_runner)
-        self.assertEqual("SAPI_ZH_CN_VOICE_MISSING", missing_voice.exception.code)
         environment = build_app_environment(
             {
                 "PATH": "host-npm-and-chrome",

@@ -1179,7 +1179,7 @@ class OpenAICompatibleProvider:
             self.base_url = validate_provider_base_url(config.get("base_url", ""))
         except ValueError as exc:
             raise ProviderError(str(exc)) from exc
-        self.model = str(config.get("model", "deepseek-v4-flash"))
+        self.model = str(config.get("model", "deepseek-v4-pro"))
         self.timeout = int(config.get("timeout_seconds", 90))
         self.budget = budget
         self._request_stage = "provider"
@@ -1437,7 +1437,10 @@ class OpenAICompatibleProvider:
             "title最多30字且必须是一句完整可读短语。禁止第一项、第二项、"
             "问题、依据、边界、行动等脱离旁白的通用占位词。屏幕标题与摘要由本地机械层从items生成，禁止另写。"
             "layout只能从claim_contrast,condition_map,boundary_list,process_flow,evidence_cards,"
-            "final_checklist,explain_points中选择；除单项完整句的explain_points外，相邻两幕不得使用相同layout。"
+            "final_checklist,explain_points中选择；相邻两幕仅在两种情况下可同为单项explain_points："
+            "两幕都是完整句；或前一幕是以中文冒号结尾、同时含明确来源名称和称、指出、报道、显示、"
+            "提到、披露、写道、说明、表明、介绍等归因动词的来源引语提示，后一幕是一个完整句。"
+            "其他冒号片段不属于例外；除此之外，相邻两幕不得使用相同layout。"
             "布局必须与items数量匹配：claim_contrast需要2到4项，condition_map需要2到4项，"
             "boundary_list需要3到5项，process_flow需要3到4项，evidence_cards必须恰好3项，"
             "final_checklist需要2到4项，explain_points允许1到5项。"

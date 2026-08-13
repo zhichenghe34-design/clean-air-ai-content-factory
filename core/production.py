@@ -2074,6 +2074,35 @@ class ProductionRunner:
         review = json.loads((folder / "review.json").read_text(encoding="utf-8"))
         if review.get("status") == "blocked" or review.get("blocked"):
             raise RuntimeError("合规审核仍处于阻断状态")
+        storyboard_path = folder / "motion_storyboard.json"
+        exact_success_revision = (
+            approved.get("selected_by") == "browser_editor"
+            and bool(approved.get("base_run_id"))
+            and bool(approved.get("base_approved_script_sha256"))
+        )
+        if production_mode == "motion" and exact_success_revision and not storyboard_path.is_file():
+            insight = json.loads((folder / "insight.json").read_text(encoding="utf-8"))
+            storyboard, storyboard_report = self._generate_motion_storyboard(
+                config,
+                insight,
+                str(approved["script"]),
+                prefer_provider=True,
+            )
+            atomic_json(storyboard_path, storyboard)
+            atomic_json(folder / "script_variants.json", {
+                "variants": [{
+                    "id": str(approved.get("id", "browser-edited")),
+                    "hook_type": str(approved.get("hook_type", "浏览器改稿")),
+                    "script": str(approved["script"]),
+                    "selected_by": "local_browser_user_exact_revision",
+                }],
+                "provider": {
+                    "script_source": "local_browser_user_exact_revision",
+                    "script_generation_bypassed": True,
+                    "motion_storyboard": storyboard_report,
+                    "budget": self.budget.snapshot(),
+                },
+            })
         segments = self._segments(config, str(approved["script"]), folder=folder)
         production_engine_report: dict[str, Any] | None = None
         motion_caption_report: dict[str, Any] | None = None

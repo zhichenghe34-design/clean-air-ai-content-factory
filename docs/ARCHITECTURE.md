@@ -46,4 +46,4 @@ Provider 地址经过规范化。正式模式只允许 DeepSeek 官方 HTTPS 域
 
 ## Manifest
 
-最终 `manifest.json` 包含 job/run ID、输入哈希、研究/合规审查哈希、结构化 `review_policy`、`evidence_status`、时间、预算统计，以及产物的名称、阶段、MIME、大小和 SHA-256。公开包以 manifest 为准复算文件，不信任报告中的自述状态；代理测试记录不得被包装成正式人审。
+最终 `manifest.json` 包含 job/run ID、输入哈希、研究/合规审查哈希、结构化 `review_policy`、`evidence_status`、时间、预算统计，以及产物的名称、阶段、MIME、大小和 SHA-256。公开包以 manifest 为准复算文件，不信任报告中的自述状态；代理测试记录不得被包装成正式人审。公开包同时生成 `00-验收报告.html` 作为普通运营人员的默认入口，成片、完整文案、资料边界和最终负责人验收要求直接可读；原始 JSON 只在报告中的折叠“技术附件”里提供。

@@ -216,6 +216,7 @@ REPO_FILE_ALLOWLIST = (
     "app.py",
     "LICENSE",
     "examples/pattern_cards.jsonl",
+    "scripts/install_combined.py",
     "scripts/launch_combined.py",
     "scripts/launch_combined.ps1",
     "tools/verify_combined_portable.py",
@@ -263,6 +264,7 @@ PYTHON_LICENSE_NAMES = ("LICENSE.txt", "LICENSE", "LICENSE.md", "license.txt")
 ROOT_LAUNCHER_NAME = "启动时宜Agent内容工厂.bat"
 STOP_LAUNCHER_NAME = "关闭时宜Agent内容工厂.bat"
 MIGRATION_LAUNCHER_NAME = "迁移旧版数据.bat"
+INSTALLER_LAUNCHER_NAME = "安装到D盘.bat"
 USAGE_NAME = "使用说明.txt"
 
 
@@ -2865,6 +2867,20 @@ def _copy_materials(materials: tuple[Path, ...], target: Path) -> None:
 
 
 def _write_root_launcher(package: Path) -> None:
+    (package / INSTALLER_LAUNCHER_NAME).write_text(
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "cd /d \"%~dp0\"\r\n"
+        "set \"SHIYI_INSTALLER_PYTHON=%~dp0runtime\\python\\python.exe\"\r\n"
+        "echo Checking the package and choosing a safe per-user install location...\r\n"
+        "\"%SHIYI_INSTALLER_PYTHON%\" -I -S -B -X utf8 \"%~dp0scripts\\install_combined.py\" --source-root \"%~dp0.\"\r\n"
+        "set \"SHIYI_EXIT_CODE=%ERRORLEVEL%\"\r\n"
+        "echo.\r\n"
+        "pause\r\n"
+        "exit /b %SHIYI_EXIT_CODE%\r\n",
+        encoding="ascii",
+        newline="",
+    )
     (package / ROOT_LAUNCHER_NAME).write_text(
         "@echo off\r\n"
         "setlocal\r\n"
@@ -2918,22 +2934,26 @@ def _write_root_launcher(package: Path) -> None:
         newline="",
     )
     (package / USAGE_NAME).write_text(
-        "时宜 Agent 内容工厂 v0.3 Windows 纯动画主线便携版\n\n"
+        "时宜 Agent 内容工厂 v0.3 Windows 纯动画主线版\n\n"
         "【运行前】\n"
-        "1. 需要 Windows 10/11 x64，并安装机器级 Microsoft Edge 151 或更高版本。ZIP 约 0.27GB，完整解压约 0.8GB；建议至少预留 1.5GB。\n"
-        "2. 将整个目录解压到可写入的短路径，不要直接在 ZIP 内运行，也不要拆散目录。\n"
+        "1. 需要完整版 Windows 10/11 x64（保留系统媒体功能和 Windows PowerShell），并安装机器级 Microsoft Edge 151 或更高版本。Windows N 版须先安装微软 Media Feature Pack。ZIP 约 0.27GB，完整解压约 0.8GB；安装目标至少预留 2GB。\n"
+        "2. 先将整个目录完整解压；不要直接在 ZIP 内运行，也不要拆散目录。\n"
         "3. API Key 不在包内；无 Key 仍可使用本地安全候选。默认自然配音和联网研究需要网络；网络不可用时会明确停止，不会降级成诊断语音或发布无声成片。\n\n"
+        "【推荐安装】\n"
+        f"4. 双击“{INSTALLER_LAUNCHER_NAME}”。D 盘只有在属于本机固定磁盘、采用 NTFS、根目录不是重解析点、当前用户可写且可用空间不少于 2GB 时才会被采用，目标是 D 盘根目录下的“时宜Agent内容工厂\\App”；否则会明确说明原因，并改用当前用户 LocalAppData 下的“Programs\\时宜Agent内容工厂\\App”。全程不需要管理员权限。\n"
+        "5. 安装目标的 App 文件夹只保存经过清单校验的程序副本；安装前后都会复算文件哈希。目标已有旧版时会先保留为 App.previous，再原子发布新版；任何发布失败都会恢复原 App。安装程序不会启动产品、不会删除原始解压包，也不会执行 pip、npm、npx 或联网下载。\n"
+        "6. 如果只在当前位置短期试用，也可以不安装，直接把当前完整解压目录当作便携版使用。\n\n"
         "【启动与制作】\n"
-        f"4. 双击“{ROOT_LAUNCHER_NAME}”。每次启动都会做一遍完整性校验（不会重复校验），复算两万余项文件哈希可能需要几分钟；请等待浏览器自动打开。校验期间也可用关闭入口终止本次启动。\n"
-        "5. 默认生产方式是离线纯动画 HyperFrames；MoneyPrinterTurbo 只是可选实拍支线。运行时不会安装或下载依赖。\n"
-        "6. 选择角度即授权本次内部候选生产；研究、反向机械证据审核、脚本、合规、配音和成片会自动推进，不要求中途人工审查或改稿。未通过时系统会安全停止并显示诊断，不会发布不合格结果。\n"
-        "7. 成片完成后可在首页播放并下载 final.mp4；证据清单用于核对脚本、审核记录和 SHA-256。\n\n"
+        f"7. 打开安装后的 App 文件夹（或当前便携目录），双击“{ROOT_LAUNCHER_NAME}”。每次启动都会做一遍完整性校验（不会重复校验），复算两万余项文件哈希可能需要几分钟；请等待浏览器自动打开。校验期间也可用关闭入口终止本次启动。\n"
+        "8. 默认使用随包提供的纯动画视频组件；实拍素材功能本版未开放。程序运行、视频合成、媒体处理和字体组件都随包提供，运行时不会安装或下载依赖。外部电脑仍需完整版 Windows 10/11 x64、系统媒体功能、Windows PowerShell、系统 Edge 和需要联网能力时的网络连接。\n"
+        "9. 选择角度即授权本次内部候选生产；研究、反向机械证据审核、脚本、合规、配音和成片会自动推进，不要求中途人工审查或改稿。未通过时系统会安全停止并显示诊断，不会发布不合格结果。\n"
+        "10. 成片完成后可在首页播放并下载视频，并查看面向运营人员的验收报告；技术 JSON 仅作附件，不要求运营人员阅读。\n\n"
         "【数据、关闭与故障】\n"
-        "8. 新版任务、历史成片和本机加密 Key 固定保存在当前 Windows 用户的 LocalAppData\\ShiyiContentFactory\\UserData，今后更换解压目录仍会沿用。\n"
-        f"9. 从旧便携版升级时，请在第一次启动新版前，把旧包的 runtime 文件夹拖到“{MIGRATION_LAUNCHER_NAME}”上；它只复制任务、配置和 DPAPI 加密 Key，不删除旧目录。若新版已产生不同数据会拒绝覆盖。\n"
-        f"10. 使用完毕请双击“{STOP_LAUNCHER_NAME}”。关闭浏览器本身不会停止本地服务。\n"
-        "11. 启动失败时先查看 %LOCALAPPDATA%\\ShiyiContentFactory\\Launcher\\mpt-api.log 和控制台中的结构化错误；不要重复双击多个实例。\n"
-        "12. 工作台和可选实拍引擎只监听 127.0.0.1，不提供公网云服务；对外发布仍由企业负责人最终确认。\n",
+        "11. 安装位置和数据位置是两回事：App 只放程序；任务、历史成片、设置和本机 DPAPI 加密 Key 固定保存在当前 Windows 用户的 LocalAppData\\ShiyiContentFactory\\UserData。相同版本会复核后直接复用；新版会先完整校验，再原子替换 App 并保留一个 App.previous 回滚版本；损坏的 App 可由同一入口安全修复。\n"
+        f"12. 从旧便携版升级时，请在第一次启动新版前，把旧包的 runtime 文件夹拖到“{MIGRATION_LAUNCHER_NAME}”上；它只复制任务、配置和 DPAPI 加密 Key，不删除旧目录。若新版已产生不同数据会拒绝覆盖。\n"
+        f"13. 使用完毕请双击“{STOP_LAUNCHER_NAME}”。关闭浏览器本身不会停止本地服务。\n"
+        "14. 启动失败时先查看 %LOCALAPPDATA%\\ShiyiContentFactory\\Launcher\\mpt-api.log 和控制台中的结构化错误；不要重复双击多个实例。\n"
+        "15. 工作台和可选实拍引擎只监听 127.0.0.1，不提供公网云服务；对外发布仍由企业负责人最终确认。\n",
         encoding="utf-8",
     )
 

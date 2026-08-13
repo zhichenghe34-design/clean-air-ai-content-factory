@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import hashlib
 import json
 import math
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import unicodedata
 import zipfile
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from core.review_policy import (
+    HUMAN_STAGE_REVIEW,
+    LOCAL_BROWSER_EDITOR,
+    MECHANICAL_STAGE_REVIEW,
     approval_validation_line,
     classify_approval_record,
     classify_script_edit_record,
@@ -41,6 +46,7 @@ from core.motion_runtime_contract import (
     SYSTEM_BROWSER_STRATEGY,
 )
 from core.voice_contract import fixed_voice_delivery_violations
+from core.evidence_report import HUMAN_REPORT_CONTRACT, HUMAN_REPORT_NAME, HUMAN_REPORT_STYLE
 
 
 CANONICAL = [
@@ -69,7 +75,7 @@ MOTION_ENGINE_IDENTITY = {
     "patch_version": HYPERFRAMES_PATCH_VERSION,
     "patched_cli_sha256": HYPERFRAMES_PATCHED_CLI_SHA256,
 }
-TEXT_SUFFIXES = {".json", ".md", ".srt", ".txt", ".log", ".yml", ".yaml"}
+TEXT_SUFFIXES = {".json", ".md", ".html", ".srt", ".txt", ".log", ".yml", ".yaml"}
 _WINDOWS_USER_HOME_PATTERN = r"C:" + r"\\Users\\"
 SECRET_PATTERNS = {
     "API Key": re.compile(r"\b(?:sk|ds)-[A-Za-z0-9_-]{12,}\b"),
@@ -330,9 +336,116 @@ def _validate_script_edit_contract(
         ]
     except (TypeError, ValueError):
         return ["批准稿编辑身份无法绑定到有效 review_policy"]
+    if (
+        edit_mode == HUMAN_STAGE_REVIEW
+        and policy_mode == MECHANICAL_STAGE_REVIEW
+        and str((approved_script.get("editor_identity") or {}).get("editor", ""))
+        == LOCAL_BROWSER_EDITOR
+        and approved_script.get("selected_by") == "browser_editor"
+        and isinstance(approved_script.get("base_run_id"), str)
+        and bool(approved_script.get("base_run_id"))
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(approved_script.get("base_approved_script_sha256", "")),
+        )
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(approved_script.get("base_script_text_sha256", "")),
+        )
+    ):
+        current_text_sha256 = hashlib.sha256(
+            str(approved_script.get("script", "")).strip().encode("utf-8")
+        ).hexdigest()
+        if current_text_sha256 == approved_script.get("base_script_text_sha256"):
+            return ["本地浏览器全文改稿与基准成片文案相同，不能声明为已修改"]
+        return []
     if edit_mode != policy_mode:
         return ["批准稿编辑身份与 manifest review_policy 不一致"]
     return []
+
+
+_REPORT_ALLOWED_TAGS = {
+    "html", "head", "meta", "title", "style", "body", "main", "section", "div",
+    "h1", "h2", "p", "span", "strong", "video", "a", "details", "summary", "ul", "li", "footer",
+}
+_REPORT_GLOBAL_ATTRIBUTES = {"class"}
+_REPORT_TAG_ATTRIBUTES = {
+    "html": {"lang"},
+    "meta": {"charset", "name", "content"},
+    "video": {"controls", "preload", "src"},
+    "a": {"class", "href", "download"},
+}
+_REPORT_ASSET_NAMES = {
+    "final.mp4", "contact-sheet.png", "manifest.json", "run_report.json", "research.json",
+    "review.json", "motion_plan.json", "visual-qc.json", "approved_script.json",
+}
+
+
+class _HumanReportParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.errors: list[str] = []
+        self.in_style = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.casefold()
+        if tag not in _REPORT_ALLOWED_TAGS:
+            self.errors.append(f"不允许的 HTML 标签: {tag}")
+            return
+        allowed = _REPORT_GLOBAL_ATTRIBUTES | _REPORT_TAG_ATTRIBUTES.get(tag, set())
+        for raw_name, raw_value in attrs:
+            name = raw_name.casefold()
+            value = html.unescape(raw_value or "").strip()
+            if name not in allowed or name.startswith("on"):
+                self.errors.append(f"{tag} 含不允许的属性: {name}")
+                continue
+            if name in {"href", "src"} and (
+                value not in _REPORT_ASSET_NAMES
+                or "/" in value
+                or "\\" in value
+                or ":" in value
+                or value.startswith("//")
+            ):
+                self.errors.append(f"{tag}.{name} 不是受管的同目录文件")
+        if tag == "style":
+            self.in_style = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() == "style":
+            self.in_style = False
+
+    def handle_data(self, data: str) -> None:
+        if self.in_style and re.search(r"@import|url\s*\(|expression\s*\(|javascript\s*:", data, re.IGNORECASE):
+            self.errors.append("style 含外部资源或可执行表达式")
+
+
+def validate_human_report_html(human_report: str) -> list[str]:
+    """Allow only the fixed, passive, same-directory report contract."""
+
+    errors: list[str] = []
+    required_report_fragments = (
+        f'name="shiyi-report-contract" content="{HUMAN_REPORT_CONTRACT}"',
+        "给运营与负责人看的成片说明 · 不是动画代码",
+        "等待负责人最终验收",
+        'download="final.mp4"',
+        "技术附件（开发或复核人员使用）",
+        "文案修改：",
+        "阶段检查：",
+    )
+    if any(fragment not in human_report for fragment in required_report_fragments):
+        errors.append(f"{HUMAN_REPORT_NAME} 缺少普通人验收合同内容")
+    style_blocks = re.findall(r"<style>(.*?)</style>", human_report, re.IGNORECASE | re.DOTALL)
+    if style_blocks != [HUMAN_REPORT_STYLE]:
+        errors.append(f"{HUMAN_REPORT_NAME} 样式不是固定的离线安全模板")
+    parser = _HumanReportParser()
+    try:
+        parser.feed(human_report)
+        parser.close()
+    except Exception:
+        parser.errors.append("HTML 解析失败")
+    if parser.errors:
+        errors.append(f"{HUMAN_REPORT_NAME} 含脚本、外链或本机文件链接")
+    return errors
 
 
 def _validate_mpt_review_contract(
@@ -591,6 +704,22 @@ def verify(
         return errors, {}
 
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    raw_public_schema_version = manifest.get("public_package_schema_version", 1)
+    if isinstance(raw_public_schema_version, bool):
+        errors.append("public_package_schema_version 必须是正整数")
+        return errors, {}
+    try:
+        public_schema_version = int(raw_public_schema_version or 1)
+    except (TypeError, ValueError, OverflowError):
+        errors.append("public_package_schema_version 必须是正整数")
+        return errors, {}
+    if public_schema_version < 1:
+        errors.append("public_package_schema_version 必须是正整数")
+        return errors, {}
+    human_report_required = public_schema_version >= 2
+    if human_report_required and HUMAN_REPORT_NAME not in actual:
+        errors.append(f"缺少普通人验收报告：{HUMAN_REPORT_NAME}")
+        return errors, {}
     approvals = json.loads((folder / "approvals.json").read_text(encoding="utf-8"))
     approved_script = json.loads((folder / "approved_script.json").read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 2 or manifest.get("stage") not in {"render", "report_rebuild"} or manifest.get("status") != "complete":
@@ -600,6 +729,8 @@ def verify(
     errors.extend(contract_errors)
     errors.extend(_validate_script_edit_contract(manifest, approved_script, contract))
     expected_files = REQUIRED | evidence_artifacts_for_contract(contract)
+    if human_report_required:
+        expected_files.add(HUMAN_REPORT_NAME)
     extra = sorted(actual - expected_files)
     if extra:
         errors.append(f"存在未声明文件：{', '.join(extra)}")
@@ -656,6 +787,9 @@ def verify(
     errors.extend(edit_line_errors)
     if expected_edit_line and expected_edit_line not in validation_text:
         errors.append("VALIDATION.md 的改稿身份说明与 approved_script.json 不一致")
+    if human_report_required:
+        human_report = (folder / HUMAN_REPORT_NAME).read_text(encoding="utf-8")
+        errors.extend(validate_human_report_html(human_report))
     if contract == "mpt_v0.3":
         errors.extend(_validate_mpt_review_contract(manifest, approval_modes))
     elif contract == "motion_v0.3":
@@ -751,7 +885,7 @@ def verify_archive(
         with zipfile.ZipFile(archive_path) as archive:
             infos = archive.infolist()
             names = [info.filename for info in infos]
-            allowed_names = REQUIRED | MPT_ENGINE_ARTIFACTS | MOTION_EVIDENCE_ARTIFACTS
+            allowed_names = REQUIRED | {HUMAN_REPORT_NAME} | MPT_ENGINE_ARTIFACTS | MOTION_EVIDENCE_ARTIFACTS
             unsafe = [
                 name
                 for name in names

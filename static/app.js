@@ -3,10 +3,7 @@ const DEFAULT_GOAL = "为除甲醛服务企业制作一条面向新房家庭的�
 const state = {
   config: null,
   status: null,
-  tools: [],
   jobs: [],
-  catalog: null,
-  hardware: null,
   csrf: "",
   topicCandidates: [],
   topicResponse: null,
@@ -65,6 +62,10 @@ const AGENT_RESEARCH_NOTE = "Codex 测试代理已逐项核对来源、严格审
 const AGENT_COMPLIANCE_NOTE = "Codex 测试代理已核对最终脚本、合规结果与审批哈希；仅用于受控测试。";
 const POLL_BASE_DELAY_MS = 1000;
 const POLL_MAX_DELAY_MS = 8000;
+const SAME_TOPIC_RETRY_FAILURE_CODES = new Set([
+  "automatic_script_revision_exhausted",
+  "automatic_stage_attempts_exhausted",
+]);
 
 function isEmptyLocalResearch(research) {
   const findings = Array.isArray(research?.findings) ? research.findings : [];
@@ -100,8 +101,19 @@ function isTerminalMechanicalGenerationFailure(job) {
     && Boolean(job?.automatic_controller_failure);
 }
 
+function canRetryFailedJob(job) {
+  return isTerminalMechanicalGenerationFailure(job)
+    && SAME_TOPIC_RETRY_FAILURE_CODES.has(String(job.automatic_controller_failure?.code || ""));
+}
+
+function isPreservedExactScriptFailure(job) {
+  return isTerminalMechanicalGenerationFailure(job)
+    && job.automatic_controller_failure?.code === "exact_script_render_failed_preserved";
+}
+
 function statusLabelForJob(job) {
-  if (isTerminalMechanicalGenerationFailure(job)) return "自动生成未通过";
+  if (isPreservedExactScriptFailure(job)) return "改稿成片未完成";
+  if (isTerminalMechanicalGenerationFailure(job)) return "本次生成未完成";
   if (job?.status === "awaiting_script_revision" && !isMechanicalReview(job)) return "待浏览器改稿";
   return statusLabels[job?.status] || job?.status || "状态未知";
 }
@@ -197,11 +209,17 @@ function setBusy(button, busy, text) {
 }
 
 function syncSelectedJobBusyState() {
+  if (!state.selectedJob) return;
   const button = document.getElementById("rerunJobBtn");
-  if (!button || !state.selectedJob) return;
-  button.disabled = state.selectedJob.legacy_read_only
+  if (button) button.disabled = state.selectedJob.legacy_read_only
     || !runnableStates.has(state.selectedJob.status)
     || state.busyJobs.has(state.selectedJob.id);
+  const retryButton = document.getElementById("retryFailedJobBtn");
+  if (retryButton) retryButton.disabled = state.busyJobs.has(state.selectedJob.id)
+    || !canRetryFailedJob(state.selectedJob);
+  const exactButton = document.getElementById("continueExactScriptBtn");
+  if (exactButton) exactButton.disabled = state.busyJobs.has(state.selectedJob.id)
+    || !isPreservedExactScriptFailure(state.selectedJob);
 }
 
 function beginJobBusy(jobId) {
@@ -286,25 +304,9 @@ function closeMenu() {
 
 function refreshAuxiliary() {
   if (state.auxiliaryRefresh) return state.auxiliaryRefresh;
-  const pending = Promise.allSettled([
-    api("/api/config"), api("/api/tools"), api("/api/catalog"), api("/api/hardware"),
-  ]).then(([config, toolsData, catalog, hardware]) => {
-    if (config.status === "fulfilled") {
-      state.config = config.value;
-      renderSettings();
-    }
-    if (toolsData.status === "fulfilled") {
-      state.tools = toolsData.value.tools || [];
-      renderTools(toolsData.value);
-    }
-    if (catalog.status === "fulfilled") {
-      state.catalog = catalog.value;
-      renderCatalog();
-    }
-    if (hardware.status === "fulfilled") {
-      state.hardware = hardware.value;
-      if (state.catalog) renderCatalog();
-    }
+  const pending = api("/api/config").then(config => {
+    state.config = config;
+    renderSettings();
   });
   state.auxiliaryRefresh = pending.finally(() => {
     state.auxiliaryRefresh = null;
@@ -313,8 +315,8 @@ function refreshAuxiliary() {
 }
 
 async function refresh({ syncHomeView = true } = {}) {
-  // Jobs and status drive every visible transition. Auxiliary settings and
-  // discovery cards update independently and may not hold the workbench hostage.
+  // Jobs and status drive every visible transition. Settings update
+  // independently and may not hold the workbench hostage.
   const auxiliary = refreshAuxiliary();
   const [status, jobsData] = await Promise.all([api("/api/status"), api("/api/jobs")]);
   Object.assign(state, { status, jobs: jobsData.jobs || [] });
@@ -346,35 +348,45 @@ function renderStatus() {
   const engines = state.status?.production_engines || {};
   const motion = engines.motion || state.status?.production_engine || {};
   const footage = engines.footage || {};
-  const healthLabels = {
-    ready: "可用",
-    configured_unverified: "已配置，未通过启动校验",
-    unavailable: "不可用",
-    disabled: "未启用",
-    misconfigured: "配置异常",
-  };
-  const engineLabel = (summary, fallbackName) => {
-    const name = summary?.name || fallbackName;
-    const version = summary?.version ? ` ${summary.version}` : "";
-    return `${name}${version} · ${healthLabels[summary?.health] || summary?.health || "状态未知"}`;
-  };
-  const motionLabel = engineLabel(motion, "HyperFrames");
-  const footageLabel = engineLabel(footage, "MoneyPrinterTurbo");
-  const footageReady = footage?.enabled === true && footage?.health === "ready";
+  const motionLabel = motion?.health === "ready" ? "视频生成组件已就绪" : "视频生成组件正在检查";
+  const footageLabel = "实拍素材组件";
+  const footageReady = footage?.selectable === true && footage?.operator_ready === true;
   const footageInput = document.getElementById("productionModeFootage");
-  footageInput.disabled = !footageReady;
-  if (!footageReady && footageInput.checked) document.getElementById("productionModeMotion").checked = true;
+  footageInput.disabled = true;
+  if (footageInput.checked) document.getElementById("productionModeMotion").checked = true;
   document.getElementById("motionEngineStatus").textContent = motionLabel;
-  document.getElementById("footageEngineStatus").textContent = footageReady ? footageLabel : `${footageLabel}，暂不可选`;
+  document.getElementById("footageEngineStatus").textContent = footageReady
+    ? footageLabel
+    : footage?.disabled_reason || "当前版本仅支持纯动画";
   document.getElementById("releaseVersionState").textContent = `v${releaseVersion}`;
-  document.getElementById("motionVersionState").textContent = motionLabel;
-  document.getElementById("footageVersionState").textContent = footageLabel;
+  document.getElementById("motionVersionState").textContent = motion?.health === "ready" ? "可用" : "正在检查";
+  document.getElementById("footageVersionState").textContent = "尚未开放";
   document.getElementById("editionBadge").textContent = `v${releaseVersion}`;
   document.getElementById("portBadge").textContent = `${location.hostname}:${location.port || "80"} · v${releaseVersion}`;
-  document.getElementById("metricTools").textContent = state.status?.tool_count || 0;
-  document.getElementById("metricCaps").textContent = state.status?.capabilities?.length || 0;
   document.getElementById("metricJobs").textContent = state.status?.job_count || 0;
   document.getElementById("metricModel").textContent = state.status?.model || "deepseek";
+}
+
+function setComposerContext(mode) {
+  const form = document.getElementById("agentComposer");
+  const label = document.getElementById("composerLabel");
+  const help = document.getElementById("goalInputHelp");
+  const buttonText = document.querySelector("#sendGoalBtn span");
+  if (mode === "hidden") {
+    form.hidden = true;
+    return;
+  }
+  form.hidden = false;
+  if (mode === "topics") {
+    label.textContent = "想换选题方向？（可选）";
+    help.textContent = "上面任选一个选题后，直接点“就做这个”即可，不用再发送。这里只在你想换方向时使用。";
+    buttonText.textContent = "按新要求换选题";
+  } else {
+    label.textContent = "描述你想做的视频";
+    help.textContent = "写清行业、受众和内容重点，Agent 会先推荐 3 个选题。";
+    buttonText.textContent = "获取 3 个选题";
+  }
+  requestAnimationFrame(resizeComposer);
 }
 
 async function loadTopics(goal = state.currentGoal, { resetSeen = false } = {}) {
@@ -394,6 +406,7 @@ async function loadTopics(goal = state.currentGoal, { resetSeen = false } = {}) 
   resizeComposer();
   document.getElementById("topicChoicePanel").hidden = true;
   document.getElementById("activeJobPanel").hidden = true;
+  setComposerContext("initial");
   document.getElementById("topicLoading").hidden = false;
   try {
     const result = await api("/api/agent/topics", {
@@ -420,6 +433,7 @@ function renderTopicChoices(result = state.topicResponse || {}) {
   const panel = document.getElementById("topicChoicePanel");
   panel.hidden = false;
   document.getElementById("activeJobPanel").hidden = true;
+  setComposerContext("topics");
   const source = result.source === "deepseek_bootstrap"
     ? "DeepSeek 动态能力包 Agent"
     : result.source === "deepseek"
@@ -469,6 +483,7 @@ async function startSelectedTopic() {
   const button = document.getElementById("startSelectedTopic");
   setBusy(button, true, "正在建立任务…");
   document.getElementById("topicChoicePanel").hidden = true;
+  setComposerContext("hidden");
   const active = document.getElementById("activeJobPanel");
   active.hidden = false;
   active.innerHTML = renderRunningCard(candidate.title, "正在建立任务并记录执行授权…", 10);
@@ -480,8 +495,7 @@ async function startSelectedTopic() {
       production_options: {
         target_duration_seconds: 52,
         pattern_card_ids: [],
-        production_mode: document.querySelector('input[name="productionMode"]:checked')?.value === "footage"
-          && !document.getElementById("productionModeFootage").disabled ? "footage" : "motion",
+        production_mode: "motion",
         enable_web_research: true,
       },
     };
@@ -535,6 +549,55 @@ function renderRunningCard(title, message, progress, job = null) {
     <div class="progress-block"><div class="progress-copy"><span>${escapeHtml(message)}</span><b class="mono">${progress}%</b></div><div class="progress-track"><span class="progress-value progress-${progress}"></span></div></div>`;
 }
 
+function automaticFailureExplanation(job) {
+  const failure = job?.automatic_controller_failure || {};
+  const sourceError = String(failure.source_error || "").trim();
+  const stage = String(failure.stage || "").trim();
+  if (failure.code === "exact_script_render_failed_preserved") {
+    return "你修改后的完整文案已经保存，但这次配音或成片没有通过质量检查；上一版成片仍可使用。";
+  }
+  if (/上一幕重复同一信息结构/.test(sourceError)) {
+    return "分镜阶段生成了相邻重复的画面结构，自动质量检查没有放行。";
+  }
+  if (/自然节奏|口播|字\/秒|长度/.test(sourceError)) {
+    return "文案或配音节奏没有达到自然成片要求，自动质量检查没有放行。";
+  }
+  if (stage === "research") return "资料研究阶段没有得到可安全使用的结果。";
+  if (stage === "content") return "文案或分镜阶段没有通过自动质量检查。";
+  if (stage === "render") return "配音或成片阶段没有通过自动质量检查。";
+  return "这次生成没有通过自动质量检查，因此没有发布不合格视频。";
+}
+
+async function retryFailedJob(job, button) {
+  if (!canRetryFailedJob(job)) {
+    throw new Error(isPreservedExactScriptFailure(job)
+      ? "这次必须继续使用已保存的修改文案，不能重新抽稿"
+      : "这类失败不能按同一选题重新生成");
+  }
+  const requestKey = newIdempotencyKey();
+  const retryOnce = () => api(`/api/jobs/${job.id}/retry`, {
+    method: "POST",
+    headers: { "Idempotency-Key": requestKey },
+    body: "{}",
+  });
+  setBusy(button, true, "正在建立新尝试…");
+  try {
+    let retried;
+    try {
+      retried = await retryOnce();
+    } catch (error) {
+      if (!error.networkUncertain) throw error;
+      retried = await retryOnce();
+    }
+    setHomeJobId(retried.id);
+    await refresh({ syncHomeView: false });
+    await renderHomeJob(retried);
+    if (retried.status === "authorized") await advanceJob(retried.id);
+  } finally {
+    if (button.isConnected) setBusy(button, false);
+  }
+}
+
 async function advanceJob(id, { busyAlready = false } = {}) {
   const ownsBusy = !busyAlready;
   if (ownsBusy && !beginJobBusy(id)) return;
@@ -568,7 +631,10 @@ async function advanceJob(id, { busyAlready = false } = {}) {
   } catch (error) {
     await refresh({ syncHomeView: false }).catch(() => {});
     const job = state.jobs.find(item => item.id === id);
-    if (job) {
+    // Persisted correction memory is an operator-only diagnostic capability.
+    // In the customer build this composer keeps its visible promise and starts
+    // a fresh three-topic request; it never probes the hidden mutation route.
+    if (job && state.status?.internal_diagnostics_enabled === true) {
       await renderHomeJob(job);
       if (state.selectedJob?.id === id && document.body.dataset.view === "jobs") {
         await openJob(id, { job, scroll: false });
@@ -661,6 +727,7 @@ async function renderHomeJob(job, { managePolling = true } = {}) {
   if (storedIndex >= 0) state.jobs[storedIndex] = job;
   else state.jobs.unshift(job);
   setHomeJobId(job.id);
+  setComposerContext("hidden");
   document.getElementById("topicChoicePanel").hidden = true;
   document.getElementById("topicLoading").hidden = true;
   const panel = document.getElementById("activeJobPanel");
@@ -749,7 +816,10 @@ async function renderHomeJob(job, { managePolling = true } = {}) {
     const reviewBoundary = agentTestReview
       ? " 两道阶段门禁记录为代理测试审查，不冒充用户签署。"
       : mechanicalReview ? " 研究、脚本和镜头均已通过反向机械审核；公开发布仍保留最终责任确认。" : "";
-    panel.innerHTML = `${head}<div class="gate-card"><h3>${completionTitle}</h3><p>视频、证据清单、审查记录和哈希都已发布到本次成功运行；失败尝试没有覆盖它。${reviewBoundary}</p><div class="gate-actions"><button class="primary" type="button" data-home-action="play-latest">播放最新成片</button><button class="quiet-link" type="button" data-home-action="new-task">再做一条</button></div></div>`;
+    const exactRevisionAction = mechanicalReview
+      ? '<button class="secondary" type="button" data-home-action="edit-script">修改文案并重新生成</button>'
+      : '';
+    panel.innerHTML = `${head}<div class="gate-card"><h3>${completionTitle}</h3><p>视频、验收报告和技术记录都已发布到本次成功运行；失败尝试没有覆盖它。${reviewBoundary}</p><div class="gate-actions"><button class="primary" type="button" data-home-action="play-latest">播放最新成片</button>${exactRevisionAction}<button class="quiet-link" type="button" data-home-action="new-task">再做一条</button></div></div>`;
     renderLatestArtifact();
     if (managePolling) stopPoll(job.id);
     return false;
@@ -760,7 +830,14 @@ async function renderHomeJob(job, { managePolling = true } = {}) {
     return false;
   }
   if (isTerminalMechanicalGenerationFailure(job)) {
-    panel.innerHTML = `${head}<div class="gate-card"><h3>自动生成未通过，已安全停止</h3><p>${escapeHtml(job.last_error || "Agent 已停止重复无效尝试，没有发布不合格结果。")}</p><p>这不是人工审核，也不需要你改稿。请返回选题重新开始，或查看内部诊断了解停止原因。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="new-task">返回选题</button><button class="quiet-link" type="button" data-home-action="show-details">查看内部诊断</button></div></div>`;
+    const failureExplanation = automaticFailureExplanation(job);
+    if (canRetryFailedJob(job)) {
+      panel.innerHTML = `${head}<div class="gate-card"><h3>选题没有被否决，这次生成没成功</h3><p>${escapeHtml(failureExplanation)}</p><p>系统已经停止重复无效尝试。重新生成会保留这个选题，让 Agent 重新调用模型制作；旧失败记录不会被覆盖。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="retry-failed">重新生成这个选题</button><button class="secondary" type="button" data-home-action="new-task">换个选题</button><button class="quiet-link" type="button" data-home-action="show-details">查看详细原因</button></div></div>`;
+    } else if (isPreservedExactScriptFailure(job)) {
+      panel.innerHTML = `${head}<div class="gate-card"><h3>修改后的文案已保留，这次成片没成功</h3><p>${escapeHtml(failureExplanation)}</p><p>系统不会把你的改稿丢掉，也不会重新抽一篇文案。可以继续修改，或按当前保存的文案再次生成。</p><div class="gate-actions"><button class="primary" type="button" data-home-action="edit-script">继续修改并重新生成</button>${job.current_run_id ? '<button class="secondary" type="button" data-home-action="play-latest">播放上一版成片</button>' : ""}<button class="quiet-link" type="button" data-home-action="show-details">查看详细原因</button></div></div>`;
+    } else {
+      panel.innerHTML = `${head}<div class="gate-card"><h3>这次生成没有完成</h3><p>${escapeHtml(failureExplanation)}</p><p>这类失败不能安全地直接重开同题任务，请查看详细原因或换一个选题。</p><div class="gate-actions"><button class="secondary" type="button" data-home-action="new-task">换个选题</button><button class="quiet-link" type="button" data-home-action="show-details">查看详细原因</button></div></div>`;
+    }
     if (managePolling) stopPoll(job.id);
     return false;
   }
@@ -835,9 +912,12 @@ function renderLatestArtifact() {
     target.innerHTML = `<div class="video-empty"><img class="ui-icon" src="/icons/play.svg" alt=""><strong>还没有成片</strong><span>任务完成后，视频会自动出现在这里。</span></div>`;
     return;
   }
+  const exactRevisionAction = isMechanicalReview(latest)
+    ? '<button id="latestEditButton" class="secondary" type="button">修改文案并重新生成</button>'
+    : '';
   target.innerHTML = `<video id="latestVideo" class="latest-video" src="/api/jobs/${latest.id}/artifacts/final.mp4" preload="metadata" playsinline></video>
-    <div class="latest-meta"><h3>${escapeHtml(latest.production_input?.topic || latest.id)}</h3><div class="latest-status"><img class="ui-icon" src="/icons/check.svg" alt="">${isAgentTestReview(latest) ? "代理测试审查完成 · 待用户最终验收" : "已完成 · 合规已确认"} · <span id="latestDuration">00:--</span></div>
-    <div class="latest-actions"><button id="latestPlayButton" class="primary latest-play" type="button"><img class="ui-icon" src="/icons/play.svg" alt="">播放</button><a href="/api/jobs/${latest.id}/artifacts/final.mp4" download="shiyi-${escapeHtml(latest.id)}-final.mp4"><img class="ui-icon" src="/icons/download.svg" alt="">下载成片</a><a href="/api/jobs/${latest.id}/public-evidence.zip"><img class="ui-icon" src="/icons/download.svg" alt="">下载公开证据包</a><a href="/api/jobs/${latest.id}/artifacts/manifest.json" target="_blank" rel="noreferrer">查看证据清单</a></div></div>`;
+    <div class="latest-meta"><h3>${escapeHtml(latest.production_input?.topic || latest.id)}</h3><div class="latest-status"><img class="ui-icon" src="/icons/check.svg" alt="">${isAgentTestReview(latest) ? "代理测试审查完成 · 待用户最终验收" : "已生成 · 自动检查未发现阻断项 · 等待负责人验收"} · <span id="latestDuration">00:--</span></div>
+    <div class="latest-actions"><button id="latestPlayButton" class="primary latest-play" type="button"><img class="ui-icon" src="/icons/play.svg" alt="">播放</button>${exactRevisionAction}<a href="/api/jobs/${latest.id}/artifacts/final.mp4" download="shiyi-${escapeHtml(latest.id)}-final.mp4"><img class="ui-icon" src="/icons/download.svg" alt="">下载成片</a><a href="/api/jobs/${latest.id}/evidence-report.html">查看验收报告</a><a href="/api/jobs/${latest.id}/public-evidence.zip"><img class="ui-icon" src="/icons/download.svg" alt="">下载交付材料（ZIP）</a></div><p class="delivery-hint">给运营和审核人员使用；ZIP 内先打开“00-验收报告.html”。</p></div>`;
   const video = document.getElementById("latestVideo");
   video.addEventListener("loadedmetadata", () => {
     const duration = Number(video.duration || 0);
@@ -847,6 +927,67 @@ function renderLatestArtifact() {
     if (duration > 4 && video.currentTime === 0) video.currentTime = Math.min(3, duration / 12);
   });
   document.getElementById("latestPlayButton").addEventListener("click", () => toggleLatestVideo());
+  document.getElementById("latestEditButton")?.addEventListener("click", () => openContentRevision(latest).catch(error => toast(error.message, true)));
+}
+
+async function openContentRevision(job) {
+  if (!job.current_run_id) throw new Error("当前任务没有可作为修改基准的成功成片");
+  const scriptArtifact = await readJsonArtifact(`/api/jobs/${job.id}/artifacts/approved_script.json`);
+  let script = String(scriptArtifact.data?.script || "").trim();
+  const continuingPreservedRevision = isPreservedExactScriptFailure(job);
+  if (continuingPreservedRevision) {
+    const preserved = await readJsonArtifact(`/api/jobs/${job.id}/review-artifacts/approved_script.json`);
+    script = String(preserved.data?.script || "").trim();
+  }
+  if (!script) throw new Error("当前任务没有可修改的文案");
+  const panel = document.getElementById("activeJobPanel");
+  panel.hidden = false;
+  panel.innerHTML = `<div class="job-chat-head"><div><h2>${escapeHtml(job.production_input?.topic || job.id)}</h2><p>${continuingPreservedRevision ? "下面是上次渲染失败后保留下来的完整改稿。可以继续修改，也可以保持正文不变后再次生成；系统不会重新抽稿。" : "下面是当前成片实际使用的完整文案。直接改正文，保存后系统会重新检查、分镜、配音和生成。"}</p></div><span class="status-pill ${continuingPreservedRevision ? "status-danger" : "status-complete"}">${continuingPreservedRevision ? "改稿已保留" : "修改文案"}</span></div>
+    <section class="script-revision-card">
+      <label>编辑完整文案<textarea id="revisionCurrentScript" rows="12" maxlength="1200">${escapeHtml(script)}</textarea></label>
+      <p class="reply-hint">${continuingPreservedRevision ? "可以按当前保存的正文再次生成，也可以继续修改；仍需保持约 45–60 秒口播。" : "必须实际修改正文并保持约 45–60 秒口播。"} 新版成功前，上一版成片仍可播放和下载。</p>
+      <div class="gate-actions"><button class="primary" type="button" data-home-action="submit-script-revision">${continuingPreservedRevision ? "按这份文案重新生成" : "保存文案并重新生成"}</button><button class="quiet-link" type="button" data-home-action="cancel-script-revision">取消</button></div>
+    </section>`;
+  panel.dataset.revisionBaseRunId = String(job.current_run_id);
+  panel.dataset.revisionBaseScriptSha256 = scriptArtifact.sha256;
+  const editor = document.getElementById("revisionCurrentScript");
+  editor.focus();
+  editor.setSelectionRange(editor.value.length, editor.value.length);
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function submitContentRevision(job, button) {
+  const script = document.getElementById("revisionCurrentScript")?.value.trim();
+  if (!script) throw new Error("文案不能为空");
+  const panel = document.getElementById("activeJobPanel");
+  const body = JSON.stringify({
+    script,
+    base_run_id: panel.dataset.revisionBaseRunId,
+    base_approved_script_sha256: panel.dataset.revisionBaseScriptSha256,
+  });
+  setBusy(button, true, "正在检查并保存…");
+  const key = newIdempotencyKey();
+  const submitOnce = () => api(`/api/jobs/${job.id}/script`, {
+    method: "PATCH",
+    headers: { "Idempotency-Key": key },
+    body,
+  });
+  let result;
+  try {
+    result = await submitOnce();
+  } catch (error) {
+    if (!error.networkUncertain) throw error;
+    result = await submitOnce();
+  } finally {
+    if (button.isConnected) setBusy(button, false);
+  }
+  const updated = result.job || result;
+  const index = state.jobs.findIndex(item => item.id === job.id);
+  if (index >= 0) state.jobs[index] = updated;
+  else state.jobs.unshift(updated);
+  toast("新文案已保存并通过检查，正在重新生成；上一版成片会保留到新版成功。");
+  await renderHomeJob(updated);
+  if (!runningStates.has(updated.status)) await advanceJob(job.id);
 }
 
 async function toggleLatestVideo() {
@@ -859,19 +1000,18 @@ async function toggleLatestVideo() {
 function renderSettings() {
   const config = state.config;
   if (!config) return;
-  document.getElementById("providerName").value = "DeepSeek";
-  document.getElementById("baseUrl").value = config.provider.base_url || "https://api.deepseek.com";
-  document.getElementById("modelName").value = config.provider.model || "";
-  document.getElementById("researchEnabled").checked = config.research?.enabled !== false;
-  document.getElementById("mediaParserRoot").value = config.research?.media_parser_root || "";
-  document.getElementById("rootsInput").value = (config.discovery.roots || []).join("\n");
-  const storageText = config.provider.persisted_api_key ? "Key 已用 Windows DPAPI 加密保存" : (config.provider.has_api_key ? "已检测到会话或环境变量 Key" : "尚未检测到 Key");
+  const configuredModel = String(config.provider.model || "").trim();
+  document.getElementById("modelName").textContent = configuredModel === "deepseek-v4-pro"
+    ? "DeepSeek V4 Pro"
+    : `沿用已有自定义模型：${configuredModel || "未识别"}`;
+  document.getElementById("persistKey").checked = Boolean(config.provider.persisted_api_key);
+  const storageText = config.provider.persisted_api_key ? "Key 已用 Windows 加密保存在本机" : (config.provider.has_api_key ? "已检测到本次使用的 Key" : "尚未填入 Key");
   const connectionText = state.status?.provider_connection_verified
-    ? "当前本机会话连接已验证"
+    ? "本次连接已验证"
     : config.provider.has_api_key
-      ? "当前会话尚未测试连接"
-      : "配置 Key 后可测试连接";
-  document.getElementById("providerResult").textContent = `${storageText}；${connectionText}；界面与日志均不回显密钥`;
+      ? "尚未测试本次连接"
+      : "填入 Key 后可测试本次连接";
+  document.getElementById("providerResult").textContent = `${storageText}；${connectionText}。界面和日志不会显示完整 Key。`;
   const warning = document.getElementById("secretWarning");
   warning.hidden = !config.provider.secret_warning;
   warning.textContent = config.provider.secret_warning || "";
@@ -880,36 +1020,6 @@ function renderSettings() {
     : isMechanicalReview()
       ? "反向机械审核（全自动）"
       : "用户本人审查";
-  document.getElementById("storageRoot").value = config.storage.root || "";
-  const names = { tools: "工具", models: "模型", downloads: "下载暂存", cache: "缓存", temp: "临时文件", logs: "日志", projects: "剪辑与生成项目" };
-  document.getElementById("storageDirectories").innerHTML = Object.entries(config.storage.directories || {}).filter(([key]) => key !== "root").map(([key, path]) => `<div><span>${escapeHtml(names[key] || key)}</span><code>${escapeHtml(path)}</code></div>`).join("");
-}
-
-function renderTools(data = {}) {
-  const grid = document.getElementById("toolGrid");
-  grid.innerHTML = state.tools.length ? state.tools.map(tool => `<article class="tool-card"><span class="confidence">置信度 ${Math.round(tool.confidence * 100)}%</span><h3>${escapeHtml(tool.name)}</h3><div class="path mono">${escapeHtml(tool.path)}</div><div class="tags">${(tool.capabilities || []).map(cap => `<span class="tag">${escapeHtml(cap)}</span>`).join("")}</div><p class="hint">入口：${tool.entrypoints?.length ? tool.entrypoints.map(escapeHtml).join("、") : "需人工配置"}</p></article>`).join("") : `<article class="panel"><h2>尚未扫描</h2><p class="lead">填写目录后点击“开始只读扫描”。</p></article>`;
-  const report = data.report || {};
-  document.getElementById("scanMeta").textContent = data.last_scan ? `上次扫描：${data.last_scan}；访问目录 ${report.visited_directories || 0}；发现 ${state.tools.length} 个候选项目` : "";
-}
-
-function renderCatalog() {
-  const catalog = state.catalog || { packages: [], policy: {} };
-  const result = state.hardware || {};
-  const hardware = result.hardware || { gpu: {}, memory: {}, disks: [] };
-  const recommended = new Set(result.recommended_package_ids || []);
-  document.getElementById("hardwareProfile").textContent = result.profile?.label || "未匹配硬件档位";
-  document.getElementById("installPolicyBadge").textContent = result.auto_install_enabled ? "自动安装已开放" : "安装尚未开放";
-  document.getElementById("catalogCount").textContent = `${catalog.packages.length} 个组件`;
-  document.getElementById("hardwareFacts").innerHTML = `<div><span>显卡</span><strong>${escapeHtml(hardware.gpu?.name || "未检测到")}</strong></div><div><span>显存</span><strong>${escapeHtml(hardware.gpu?.vram_gb ?? 0)} GB</strong></div><div><span>内存</span><strong>${escapeHtml(hardware.memory?.total_gb ?? "未知")} GB</strong></div><div><span>建议路线</span><strong>${escapeHtml(result.profile?.default_route || "待判断")}</strong></div><div class="wide"><span>默认安装位置</span><strong>${escapeHtml(result.storage?.root || "未设置")}</strong></div>`;
-  const threshold = Number(catalog.policy?.blocked_install_drives_when_free_gb_below || 20);
-  const blocked = (hardware.disks || []).filter(disk => Number(disk.free_gb) < threshold);
-  const warning = document.getElementById("diskWarnings");
-  warning.hidden = !blocked.length;
-  warning.textContent = blocked.length ? `禁止安装到空间不足的磁盘：${blocked.map(disk => `${disk.root} 仅剩 ${disk.free_gb}GB`).join("；")}` : "";
-  document.getElementById("packageGrid").innerHTML = (catalog.packages || []).map(pkg => {
-    const sources = (pkg.sources || []).map(source => `<a href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.role)}</a>`).join(" · ") || "仅限当前内置运行时";
-    return `<article class="tool-card package-card ${recommended.has(pkg.id) ? "recommended" : ""}"><span class="confidence">${recommended.has(pkg.id) ? "适合本机" : "其他档位"}</span><h3>${escapeHtml(pkg.name)}</h3><div class="path mono">${escapeHtml(pkg.id)}</div><div class="tags">${(pkg.capabilities || []).slice(0, 4).map(cap => `<span class="tag">${escapeHtml(cap)}</span>`).join("")}</div><p class="hint">许可：${escapeHtml(pkg.license)}<br>状态：${escapeHtml(pkg.install_status)}</p><div class="source-links">${sources}</div><button class="secondary package-install" disabled>等待版本固定与校验</button></article>`;
-  }).join("");
 }
 
 function renderJobs() {
@@ -924,10 +1034,15 @@ function renderJobs() {
     const mechanicalReview = isMechanicalReview(job);
     const busyAttribute = busy ? 'disabled aria-busy="true"' : "";
     const runButton = runnableStates.has(job.status) && !isTerminalMechanicalGenerationFailure(job) && job.production_input && !job.legacy_read_only ? `<button class="primary" data-action="run" data-job-id="${job.id}" ${busyAttribute}>${busy ? "执行中…" : "推进下一阶段"}</button>` : "";
+    const retryButton = canRetryFailedJob(job) ? `<button class="primary" data-action="retry" data-job-id="${job.id}" ${busyAttribute}>${busy ? "正在重试…" : "重新生成这个选题"}</button>` : "";
+    const exactRevisionButton = isPreservedExactScriptFailure(job) ? `<button class="primary" data-action="revise-exact" data-job-id="${job.id}" ${busyAttribute}>继续修改已保存文案</button>` : "";
+    const visibleError = isTerminalMechanicalGenerationFailure(job)
+      ? `选题没有被否决。${automaticFailureExplanation(job)}`
+      : job.last_error;
     const runFacts = mechanicalReview
       ? `<span>请求 ${job.budget?.attempted || 0}/${job.budget?.limit || 7}</span><span>内部记录 ${job.runs?.length || 0}</span><span>${job.current_run_id ? "已有成片" : "尚无成片"}</span><span>选题来源：${escapeHtml(providerSourceLabelForJob(job))}</span>`
       : `<span>预算 ${job.budget?.attempted || 0}/${job.budget?.limit || 7}</span><span>尝试 ${job.runs?.length || 0}</span><span>当前成功 ${escapeHtml(job.current_run_id || "无")}</span>`;
-    return `<div class="job"><div class="job-head"><div><h3>${escapeHtml(title)}</h3><small>${escapeHtml(job.id)} · ${escapeHtml(job.created_at)}</small></div><span class="pill ${statusClass(job.status)}">${escapeHtml(statusLabelForJob(job))}</span></div>${job.last_error ? `<div class="notice">${escapeHtml(job.last_error)}</div>` : ""}<div class="job-facts">${runFacts}</div><div class="action-row">${job.status === "planned" && !job.legacy_read_only ? `<button class="secondary" data-action="authorize" data-job-id="${job.id}" ${busyAttribute}>${busy ? "处理中…" : "批准任务执行"}</button>` : ""}${runButton}${job.production_input || job.legacy_read_only ? `<button class="secondary" data-action="open" data-job-id="${job.id}" ${busyAttribute}>${mechanicalReview ? "查看诊断" : "查看/精修"}</button>` : ""}</div></div>`;
+    return `<div class="job"><div class="job-head"><div><h3>${escapeHtml(title)}</h3><small>${escapeHtml(job.id)} · ${escapeHtml(job.created_at)}</small></div><span class="pill ${statusClass(job.status)}">${escapeHtml(statusLabelForJob(job))}</span></div>${visibleError ? `<div class="notice">${escapeHtml(visibleError)}</div>` : ""}<div class="job-facts">${runFacts}</div><div class="action-row">${job.status === "planned" && !job.legacy_read_only ? `<button class="secondary" data-action="authorize" data-job-id="${job.id}" ${busyAttribute}>${busy ? "处理中…" : "批准任务执行"}</button>` : ""}${runButton}${retryButton}${exactRevisionButton}${job.production_input || job.legacy_read_only ? `<button class="secondary" data-action="open" data-job-id="${job.id}" ${busyAttribute}>${mechanicalReview ? "查看诊断" : "查看/精修"}</button>` : ""}</div></div>`;
   }).join("");
 }
 
@@ -1000,10 +1115,15 @@ async function openJob(id, { job: suppliedJob = null, scroll = true, managePolli
   badge.className = `pill ${statusClass(job.status)}`;
   const agentTestReview = isAgentTestReview(job);
   const mechanicalReview = isMechanicalReview(job);
+  const retryableFailure = canRetryFailedJob(job);
+  const preservedExactFailure = isPreservedExactScriptFailure(job);
   const reviewModeLabel = agentTestReview
     ? "Codex 代理测试审查"
     : mechanicalReview ? "反向机械审核（全自动）" : "用户本人审查";
-  document.getElementById("jobSummary").innerHTML = `<div><span>选题</span><strong>${escapeHtml(job.production_input?.topic || "旧任务")}</strong></div><div><span>${mechanicalReview ? "请求" : "预算"}</span><strong>${job.budget?.attempted || 0}/${job.budget?.limit || 7}</strong></div><div><span>阶段审查</span><strong>${escapeHtml(reviewModeLabel)}</strong></div><div><span>本任务选题来源</span><strong>${escapeHtml(providerSourceLabelForJob(job))}</strong></div><div><span>${mechanicalReview ? "成片状态" : "当前成功运行"}</span><strong>${mechanicalReview ? (job.current_run_id ? "已完成" : "尚无成片") : escapeHtml(job.current_run_id || "无")}</strong></div>`;
+  const failureSummary = isTerminalMechanicalGenerationFailure(job)
+    ? `<div class="failure-summary"><span>为什么没完成</span><strong>选题没有被否决。${escapeHtml(automaticFailureExplanation(job))}</strong></div>`
+    : "";
+  document.getElementById("jobSummary").innerHTML = `<div><span>选题</span><strong>${escapeHtml(job.production_input?.topic || "旧任务")}</strong></div><div><span>${mechanicalReview ? "请求" : "预算"}</span><strong>${job.budget?.attempted || 0}/${job.budget?.limit || 7}</strong></div><div><span>阶段审查</span><strong>${escapeHtml(reviewModeLabel)}</strong></div><div><span>本任务选题来源</span><strong>${escapeHtml(providerSourceLabelForJob(job))}</strong></div><div><span>${mechanicalReview ? "成片状态" : "当前成功运行"}</span><strong>${mechanicalReview ? (job.current_run_id ? "已完成" : "尚无成片") : escapeHtml(job.current_run_id || "无")}</strong></div>${failureSummary}`;
   const researchPanel = document.getElementById("researchApprovalPanel");
   const compliancePanel = document.getElementById("complianceApprovalPanel");
   researchPanel.hidden = mechanicalReview || job.status !== "awaiting_research_approval";
@@ -1085,23 +1205,32 @@ async function openJob(id, { job: suppliedJob = null, scroll = true, managePolli
   const durationEstimate = document.getElementById("durationEstimate");
   const saveScriptButton = document.getElementById("saveScriptBtn");
   const rerunJobButton = document.getElementById("rerunJobBtn");
+  const retryFailedJobButton = document.getElementById("retryFailedJobBtn");
+  const continueExactScriptButton = document.getElementById("continueExactScriptBtn");
   scriptField.value = script;
-  scriptLabel.hidden = mechanicalReview;
-  durationEstimate.hidden = mechanicalReview;
+  scriptLabel.hidden = !script;
+  document.getElementById("approvedScriptLabelText").textContent = mechanicalReview ? "当前文案（修改请返回首页）" : "当前待审脚本";
+  durationEstimate.hidden = !script;
   saveScriptButton.hidden = mechanicalReview;
   rerunJobButton.hidden = mechanicalReview;
+  retryFailedJobButton.hidden = !retryableFailure;
+  continueExactScriptButton.hidden = !preservedExactFailure;
   scriptField.disabled = mechanicalReview || job.legacy_read_only || !script;
   saveScriptButton.disabled = mechanicalReview || job.legacy_read_only || !script;
   rerunJobButton.disabled = mechanicalReview || job.legacy_read_only || !runnableStates.has(job.status) || state.busyJobs.has(job.id);
+  retryFailedJobButton.disabled = !retryableFailure || state.busyJobs.has(job.id);
+  continueExactScriptButton.disabled = !preservedExactFailure || state.busyJobs.has(job.id);
   durationEstimate.textContent = script ? `当前 ${script.length} 字；固定使用普通中文播报声与 -2% 语速，逐幕实测时长和语速，不做整轨变速。` : "内容阶段完成后才能在浏览器中改稿。";
   renderRunHistory(job);
-  const artifactLinks = (job.artifacts || []).map(name => name === "final.mp4"
-    ? `<a href="/api/jobs/${id}/artifacts/final.mp4" download="shiyi-${escapeHtml(id)}-final.mp4">下载成片</a>`
-    : `<a href="/api/jobs/${id}/artifacts/${name}" target="_blank" rel="noreferrer">${escapeHtml(artifactLabels[name] || name)}</a>`).join("");
-  const publicEvidenceLink = job.current_run_id
-    ? `<a href="/api/jobs/${id}/public-evidence.zip">下载当前成功运行的公开证据包</a>`
+  const technicalLinks = (job.artifacts || []).filter(name => name !== "final.mp4").map(name =>
+    `<li><a href="/api/jobs/${id}/artifacts/${name}" target="_blank" rel="noreferrer">${escapeHtml(artifactLabels[name] || name)}</a><span>${escapeHtml(name)}</span></li>`).join("");
+  const deliveryLinks = (job.artifacts || []).includes("final.mp4")
+    ? `<div class="delivery-actions"><a href="/api/jobs/${id}/artifacts/final.mp4" download="shiyi-${escapeHtml(id)}-final.mp4">下载成片</a><a href="/api/jobs/${id}/evidence-report.html">查看验收报告</a></div>`
     : "";
-  document.getElementById("artifactLinks").innerHTML = `${artifactLinks}${publicEvidenceLink}`;
+  const publicEvidenceLink = job.current_run_id
+    ? `<a href="/api/jobs/${id}/public-evidence.zip">下载交付材料（ZIP）</a><p class="delivery-hint">给运营和审核人员使用；ZIP 内先打开“00-验收报告.html”。</p>`
+    : "";
+  document.getElementById("artifactLinks").innerHTML = `${deliveryLinks}${publicEvidenceLink}${technicalLinks ? `<details class="technical-artifacts"><summary>技术附件（开发/复核人员使用）</summary><p>下面是机器可读记录，普通运营人员不需要阅读。</p><ul>${technicalLinks}</ul></details>` : ""}`;
   const video = document.getElementById("artifactVideo");
   if ((job.artifacts || []).includes("final.mp4")) { video.src = `/api/jobs/${id}/artifacts/final.mp4`; video.hidden = false; }
   else { video.hidden = true; video.removeAttribute("src"); }
@@ -1217,6 +1346,10 @@ document.getElementById("agentComposer").addEventListener("submit", async event 
       await loadTopics(state.currentGoal);
       return;
     }
+    if (!job && state.topicCandidates.length && message === state.currentGoal) {
+      toast("这 3 个选题已经按当前要求生成；选中一个后直接点“就做这个”，不用再发送。", true);
+      return;
+    }
     await loadTopics(message, { resetSeen: true });
   } catch (error) {
     toast(error.message, true);
@@ -1236,11 +1369,20 @@ document.getElementById("activeJobPanel").addEventListener("click", async event 
     else if (action === "approve-compliance" && job) await approveHomeCompliance(job.id);
     else if (action === "show-details" && job) await openJob(job.id);
     else if (action === "play-latest") await toggleLatestVideo();
+    else if (action === "edit-script" && job) await openContentRevision(job);
+    else if (action === "submit-script-revision" && job) await submitContentRevision(job, button);
+    else if (action === "cancel-script-revision" && job) await renderHomeJob(job);
+    else if (action === "retry-failed" && job) await retryFailedJob(job, button);
     else if (action === "new-task") {
+      const originalGoal = String(
+        job?.production_input?.capability_pack?.snapshot?.goal
+        || state.currentGoal
+        || DEFAULT_GOAL
+      ).trim();
       setHomeJobId(null);
       state.topicCandidates = [];
       state.topicResponse = null;
-      await loadTopics(DEFAULT_GOAL, { resetSeen: true });
+      await loadTopics(originalGoal, { resetSeen: true });
     }
   } catch (error) {
     toast(error.message, true);
@@ -1257,6 +1399,19 @@ document.getElementById("jobList").addEventListener("click", event => {
     ? authorizeHomeJob(id)
     : button.dataset.action === "run"
       ? advanceJob(id)
+      : button.dataset.action === "retry"
+        ? (async () => {
+            const job = state.jobs.find(item => item.id === id) || await api(`/api/jobs/${id}`);
+            await retryFailedJob(job, button);
+          })()
+        : button.dataset.action === "revise-exact"
+          ? (async () => {
+              const job = state.jobs.find(item => item.id === id) || await api(`/api/jobs/${id}`);
+              setHomeJobId(job.id);
+              switchView("workbench");
+              await renderHomeJob(job);
+              await openContentRevision(job);
+            })()
       : (async () => {
           if (!beginJobBusy(id)) return;
           try { await openJob(id); }
@@ -1266,6 +1421,17 @@ document.getElementById("jobList").addEventListener("click", event => {
 });
 document.getElementById("reloadJobs").addEventListener("click", () => refresh({ syncHomeView: false }).catch(error => toast(error.message, true)));
 document.getElementById("rerunJobBtn").addEventListener("click", () => state.selectedJob && advanceJob(state.selectedJob.id).catch(error => toast(error.message, true)));
+document.getElementById("retryFailedJobBtn").addEventListener("click", event => state.selectedJob && retryFailedJob(state.selectedJob, event.currentTarget).catch(error => toast(error.message, true)));
+document.getElementById("continueExactScriptBtn").addEventListener("click", async () => {
+  if (!state.selectedJob) return;
+  try {
+    const job = state.selectedJob;
+    setHomeJobId(job.id);
+    switchView("workbench");
+    await renderHomeJob(job);
+    await openContentRevision(job);
+  } catch (error) { toast(error.message, true); }
+});
 document.getElementById("researchDecision").addEventListener("change", () => syncApprovalButton("research"));
 document.getElementById("complianceDecision").addEventListener("change", () => syncApprovalButton("compliance"));
 document.getElementById("submitResearchBtn").addEventListener("click", () => submitResearch(document.getElementById("researchDecision").value).catch(error => toast(error.message, true)));
@@ -1275,6 +1441,7 @@ document.getElementById("saveScriptBtn").addEventListener("click", async () => {
   try {
     await api(`/api/jobs/${state.selectedJob.id}/script`, {
       method: "PATCH",
+      headers: { "Idempotency-Key": newIdempotencyKey() },
       body: JSON.stringify({
         script: document.getElementById("approvedScriptInput").value,
         editor: document.getElementById("complianceReviewer").value,
@@ -1286,29 +1453,17 @@ document.getElementById("saveScriptBtn").addEventListener("click", async () => {
   } catch (error) { toast(error.message, true); }
 });
 
-document.getElementById("scanBtn").addEventListener("click", async event => {
-  const button = event.currentTarget;
-  setBusy(button, true, "扫描中…");
-  try {
-    const roots = document.getElementById("rootsInput").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-    await api("/api/config", { method: "POST", body: JSON.stringify({ discovery: { ...state.config.discovery, roots } }) });
-    const result = await api("/api/discover", { method: "POST", body: JSON.stringify({ roots }) });
-    toast(`发现 ${result.count} 个候选项目`);
-    await refresh({ syncHomeView: false });
-  } catch (error) { toast(error.message, true); }
-  finally { setBusy(button, false); }
-});
-
 document.getElementById("saveSettings").addEventListener("click", async () => {
   try {
     const body = {
-      provider: { model: document.getElementById("modelName").value.trim(), base_url: "https://api.deepseek.com", api_key: document.getElementById("apiKey").value.trim(), persist_api_key: document.getElementById("persistKey").checked },
-      research: { ...state.config.research, enabled: document.getElementById("researchEnabled").checked, media_parser_root: document.getElementById("mediaParserRoot").value.trim() },
-      storage: { root: document.getElementById("storageRoot").value.trim() },
+      // This customer form edits only the Key. The model shown above is the
+      // model that remains configured; do not silently replace an existing
+      // custom model merely because the customer saved a credential.
+      provider: { api_key: document.getElementById("apiKey").value.trim(), persist_api_key: document.getElementById("persistKey").checked },
     };
     await api("/api/config", { method: "POST", body: JSON.stringify(body) });
     document.getElementById("apiKey").value = "";
-    toast("设置已保存");
+    toast("DeepSeek Key 已保存");
     await refresh({ syncHomeView: false });
   } catch (error) { toast(error.message, true); }
 });
@@ -1324,19 +1479,22 @@ document.getElementById("clearApiKey").addEventListener("click", async event => 
     document.getElementById("apiKey").value = "";
     await refresh({ syncHomeView: false });
     renderSettings();
-    toast("已清除本机会话与 DPAPI 保存的 Key；环境变量中的 Key 不会被修改");
+    toast("已删除本机会话和 Windows 加密保存的 Key；系统环境变量中的 Key 不会被修改");
   } catch (error) { toast(error.message, true); }
   finally { setBusy(button, false); }
 });
 
 document.getElementById("testProvider").addEventListener("click", async () => {
   const target = document.getElementById("providerResult");
-  target.textContent = "正在测试（不计任务预算）…";
+  target.textContent = "正在测试本次连接…";
   try {
     const result = await api("/api/provider/test", { method: "POST", body: "{}" });
-    target.textContent = `连接成功；可用模型 ${result.models.length} 个；本次测试不计任务预算`;
+    const verifiedModel = state.config?.provider?.model === "deepseek-v4-pro"
+      ? "DeepSeek V4 Pro"
+      : `已有自定义模型 ${state.config?.provider?.model || ""}`;
+    target.textContent = `连接成功，${verifiedModel} 可用。`;
     await refresh({ syncHomeView: false });
-    target.textContent = `本次连接已验证；可用模型 ${result.models.length} 个；本次测试不计任务预算`;
+    target.textContent = `本次连接已验证，${verifiedModel} 可用。`;
   } catch (error) { target.textContent = error.message; toast(error.message, true); }
 });
 

@@ -73,6 +73,7 @@ APP_RELEASE_FORBIDDEN_ENV = (
     "SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS",
     "SHIYI_AGENT_TEST_REVIEW",
     "SHIYI_STAGE_REVIEW_MODE",
+    "SHIYI_INTERNAL_DIAGNOSTICS",
     "SHIYI_APP_EXECUTABLE",
     "SHIYI_APP_PYTHON",
     "SHIYI_MPT_ROOT",
@@ -1074,7 +1075,6 @@ def validate_preinstalled_layout(config: LauncherConfig) -> None:
         _require_file(config.ffprobe, "FFPROBE_MISSING", "FFprobe")
         _require_file(config.font_regular, "NOTO_FONT_MISSING", "Noto Sans SC Regular 字体")
         _require_file(config.font_bold, "NOTO_FONT_MISSING", "Noto Sans SC Bold 字体")
-        _require_file(config.project_root / "core" / "sapi_tts.ps1", "SAPI_SCRIPT_MISSING", "中文离线配音脚本")
         _windows_powershell()
         if config.app_executable is not None:
             _require_file(config.app_executable, "APP_EXECUTABLE_MISSING", "工作台可执行文件")
@@ -1431,7 +1431,6 @@ def probe_preinstalled_runtimes(
         motion_environment = build_app_environment(
             os.environ, config, app_port=8765, mpt_port=0, motion_health_verified=False
         )
-        sapi_script = config.project_root / "core" / "sapi_tts.ps1"
         probes.extend(
             [
                 (
@@ -1447,25 +1446,6 @@ def probe_preinstalled_runtimes(
                     config.hyperframes_cli.parents[3],
                     motion_environment,
                     config.hyperframes_version,
-                ),
-                (
-                    "SAPI_ZH_CN_VOICE_MISSING",
-                    [
-                        str(_windows_powershell()),
-                        "-NoLogo",
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-File",
-                        str(sapi_script),
-                        "-ProbeOnly",
-                        "-Language",
-                        "zh-CN",
-                    ],
-                    config.project_root,
-                    motion_environment,
-                    "CULTURE=zh-CN",
                 ),
             ]
         )
@@ -1494,8 +1474,6 @@ def probe_preinstalled_runtimes(
         except (OSError, subprocess.SubprocessError) as exc:
             raise LauncherError(code, "预置运行环境自检无法完成。") from exc
         if result.returncode != 0:
-            if code == "SAPI_ZH_CN_VOICE_MISSING":
-                raise LauncherError(code, "本机缺少 zh-CN 中文离线语音，纯动画配音暂不可用。")
             raise LauncherError(code, "预置运行环境不完整，运行时不会自动下载依赖。")
         if expected_version is not None:
             stdout = result.stdout.decode("utf-8", "replace") if isinstance(result.stdout, bytes) else str(result.stdout or "")
@@ -1504,8 +1482,6 @@ def probe_preinstalled_runtimes(
                 rf"(?<![0-9.]){re.escape(expected_version)}(?![0-9.])",
                 f"{stdout}\n{stderr}",
             ):
-                if code == "SAPI_ZH_CN_VOICE_MISSING":
-                    raise LauncherError(code, "中文离线语音探针未返回 zh-CN，纯动画配音暂不可用。")
                 raise LauncherError(code, "预置运行环境版本探针与发布锁不一致。")
     if config.motion_runtime_required:
         _probe_hyperframes_browser_canary(config, motion_environment, runner)

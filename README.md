@@ -1,6 +1,6 @@
 # 时宜 Agent 内容工厂 v0.3（纯动画主线开发候选）
 
-一个可运行、可审核、可积累纠错经验的短视频内容工厂。计划中的 v0.3 正式主链先从本地确定性安全能力包出发，再完成三选一、研究、脚本、合规和成片。两道哈希门禁始终保留：正式模式由用户审核；受控测试模式由 Codex 通过本地浏览器逐项审查，记录明确标为 `test_only`，最终成片再交给用户验收和反馈。默认生产模式现为本地纯动画：由固定 HyperFrames 0.7.86、可信动画积木注册表和 Noto Sans SC 组成；MoneyPrinterTurbo 1.3.3 保留为实拍素材支线。我们的控制层继续负责证据、审查、预算、运行隔离、媒体复验和最终 manifest。
+一个可运行、可审核、可积累纠错经验的短视频内容工厂。计划中的 v0.3 正式主链先从本地确定性安全能力包出发，再完成三选一、研究、脚本、合规和成片。研究、脚本与镜头由反向机械审核器自动核对，普通用户选中题目后只需点击一次；最终成片仍必须由负责人核对品牌、科学与广告合规。默认生产模式为本地纯动画：由固定 HyperFrames 0.7.86、可信动画积木注册表和 Noto Sans SC 组成。MoneyPrinterTurbo 1.3.3 只保留为技术集成底座，本版“实拍素材”尚未形成运营可用的语义素材库，因此界面固定禁用，不能把服务健康状态冒充成已发布功能。
 
 [![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.14-3776AB)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
@@ -10,7 +10,7 @@
 | 版本 | 当前状态 | 可下载 |
 |---|---|---|
 | v0.2.0 | 当前稳定发布 | 是 |
-| v0.3.0 纯动画主线组合版 | 开发候选；每个候选必须单独通过封包、冷启动和纯动画 E2E，精确结果见项目发布闭环记录 | 否 |
+| v0.3.0 纯动画主线组合版 | 本轮验收候选；待当前客户界面、DeepSeek V4 Pro 与一键安装版本完成试用、封包、冷启动和纯动画 E2E 后再发布 | 待验收 |
 
 ## Windows 一键体验（当前稳定版 v0.2.0）
 
@@ -31,13 +31,13 @@
 
 > 当前截图、比赛 PDF、设计样片和真实 DeepSeek 证据包属于“净界除甲醛 v2”历史比赛基线，只证明该行业包的既有运行结果，不冒充通用 v3 的新联调证据。v3 视觉重设计尚未开始。
 
-默认首页采用 Agent 优先的轻交互：用户描述行业、受众和内容目标，系统使用带 SHA-256 的确定性安全能力包，并在每轮只给 3 个角度。选定后系统自动推进，只在“研究证据审查”和“最终脚本审查”两处停下。候选只是研究方向，不代表事实已经成立；严格反证和阶段审查仍在任务链内执行。正式模式由用户操作两处门禁；受控测试模式由 Codex 打开详细依据、通过浏览器操作两处门禁，用户只测试最终成片并反馈。任务进行中可以继续输入纠错；当前界面先采用“安全阶段应用”的默认方式，显式“打断/不打断”双模式延期。
+默认首页采用 Agent 优先的轻交互：用户描述行业、受众和内容目标，系统使用带 SHA-256 的确定性安全能力包，并在每轮只给 3 个角度。选中一个后直接点击“就做这个”，不用再发送一次同样的要求；系统会自动完成研究、写稿、机械复核、配音和成片。候选只是内容方向，不代表事实已经成立；严格反证和机械阶段审查仍在任务链内执行。成片完成后可以打开“修改文案并重新生成”，直接编辑当前完整文案并保存；系统会重新检查、配音和成片，上一版成功成片保留到新版成功。最终公开发布仍由负责人验收。
 
 ## v3 通用内核新增
 
 - 正式路径不再被动态 schema 阻断：每个目标先使用本地确定性安全能力包；有 Key 时只请求一次三个候选，无 Key、Provider 失败或预任务额度耗尽时返回同目标的本地安全候选。
 - 动态行业能力包生成与启动阶段反证协议仍保留为实验能力，只能通过 `SHIYI_EXPERIMENTAL_DYNAMIC_TOPICS=1` 在开发验证中启用，不属于 v0.3 正式发布主链，也不充当成功证据。
-- “13 个本地工具能力包”仅指 v2 冻结目录中的本机工具登记；“动态行业能力包”是 v3 按任务现场生成的声明式行业约束，两者不互相计数或互相证明。
+- “本地工具”和“能力目录”属于内部开发诊断信息，客户界面与客户模式 API 均不开放；它们不代表外部电脑已经安装对应工具，也不作为产品可用性的证明。
 - 能力包只保存行业、受众、平台、语气、证据要求、禁用主张和视觉方向等声明式约束，禁止脚本、命令、密钥和任意 URL；每个不可变版本进入独立注册表并可按哈希追溯。
 - 普通网页不能靠模型自报 `source_type` 冒充政府或机构来源；来源类型由实际 URL 在本地重新分类，能力包和历史记忆都不能充当事实证据。
 - 工作人员纠错采用追加式事件记录，并编译为 task、project 或 workspace 作用域的收紧规则；纠错不会代替任务授权，也不会覆盖上一份成功产物。
@@ -49,22 +49,22 @@
 - 新任务的默认 `production_mode` 是 `motion`：审批后的脚本会被拆成 4—8 幕，再从本地 `shiyi-animation-pack-v1` 白名单中按语义选择积木。当前基础包包含 36 个积木、12 个明确 renderer family，每个 family 有 3 个可见变体；积木版本、行业模式、逐幕匹配和选择收据都由 SHA-256 绑定。
 - 动画模板只使用本地有限 WAAPI、Noto Sans SC 与确定性时间线；不使用 CDN、运行时下载、随机数、无限循环或现场生成可执行代码。HyperFrames 正式检查使用 `--strict`，正式渲染使用 `--no-best-effort --strict`。
 - 当前 45 秒自然中文七幕 canary 已通过 HyperFrames 0.7.86 的 lint、runtime、layout、motion 和 contrast 严格检查，包含 300 个运动采样；这只证明动画工程合同，不冒充两道阶段审查后的正式成片 E2E。
-- `footage` 保留为 MoneyPrinterTurbo 实拍支线；旧 MPT 任务不会被默认动画路由改写。`hybrid` 当前明确 fail-closed，`simple` 仅用于不可发布的诊断运行。
+- `footage` 仅保留为 MoneyPrinterTurbo 技术集成底座；当前版本没有达到运营可用的素材语义识别与选择合同，界面和 API 都固定拒绝新建实拍任务。旧 MPT 任务仍保持只读，不会被默认动画路由改写。`hybrid` 当前明确 fail-closed，`simple` 仅用于不可发布的诊断运行。
 - 便携封包合同会内置并固定 Node、HyperFrames、字体和 FFmpeg，但不分发 Chrome、Chrome for Testing 或 Edge 浏览器载荷。动画启动只接受机器级 `Program Files` 固定路径中的 Microsoft Edge 151+，同时核验 Authenticode 签名、Microsoft 产品身份与实际四段文件版本；LocalAppData、宿主路径/版本覆盖、缺失、过旧或伪造可执行文件均 fail-closed。正式就绪前还必须通过一次真实 HyperFrames `--strict` Edge canary 和一次直接 `h264_mf`/AAC 编解码 canary，全程禁止网络下载。当前 135 个 HyperFrames 可达依赖的许可证闭包已经完成，9 个缺少包内正文的精确版本 override 也已绑定官方来源。
 - 正式 FFmpeg 输入已经固定为仓库内 9 个逐文件哈希锁定的 Windows x64 共享文件：自建 FFmpeg `d3ad8a7` + zlib 1.3.2，许可证为 LGPL-2.1-or-later/Zlib，不含 `libx264`、rav1e、GPL/nonfree 编解码库或第二份 ImageIO FFmpeg。21 项真实能力探针覆盖 HyperFrames 与 MPT 所需的 `h264_mf`、原生 AAC、解码、缩放、音频和 concat 能力。对应源码 companion 已在本地冻结为 `ShiyiContentFactory-v0.3.0-FFmpeg-LGPL-source-d3ad8a7.zip`（19,314,160 字节，SHA-256 `A09A28824F6C5EBBFC8CF724136701FA6ADFE7F35BA58670A85F48A9CA856C08`），但尚未上传 GitHub Release；发布前它必须与对象代码 ZIP 同挂 `v0.3.0` Release 并通过同 Release 门禁。
 - 正式便携 Python 合同把已审计运行时从 138 个 distribution 精确裁剪到 89 个，删除 49 个未采用依赖和重复 ImageIO FFmpeg；构建后按 5,784 个 RECORD 文件生成逐文件 SBOM，并保留精确版本许可证正文/override。MoviePy 以 distribution `2.2.1` 为身份，先应用 `shiyi-moviepy-windows-mf` 补丁并同步 wheel `RECORD`，再生成 SBOM；补丁只在 `h264_mf` 时移除不受支持的 `-preset`，固定 quality 72、`yuv420p`，其他 codec 保持上游行为。构建器、独立 verifier 与真实 ColorClip→concat→FFprobe canary 已验证这些合同；最终候选仍必须从对应 clean commit 重建、在全新目录冷启动并重新执行 E2E，不能只凭源码测试宣称可下载。
 
-- MoneyPrinterTurbo 固定为 `1.3.3` / `254cd028906ee657eab844dc94087cdbea2a7aa8`，通过只监听回环地址的内部 HTTP API 接收已经批准的脚本和本地素材；它不能读取 DeepSeek Key，也不能重写事实内容。
+- MoneyPrinterTurbo 技术底座固定为 `1.3.3` / `254cd028906ee657eab844dc94087cdbea2a7aa8`，只监听回环地址，也不能读取 DeepSeek Key；但健康探针只证明服务可运行，不证明实拍素材已达到普通运营人员可用标准。
 - 固定脚本的独立 CLI 烟雾和真实 HTTP → `ProductionRunner` 联调均已通过。CLI 证据 manifest SHA-256 为 `D184B944BEF773A17790F264ADEC01D3F838AC3B411CF83F829FABEBD4B87E5E`；HTTP 组合成片为 46.600 秒、1080×1920、H.264/yuv420p + AAC，证据 manifest SHA-256 为 `F42EA0D748B7E15287978462112E7481E8F9CB80FBBF015B70ACE183204DB64F`。这些都只属于内部工程证据，不冒充用户两道人审后的正式比赛证据。
 - 引擎输出先进入当前运行 staging。控制层重新校验时长、分辨率、编解码、字幕连续性与哈希；全部通过后，才把 `material_sources.json`、`engine_report.json` 和标准产物写进成功 manifest。失败不会替换上一成功运行。
 - 封包构建器限定使用项目核验过的 Noto Sans SC、本地 MP4 和无 BGM 策略；不采用上游字体、歌曲、WebUI、LLM 或社交发布功能。v0.3 保持候选且不由 README 预声明发布；精确提交、包哈希、E2E 与用户验收状态记录在项目发布闭环中，边界见 [生产引擎组合说明](docs/PRODUCTION_ENGINE_INTEGRATION.md)。
 
 ## 保留的 v2 安全与发布基线
 
-- 状态严格分为执行授权、研究、研究阶段审查、内容生成、合规阻断/阶段放行、渲染和完成；测试代理审查与正式人审使用不可混淆的结构化身份，自动系统不再伪装成人工审核。
+- 状态严格分为执行授权、研究、机械研究审查、内容生成、机械合规审查、渲染和完成；机械审核、代理测试与最终负责人验收使用不可混淆的结构化身份，自动系统不再伪装成人工审核。
 - 每次推进使用独立 `run_id` 和 staging。失败尝试不会替换上一份成功成片，正式产物只从成功 manifest 解析。
-- 严格反证审核先逐项判定 finding；正式人审可从首页确认，代理测试审查必须进入详细页逐项检查后提交。文件哈希变化后原阶段审查立即失效。
-- 医疗因果、健康保证、绝对化表达及没有已批准证据支持的功效数字由本地规则阻断；自动通过后仍须经过当前任务固定的阶段审查门禁，代理测试模式也不能放行阻断脚本。
+- 严格反证审核先逐项判定 finding；机械模式自动执行内部阶段审查，代理测试模式必须进入详细页逐项检查。任何文件哈希变化都会让原阶段审查立即失效。
+- 医疗因果、健康保证、绝对化表达及没有已批准证据支持的功效数字由本地规则阻断；机械模式和代理测试模式都不能放行阻断脚本，负责人仍需对最终成片作发布验收。
 - 同任务有进程锁和 PID 磁盘锁；同一次浏览器动作遇到网络结果不确定时使用同一个 `Idempotency-Key` 自动重放，用户明确点击重试则生成新 Key，并发点击仍只执行一次。生产网络尝试在发出前计入每任务共享的 7 次硬预算，并在请求离开进程前通过 `fsync` 与原子替换持久化；崩溃恢复不会返还已经预留的额度。
 - 服务只监听 `127.0.0.1`。写接口要求随机会话 Cookie、CSRF、JSON Content-Type 和当前端口同源 Origin。
 - Provider 正式模式只接受 `https://api.deepseek.com` 或 `/v1`；每个最终响应和重定向 URL 还必须使用登记的模型/对话路径，且不得携带 userinfo、query 或 fragment。localhost 仅在 `SHIYI_ALLOW_TEST_PROVIDER=1` 时开放。
@@ -126,7 +126,7 @@ flowchart LR
 
 ## 产物与证据
 
-每次最终成功运行包含十项规范产物，并增加审批与清单。纯动画成功运行还必须纳入接触表和视觉门禁，共 14 项；公开包再加入机器复算说明，共 15 项。MPT 实拍公开包同样是 15 项，但其两项专属证据是素材来源与引擎报告，不能与纯动画视觉证据互相替代：
+每次最终成功运行包含十项规范产物，并增加审批与清单。纯动画成功运行还必须纳入接触表和视觉门禁，共 14 项；公开交付包再加入机器复算说明和面向运营人员的 `00-验收报告.html`，共 16 项。原始 JSON 只放在报告内默认折叠的“技术附件”，不再作为普通用户的主入口：
 
 ```text
 research.json             insight.json
@@ -136,6 +136,7 @@ captions.srt              motion_plan.json
 final.mp4                 run_report.json
 approvals.json            manifest.json
 VALIDATION.md（仅公开包）
+00-验收报告.html（仅公开包，先看这个）
 contact-sheet.png（纯动画运行）
 visual-qc.json（纯动画运行）
 material_sources.json（MPT 实拍运行）
@@ -164,6 +165,8 @@ engine_report.json（MPT 实拍运行）
 | GET | `/api/jobs/{id}/review-artifacts/{name}` | 读取当前待审文件 |
 | GET | `/api/jobs/{id}/artifacts/{name}` | 读取当前成功 manifest 产物 |
 | GET | `/api/jobs/{id}/runs/{run_id}/artifacts/{name}` | 读取历史成功运行产物 |
+| GET | `/api/jobs/{id}/evidence-report.html` | 打开面向运营与负责人的人类可读验收报告 |
+| GET | `/api/jobs/{id}/public-evidence.zip` | 下载交付材料；完整解压后先打开 `00-验收报告.html` |
 
 `/api/agent/topics` 请求体为 `{ "goal": "4-200 字内容目标", "excluded_topics": [] }`，刷新时可把上次响应的 `capability_pack` 原样带回。`excluded_topics` 只能缺省或为数组，最多 24 个且每项为不超过 80 字的字符串；`false`、`0`、空字符串和 `null` 均返回 JSON 422。响应中的 `candidates` 始终为三个 `{id, title, reason, audience}`，同时返回确定性能力包、脱敏项目上下文、已生效记忆和真实预算；正式路径的启动阶段反证字段明确为 `not_run`，不会伪造自动通过。候选筛选不冒充研究证据核验；个性化医疗/投资/高风险法律决策、恶意任务和指令注入会返回 JSON 422。
 

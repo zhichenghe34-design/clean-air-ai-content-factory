@@ -24,6 +24,7 @@ from core.capability_pack import (
 from core.capability_registry import CapabilityPackRegistry, CapabilityPackRegistryError
 from core.review_policy import (
     HUMAN_STAGE_REVIEW,
+    LOCAL_BROWSER_EDITOR,
     MECHANICAL_REVIEWER,
     MECHANICAL_STAGE_REVIEW,
     approval_identity,
@@ -82,6 +83,10 @@ PUBLIC_ARTIFACTS = [
 REVIEW_ARTIFACTS = {"research.json", "approved_script.json", "review.json"}
 LEGACY_CLEAN_AIR_MARKERS = ("甲醛", "除醛", "测醛", "室内空气", "装修污染")
 RUNNING_STATES = {"research_running", "content_running", "rendering"}
+RETRYABLE_AUTOMATIC_FAILURE_CODES = {
+    "automatic_script_revision_exhausted",
+    "automatic_stage_attempts_exhausted",
+}
 PROVIDER_STATES = {"unconfigured", "configured", "verified"}
 TOPIC_SOURCES = {
     "direct_input",
@@ -598,6 +603,8 @@ class JobStore:
         creation_request: dict[str, str] | None = None,
         trusted_learning_rules: list[dict[str, Any]] | None = None,
         provider_provenance: dict[str, Any] | None = None,
+        retry_of_job_id: str | None = None,
+        review_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         safe_plan = validate_plan(plan)
         steps = safe_plan["steps"]
@@ -628,6 +635,19 @@ class JobStore:
             if provider_provenance is not None
             else None
         )
+        safe_retry_of_job_id = None
+        if retry_of_job_id is not None:
+            if not isinstance(retry_of_job_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]+", retry_of_job_id
+            ):
+                raise WorkflowError("重试来源任务ID无效")
+            safe_retry_of_job_id = retry_of_job_id
+        try:
+            safe_review_policy = normalize_review_policy(
+                self.review_policy if review_policy is None else review_policy
+            )
+        except ValueError as exc:
+            raise WorkflowError("任务审查策略无效") from exc
         job_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
         job = {
             "schema_version": 2,
@@ -655,7 +675,7 @@ class JobStore:
                 "research": {"status": "pending"},
                 "compliance": {"status": "pending"},
             },
-            "review_policy": dict(self.review_policy),
+            "review_policy": safe_review_policy,
             "runs": [],
             "active_run_id": None,
             "current_run_id": None,
@@ -669,13 +689,22 @@ class JobStore:
             job["creation_request"] = safe_creation_request
         if safe_provider_provenance is not None:
             job["provider_provenance"] = safe_provider_provenance
+        if safe_retry_of_job_id is not None:
+            # This relationship is part of the very first durable job
+            # document.  It must never be repaired onto a job after creation,
+            # otherwise a lost HTTP response could leave an unauditable clone.
+            job["retry_of_job_id"] = safe_retry_of_job_id
         folder = self.jobs_dir / job_id
         folder.mkdir(parents=True, exist_ok=False)
         try:
             (folder / "draft").mkdir()
             (folder / "runs").mkdir()
             self._write(folder / "job.json", job)
-            self._event(folder, "job_created", {"status": "planned", "schema_version": 2})
+            self._event(folder, "job_created", {
+                "status": "planned",
+                "schema_version": 2,
+                "retry_of_job_id": safe_retry_of_job_id,
+            })
         except Exception:
             shutil.rmtree(folder, ignore_errors=True)
             raise
@@ -723,6 +752,104 @@ class JobStore:
                 ), False
             finally:
                 self._release_creation_lock(disk_lock)
+
+    def retry_idempotent(
+        self,
+        source_job_id: str,
+        *,
+        idempotency_key: str,
+        fingerprint: str,
+        trusted_learning_rules: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], bool]:
+        """Create an isolated, durable retry without mutating the failed job.
+
+        A retry is a fresh task and therefore receives a fresh Provider budget
+        and clean approval/run state.  The source plan, selected topic binding,
+        immutable capability pack and Provider provenance are copied from the
+        terminal task.  Learning rules are supplied by the server at request
+        time so a retry does not silently reuse a stale rule snapshot.
+        """
+
+        source, _ = self._load_v2(source_job_id)
+        try:
+            source_policy = normalize_review_policy(source.get("review_policy"))
+        except ValueError as exc:
+            raise ConflictError("来源任务的机械审查记录无效，不能重试") from exc
+        failure = source.get("automatic_controller_failure")
+        production_input = source.get("production_input")
+        failure_code = str(failure.get("code", "")).strip() if isinstance(failure, dict) else ""
+        if (
+            source.get("status") != "failed"
+            or source_policy["stage_review_mode"] != MECHANICAL_STAGE_REVIEW
+            or not isinstance(failure, dict)
+            or failure_code not in RETRYABLE_AUTOMATIC_FAILURE_CODES
+            or not isinstance(production_input, dict)
+            or not isinstance(production_input.get("capability_pack"), dict)
+            or source.get("active_run_id") is not None
+        ):
+            if failure_code == "exact_script_render_failed_preserved":
+                raise ConflictError(
+                    "这次失败保留了浏览器全文改稿，不能按选题重新抽稿；"
+                    "请从原任务继续修改或按已保存文案重新生成"
+                )
+            raise ConflictError("只有已终止的自动生成失败任务可以按同一选题重新生成")
+        if not isinstance(trusted_learning_rules, list):
+            raise WorkflowError("重试任务的服务端学习规则快照无效")
+
+        request = self._validate_creation_request({
+            "idempotency_key": idempotency_key,
+            "fingerprint": fingerprint,
+        })
+        clean_input = dict(production_input)
+        clean_input.pop("learning_rules", None)
+        with self._create_lock:
+            disk_lock = self._acquire_creation_lock(request["idempotency_key"])
+            try:
+                replay = self._find_creation_replay(request)
+                if replay is not None:
+                    if replay.get("retry_of_job_id") != source_job_id:
+                        raise IdempotencyConflictError(
+                            "同一Idempotency-Key不能用于不同重试请求"
+                        )
+                    return replay, True
+                job = self.create(
+                    source["plan"],
+                    production_input=clean_input,
+                    creation_request=request,
+                    trusted_learning_rules=trusted_learning_rules or None,
+                    provider_provenance=source.get("provider_provenance"),
+                    retry_of_job_id=source_job_id,
+                    review_policy=source_policy,
+                )
+                return job, False
+            finally:
+                self._release_creation_lock(disk_lock)
+
+    def ensure_retry_authorized(
+        self, retry_job_id: str, source_job_id: str
+    ) -> dict[str, Any]:
+        """Idempotently authorize a freshly-created retry after replay/restart."""
+
+        lock = self._job_lock(retry_job_id)
+        with lock:
+            job, folder = self._load_v2(retry_job_id)
+            if job.get("retry_of_job_id") != source_job_id:
+                raise ConflictError("重试任务与来源任务不匹配")
+            if job.get("status") == "authorized":
+                return self._public(job)
+            if job.get("status") != "planned":
+                raise ConflictError("重试任务已经进入生产流程，不能重复授权")
+            self._ensure_capability_pack(job, folder)
+            timestamp = now_iso()
+            job["status"] = "authorized"
+            job["authorized_at"] = timestamp
+            job["updated_at"] = timestamp
+            self._write(folder / "job.json", job)
+            self._event(folder, "job_authorized", {
+                "retry_of_job_id": source_job_id,
+                "authorization_mode": "automatic_retry",
+            })
+            return self._public(job)
 
     def list(self) -> list[dict[str, Any]]:
         jobs: list[dict[str, Any]] = []
@@ -887,6 +1014,12 @@ class JobStore:
                     job["current_run_id"] = run_id
                     job["artifacts"] = [name for name in PUBLIC_ARTIFACTS if (published / name).is_file()]
                     job["status"] = "complete"
+                    if job.get("script_revision", {}).get("status") == "accepted_pending_render":
+                        job["script_revision"].update({
+                            "status": "complete",
+                            "completed_run_id": run_id,
+                            "completed_at": now_iso(),
+                        })
                 if stage != "render":
                     manifest = self._build_manifest(job, run, staging, runner)
                     self._write(staging / "manifest.json", manifest)
@@ -998,6 +1131,26 @@ class JobStore:
                     latest_run = job.get("runs", [])[-1] if job.get("runs") else {}
                     failed_stage = str(latest_run.get("stage", ""))
                     revision_signature = (failed_stage, str(exc))
+                    exact_browser_revision = (
+                        failed_stage == "render"
+                        and job.get("script_revision", {}).get("status")
+                        == "accepted_pending_render"
+                    )
+                    if exact_browser_revision:
+                        job = self._stop_automatic_controller(
+                            job_id,
+                            expected_status="awaiting_script_revision",
+                            failure_code="exact_script_render_failed_preserved",
+                            reason=(
+                                "精确全文改稿已保留，但本次配音或渲染未通过；"
+                                "系统没有重新生成文案，上一版成功成片保持可用"
+                            ),
+                            source_error=str(exc),
+                            stage="render",
+                            stage_attempts=attempts,
+                            maximum_stage_attempts=max_stage_attempts,
+                        )
+                        break
                     provider_attempted_in_stage = max(
                         0,
                         int(job.get("budget", {}).get("attempted", 0))
@@ -1051,11 +1204,25 @@ class JobStore:
         if automatically_runnable(job):
             latest_run = job.get("runs", [])[-1] if job.get("runs") else {}
             exhausted_status = str(job.get("status", ""))
+            exact_browser_revision = (
+                exhausted_status == "failed"
+                and job.get("last_failed_stage") == "render"
+                and job.get("script_revision", {}).get("status")
+                == "accepted_pending_render"
+            )
             job = self._stop_automatic_controller(
                 job_id,
                 expected_status=exhausted_status,
-                failure_code="automatic_stage_attempts_exhausted",
+                failure_code=(
+                    "exact_script_render_failed_preserved"
+                    if exact_browser_revision
+                    else "automatic_stage_attempts_exhausted"
+                ),
                 reason=(
+                    "精确全文改稿已保留，但本次配音或渲染在自动重试后仍未完成；"
+                    "系统没有重新生成文案，上一版成功成片保持可用"
+                    if exact_browser_revision
+                    else
                     "自动生产已安全停止：达到自动推进上限后仍未完成当前阶段，"
                     "系统不会转交浏览器人工审批或改稿"
                 ),
@@ -1118,6 +1285,16 @@ class JobStore:
                 "human_intervention_required_during_generation": False,
                 "failed_at": now_iso(),
             }
+            if (
+                failure_code == "exact_script_render_failed_preserved"
+                and isinstance(job.get("script_revision"), dict)
+            ):
+                job["script_revision"].update({
+                    "status": "render_failed",
+                    "failed_at": now_iso(),
+                    "failure_code": failure_code,
+                    "previous_success_run_preserved": job.get("current_run_id"),
+                })
             job["automatic_controller"] = {
                 "mode": "mechanical",
                 "status": "failed",
@@ -1424,7 +1601,23 @@ class JobStore:
         )
         errors.extend(edit_errors)
         if edit_mode not in {None, MECHANICAL_STAGE_REVIEW}:
-            errors.append("批准稿包含非机械流程的显式改稿身份")
+            exact_browser_revision = (
+                edit_mode == HUMAN_STAGE_REVIEW
+                and approved_script.get("selected_by") == BROWSER_SCRIPT_EDIT_LABELS["selected_by"]
+                and str((approved_script.get("editor_identity") or {}).get("editor", "")) == LOCAL_BROWSER_EDITOR
+                and isinstance(approved_script.get("base_run_id"), str)
+                and bool(approved_script.get("base_run_id"))
+                and re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(approved_script.get("base_approved_script_sha256", "")),
+                ) is not None
+                and re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(approved_script.get("base_script_text_sha256", "")),
+                ) is not None
+            )
+            if not exact_browser_revision:
+                errors.append("批准稿包含不受支持的显式改稿身份")
 
         review_digest = file_sha256(review_path)
         script_digest = file_sha256(script_path)
@@ -1736,43 +1929,170 @@ class JobStore:
         review: dict[str, Any],
         estimate: dict[str, Any],
         editor: str,
+        *,
+        base_run_id: str | None = None,
+        base_approved_script_sha256: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        job, folder = self._load_v2(job_id)
-        self._ensure_capability_pack(job, folder)
-        if job["status"] not in {"awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision", "compliance_approved", "complete", "failed"}:
-            raise ConflictError("当前阶段不能修改脚本")
-        draft = folder / "draft"
-        if not (draft / "research.json").is_file():
-            raise ConflictError("尚未完成研究和内容阶段")
+        lock = self._job_lock(job_id)
+        if not lock.acquire(blocking=False):
+            raise ConflictError("同一任务正在运行或正在保存改稿")
         try:
-            policy = normalize_review_policy(job.get("review_policy"))
+            job, folder = self._load_v2(job_id)
+            self._ensure_capability_pack(job, folder)
+            try:
+                policy = normalize_review_policy(job.get("review_policy"))
+            except ValueError as exc:
+                raise UnprocessableError(str(exc)) from exc
+            revision_fingerprint = ""
+            request_key_sha256 = ""
             if policy["stage_review_mode"] == MECHANICAL_STAGE_REVIEW:
-                raise ConflictError("机械审查任务禁止浏览器改稿；脚本必须由受管无头流程生成")
-            editor_identity = script_edit_identity(
-                policy["stage_review_mode"], str(editor)
-            )
-        except ConflictError:
-            raise
-        except ValueError as exc:
-            raise UnprocessableError(str(exc)) from exc
-        payload = {
-            **BROWSER_SCRIPT_EDIT_LABELS,
-            "script": str(script).strip(),
-            "editor_identity": editor_identity,
-            "edited_at": now_iso(),
-            "duration_estimate": estimate,
-        }
-        self._write(draft / "approved_script.json", payload)
-        self._write(draft / "review.json", review)
-        # A storyboard is bound to the exact approved script.  Never let a
-        # browser edit inherit directions generated for older narration.
-        (draft / "motion_storyboard.json").unlink(missing_ok=True)
-        job["approvals"]["compliance"] = {"status": "pending"}
-        job["status"] = "blocked_compliance" if review.get("status") == "blocked" else "awaiting_compliance_approval"
-        job["updated_at"] = now_iso()
-        self._write(folder / "job.json", job)
-        self._event(folder, "script_updated", {"character_count": len(payload["script"]), "estimated_seconds": estimate.get("estimated_seconds")})
-        return self._public(job)
+                request_key = str(idempotency_key or "").strip()
+                if IDEMPOTENCY_RE.fullmatch(request_key):
+                    revision_fingerprint = canonical_sha256({
+                        "script": str(script).strip(),
+                        "base_run_id": str(base_run_id or "").strip(),
+                        "base_approved_script_sha256": str(
+                            base_approved_script_sha256 or ""
+                        ).strip().lower(),
+                    })
+                    request_key_sha256 = hashlib.sha256(
+                        request_key.encode("utf-8")
+                    ).hexdigest()
+                    previous_request = next((
+                        item for item in job.get("script_revision_requests", [])
+                        if isinstance(item, dict)
+                        and item.get("idempotency_key_sha256") == request_key_sha256
+                    ), None)
+                    if previous_request is not None:
+                        if previous_request.get("fingerprint") != revision_fingerprint:
+                            raise IdempotencyConflictError(
+                                "同一Idempotency-Key不能用于不同的全文改稿请求"
+                            )
+                        result = self._public(job)
+                        result["replayed"] = True
+                        result["script_revision_replay"] = {
+                            "revision_id": previous_request.get("revision_id"),
+                            "accepted_at": previous_request.get("accepted_at"),
+                        }
+                        return result
+            if job.get("status") in RUNNING_STATES or job.get("active_run_id"):
+                raise ConflictError("任务正在运行，不能同时修改脚本")
+            if job["status"] not in {"awaiting_compliance_approval", "blocked_compliance", "awaiting_script_revision", "compliance_approved", "complete", "failed"}:
+                raise ConflictError("当前阶段不能修改脚本")
+            draft = folder / "draft"
+            if not (draft / "research.json").is_file():
+                raise ConflictError("尚未完成研究和内容阶段")
+            try:
+                if policy["stage_review_mode"] == MECHANICAL_STAGE_REVIEW:
+                    current_run_id = str(job.get("current_run_id") or "")
+                    if job["status"] not in {"complete", "failed"} or not current_run_id:
+                        raise ConflictError("机械审查任务只能从当前成功成片打开全文改稿")
+                    if not IDEMPOTENCY_RE.fullmatch(str(idempotency_key or "").strip()):
+                        raise UnprocessableError("机械审查全文改稿必须绑定有效的幂等键")
+                    supplied_run_id = str(base_run_id or "").strip()
+                    supplied_script_sha256 = str(base_approved_script_sha256 or "").strip().lower()
+                    if supplied_run_id != current_run_id:
+                        raise ConflictError("页面中的成片版本已过期，请重新打开当前成片文案")
+                    source_script_path = self.resolve_artifact(
+                        job_id, "approved_script.json", current_run_id
+                    )
+                    source_payload = json.loads(source_script_path.read_text(encoding="utf-8"))
+                    source_script = str(source_payload.get("script", "")).strip()
+                    source_artifact_sha256 = file_sha256(source_script_path)
+                    source_script_text_sha256 = hashlib.sha256(
+                        source_script.encode("utf-8")
+                    ).hexdigest()
+                    if supplied_script_sha256 != source_artifact_sha256:
+                        raise ConflictError("页面中的文案版本已过期，请重新打开当前成片文案")
+                    if str(script).strip() == source_script:
+                        raise UnprocessableError("修改后的完整文案必须与当前成片文案不同")
+                    editor_identity = script_edit_identity(
+                        HUMAN_STAGE_REVIEW, LOCAL_BROWSER_EDITOR
+                    )
+                else:
+                    if base_run_id is not None or base_approved_script_sha256 is not None:
+                        raise UnprocessableError("当前改稿阶段不接受成片版本绑定字段")
+                    editor_identity = script_edit_identity(
+                        policy["stage_review_mode"], str(editor)
+                    )
+            except ConflictError:
+                raise
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ConflictError("当前成功成片的文案无法读取，请重新生成后再试") from exc
+            except ValueError as exc:
+                raise UnprocessableError(str(exc)) from exc
+
+            if review.get("status") != "passed" or review.get("blocked") is not False:
+                raise UnprocessableError("修改后的完整文案未通过证据与合规检查", details=review)
+            if review.get("warnings") != []:
+                raise UnprocessableError("修改后的完整文案仍有待确认项，不能自动重新生成", details=review)
+            if policy["stage_review_mode"] == MECHANICAL_STAGE_REVIEW:
+                if estimate.get("status") != "passed" or estimate.get("blocked") is not False:
+                    raise UnprocessableError("修改后的完整文案未通过固定语速节奏检查", details=estimate)
+            elif not 35 <= float(estimate.get("estimated_seconds", 0)) <= 75:
+                raise UnprocessableError("脚本预计口播时长必须在35到75秒之间", details=estimate)
+
+            payload = {
+                **BROWSER_SCRIPT_EDIT_LABELS,
+                "script": str(script).strip(),
+                "editor_identity": editor_identity,
+                "edited_at": now_iso(),
+                "duration_estimate": estimate,
+            }
+            if policy["stage_review_mode"] == MECHANICAL_STAGE_REVIEW:
+                payload["base_run_id"] = str(base_run_id)
+                payload["base_approved_script_sha256"] = str(base_approved_script_sha256).lower()
+                payload["base_script_text_sha256"] = source_script_text_sha256
+            self._write(draft / "approved_script.json", payload)
+            self._write(draft / "review.json", review)
+            # A storyboard is bound to the exact approved script.  Never let a
+            # browser edit inherit directions generated for older narration.
+            (draft / "motion_storyboard.json").unlink(missing_ok=True)
+            job["approvals"]["compliance"] = {"status": "pending"}
+            job["status"] = "blocked_compliance" if review.get("status") == "blocked" else "awaiting_compliance_approval"
+            if policy["stage_review_mode"] == MECHANICAL_STAGE_REVIEW:
+                # Accepting a new exact-script render attempt supersedes the
+                # previous terminal controller decision.  Clear both durable
+                # failure records in the same locked mutation so a later
+                # successful render cannot remain labelled failed.
+                job.pop("automatic_controller_failure", None)
+                job.pop("automatic_controller", None)
+                self._apply_mechanical_compliance_review(job, folder)
+                job["script_revision"] = {
+                    "status": "accepted_pending_render",
+                    "editor": LOCAL_BROWSER_EDITOR,
+                    "base_run_id": str(base_run_id),
+                    "base_approved_script_sha256": str(base_approved_script_sha256).lower(),
+                    "revised_script_sha256": hashlib.sha256(
+                        payload["script"].encode("utf-8")
+                    ).hexdigest(),
+                    "accepted_at": now_iso(),
+                    "previous_success_run_preserved": job.get("current_run_id"),
+                }
+                revision_id = "revision-" + uuid.uuid4().hex
+                job.setdefault("script_revision_requests", []).append({
+                    "revision_id": revision_id,
+                    "idempotency_key_sha256": request_key_sha256,
+                    "fingerprint": revision_fingerprint,
+                    "accepted_at": now_iso(),
+                    "status": "accepted_pending_render",
+                    "base_run_id": str(base_run_id),
+                })
+                job["script_revision_requests"] = job["script_revision_requests"][-64:]
+                job["script_revision"]["revision_id"] = revision_id
+            job["updated_at"] = now_iso()
+            self._sync_steps(job)
+            self._write(folder / "job.json", job)
+            self._event(folder, "script_updated", {
+                "character_count": len(payload["script"]),
+                "estimated_seconds": estimate.get("estimated_seconds"),
+                "base_run_id": base_run_id,
+                "previous_success_run_preserved": job.get("current_run_id"),
+            })
+            return self._public(job)
+        finally:
+            lock.release()
 
     def apply_learning_rules(
         self,

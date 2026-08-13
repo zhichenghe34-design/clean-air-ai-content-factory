@@ -121,6 +121,34 @@ def _local_kicker(title: str) -> str:
     return title
 
 
+def _is_source_attribution_leadin(caption: str) -> bool:
+    """Recognize a standalone, named-source lead-in before its quoted claim.
+
+    The voice director can legitimately split ``某来源称：`` from the complete
+    sentence that follows it.  That pair needs two sparse renderer blocks, but
+    an arbitrary unfinished colon fragment must not gain the same exception.
+    Require both a source-shaped name and an attribution verb immediately
+    before the Chinese colon.
+    """
+
+    text = str(caption or "").strip()
+    if not text.endswith("："):
+        return False
+    stem = text[:-1].strip()
+    attribution = re.search(
+        r"(?:称|指出|报道|显示|提到|披露|写道|说明|表明|介绍)$",
+        stem,
+    )
+    if not attribution:
+        return False
+    source_name = stem[:attribution.start()].strip()
+    return bool(source_name and re.search(
+        r"[0-9A-Za-z\u3400-\u9fff]{2,}"
+        r"(?:网|报|台|刊|杂志|期刊|机构|部门|委员会|协会|学会|大学|学院|实验室|研究院|研究所|出版社|新闻|媒体)",
+        source_name,
+    ))
+
+
 def validate_storyboard(
     value: Mapping[str, Any],
     script: str,
@@ -157,6 +185,7 @@ def validate_storyboard(
     previous_item_count = 0
     previous_sentence_count = 0
     previous_caption_complete = False
+    previous_source_attribution_leadin = False
     captions: list[str] = []
     for index, raw in enumerate(raw_scenes, start=1):
         if not isinstance(raw, Mapping):
@@ -195,19 +224,29 @@ def validate_storyboard(
             keep_punctuation=True,
         ))
         caption_complete = caption.rstrip().endswith(("。", "！", "？", "!", "?"))
-        allowed_single_item_repeat = (
+        allowed_complete_sentence_repeat = (
             layout == previous_layout == "explain_points"
             and previous_item_count == len(items) == 1
             and previous_sentence_count == sentence_count == 1
             and previous_caption_complete
             and caption_complete
         )
-        if layout == previous_layout and not allowed_single_item_repeat:
+        allowed_attribution_claim_repeat = (
+            layout == previous_layout == "explain_points"
+            and previous_item_count == len(items) == 1
+            and previous_source_attribution_leadin
+            and sentence_count == 1
+            and caption_complete
+        )
+        if layout == previous_layout and not (
+            allowed_complete_sentence_repeat or allowed_attribution_claim_repeat
+        ):
             raise StoryboardError(f"场景{index}与上一幕重复同一信息结构")
         previous_layout = layout
         previous_item_count = len(items)
         previous_sentence_count = sentence_count
         previous_caption_complete = caption_complete
+        previous_source_attribution_leadin = _is_source_attribution_leadin(caption)
         if len(set(map(_compact, items))) != len(items):
             raise StoryboardError(f"场景{index}.items存在重复")
         for item in items:

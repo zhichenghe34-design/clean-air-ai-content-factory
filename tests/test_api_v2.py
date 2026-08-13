@@ -17,6 +17,7 @@ from core.capability_pack import local_capability_pack, normalize_capability_pac
 from core.config import ConfigStore
 from core.learning import LearningStore
 from core.orchestrator import JobStore, local_fallback_plan
+from tests.test_v2 import ExactScriptRenderRunner, LONG_SAFE_SCRIPT, MechanicalStageRunner
 
 
 class ApiV2Tests(unittest.TestCase):
@@ -43,11 +44,16 @@ class ApiV2Tests(unittest.TestCase):
         self.old_jobs = app.job_store
         self.old_learning = app.learning_store
         self.old_capability_registry = app.capability_registry
+        self.old_internal_diagnostics = app.INTERNAL_DIAGNOSTICS_ENABLED
         app.RUNTIME_DIR = root
         app.config_store = ConfigStore(root)
         app.job_store = JobStore(root)
         app.learning_store = LearningStore(root)
         app.capability_registry = app.CapabilityPackRegistry(root)
+        # Most API tests exercise the operator workbench contract. Customer
+        # surface tests explicitly patch this flag off and verify fail-closed
+        # behavior for every internal route.
+        app.INTERNAL_DIAGNOSTICS_ENABLED = True
         self.old_provider_session_state = dict(app.provider_session_state)
         self.old_pretask_provider_budgets = app.pretask_provider_budgets
         app.pretask_provider_budgets = app.OrderedDict()
@@ -74,6 +80,7 @@ class ApiV2Tests(unittest.TestCase):
         app.job_store = self.old_jobs
         app.learning_store = self.old_learning
         app.capability_registry = self.old_capability_registry
+        app.INTERNAL_DIAGNOSTICS_ENABLED = self.old_internal_diagnostics
         app.pretask_provider_budgets = self.old_pretask_provider_budgets
         app.topic_selection_bundles = self.old_topic_selection_bundles
         app.correction_replays = self.old_correction_replays
@@ -116,6 +123,81 @@ class ApiV2Tests(unittest.TestCase):
         status, _, body = self.request("POST", "/api/demo-job", b"{}", headers)
         self.assertEqual(status, 422)
         self.assertEqual(json.loads(body)["error"]["code"], "unprocessable")
+
+    def test_customer_runtime_hides_internal_tool_and_catalog_surfaces(self):
+        with mock.patch.object(app, "INTERNAL_DIAGNOSTICS_ENABLED", False):
+            status, _, body = self.request("GET", "/api/status")
+            self.assertEqual(status, 200)
+            public_status = json.loads(body)
+            for key in (
+                "tool_count", "capabilities", "catalog_package_count", "catalog_install_enabled",
+                "memory_count", "learned_skill_count", "dynamic_capability_pack_count",
+                "internal_diagnostics_enabled",
+            ):
+                self.assertNotIn(key, public_status)
+            for path in (
+                "/api/tools", "/api/catalog", "/api/hardware", "/api/storage",
+                "/api/learning", "/api/capability-packs",
+            ):
+                status, _, body = self.request("GET", path)
+                self.assertEqual(status, 404, path)
+                self.assertEqual(json.loads(body)["error"]["code"], "not_found", path)
+
+            status, _, body = self.request(
+                "POST",
+                "/api/discover",
+                {"roots": []},
+                self.secure_headers(),
+            )
+            self.assertEqual(status, 404)
+            self.assertEqual(json.loads(body)["error"]["code"], "not_found")
+
+            status, _, body = self.request(
+                "POST",
+                "/api/agent/corrections",
+                {
+                    "message": "客户模式不应写入内部纠错记忆",
+                    "scope": "project",
+                    "capability_pack": local_capability_pack("制作一条本地门店介绍视频"),
+                },
+                self.secure_headers(**{"Idempotency-Key": "customer-hidden-correction-0001"}),
+            )
+            self.assertEqual(status, 404)
+            self.assertEqual(json.loads(body)["error"]["code"], "not_found")
+            self.assertEqual(app.learning_store.list_memories(), [])
+            self.assertEqual(app.learning_store.list_rules(), [])
+
+            status, _, body = self.request(
+                "PATCH",
+                "/api/learning/rules/rule-00000000000000000000",
+                {"status": "disabled"},
+                self.secure_headers(),
+            )
+            self.assertEqual(status, 404)
+            self.assertEqual(json.loads(body)["error"]["code"], "not_found")
+
+            # There is no public capability-pack mutation contract. Explicit
+            # POST/PATCH attempts remain hidden instead of revealing whether
+            # an internal registry exists.
+            for method in ("POST", "PATCH"):
+                status, _, body = self.request(
+                    method,
+                    "/api/capability-packs/pack-internal",
+                    {},
+                    self.secure_headers(),
+                )
+                self.assertEqual(status, 404)
+                self.assertEqual(json.loads(body)["error"]["code"], "not_found")
+
+        status, _, body = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["internal_diagnostics_enabled"])
+        status, _, body = self.request("GET", "/api/learning")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"memories": [], "rules": [], "skills": []})
+        status, _, body = self.request("GET", "/api/capability-packs")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"capability_packs": []})
 
     def test_public_evidence_attachment_requires_local_session_and_returns_hash_metadata(self):
         archive = Path(self.temp.name) / "exports" / "evidence.zip"
@@ -204,7 +286,9 @@ class ApiV2Tests(unittest.TestCase):
         self.assertEqual(status, 200)
         footage = json.loads(body)["production_engines"]["footage"]
         self.assertEqual(footage["health"], "ready")
-        self.assertTrue(footage["selectable"])
+        self.assertFalse(footage["operator_ready"])
+        self.assertFalse(footage["selectable"])
+        self.assertIn("尚未开放", footage["disabled_reason"])
 
         digest = hashlib.sha256(b"launcher-token").hexdigest()
         with mock.patch.object(app, "LAUNCH_INSTANCE_SHA256", digest):
@@ -301,7 +385,36 @@ class ApiV2Tests(unittest.TestCase):
         self.assertEqual(status_payload["provider_state"], "unconfigured")
         self.assertFalse(status_payload["provider_connection_verified"])
 
-    def test_new_footage_task_is_rejected_until_mpt_is_ready(self):
+    def test_saving_customer_key_only_preserves_the_model_shown_in_settings(self):
+        custom_model = "customer-reviewed-model"
+        status, _, body = self.request(
+            "POST",
+            "/api/config",
+            {"provider": {"base_url": "https://api.deepseek.com", "model": custom_model}},
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["provider"]["model"], custom_model)
+
+        # The customer settings form submits only credential fields. Saving a
+        # new Key must not smuggle the shipped default back into a runtime that
+        # deliberately uses a custom model.
+        status, _, body = self.request(
+            "POST",
+            "/api/config",
+            {"provider": {"api_key": "key-only-update", "persist_api_key": False}},
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+        saved = json.loads(body)
+        self.assertEqual(saved["provider"]["model"], custom_model)
+        self.assertTrue(saved["provider"]["has_api_key"])
+
+        status, _, body = self.request("GET", "/api/config")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["provider"]["model"], custom_model)
+
+    def test_new_footage_task_is_rejected_even_when_runtime_is_healthy(self):
         status, _, body = self.request(
             "POST",
             "/api/agent/topics",
@@ -344,8 +457,30 @@ class ApiV2Tests(unittest.TestCase):
                 request_body,
                 self.secure_headers(**{"Idempotency-Key": "footage-enabled-0001"}),
             )
-        self.assertEqual(status, 201)
-        self.assertEqual(json.loads(body)["production_input"]["production_mode"], "footage")
+        self.assertEqual(status, 422)
+        error = json.loads(body)["error"]
+        self.assertFalse(error["details"]["operator_ready"])
+        self.assertIn("尚未开放", error["message"])
+
+    def test_unreleased_hybrid_and_simple_modes_cannot_be_created_through_public_api(self):
+        for mode in ("hybrid", "simple"):
+            with self.subTest(mode=mode):
+                status, _, body = self.request(
+                    "POST",
+                    "/api/demo-job",
+                    {
+                        "production_input": {
+                            "topic": "报告里的低数值应该怎么理解？",
+                            "audience": "新房家庭",
+                            "production_mode": mode,
+                        }
+                    },
+                    self.secure_headers(**{"Idempotency-Key": f"unreleased-{mode}-mode-0001"}),
+                )
+                self.assertEqual(status, 422)
+                error = json.loads(body)["error"]
+                self.assertEqual(error["details"]["production_mode"], mode)
+                self.assertIn("只开放纯动画", error["message"])
 
     def test_unregistered_client_pack_cannot_self_publish_through_topic_refresh(self):
         forged_goal = "为一家咖啡店制作新品介绍视频"
@@ -541,7 +676,7 @@ class ApiV2Tests(unittest.TestCase):
                 "created_at": created["provider_provenance"]["created_at"],
                 "provider_state": "unconfigured",
                 "provider_name": "DeepSeek",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-v4-pro",
                 "connection_verified_at": None,
                 "topic_source": "direct_input",
                 "selection_bundle_id": None,
@@ -970,6 +1105,226 @@ class ApiV2Tests(unittest.TestCase):
         automatic.assert_called_once()
         manual.assert_not_called()
 
+    def test_terminal_mechanical_failure_can_create_durable_same_topic_retry(self):
+        root = Path(self.temp.name)
+        app.job_store = JobStore(root, stage_review_mode="mechanical")
+        goal = "为新房家庭制作一条除甲醛检测边界短视频"
+        status, _, body = self.request(
+            "POST",
+            "/api/agent/topics",
+            {"goal": goal, "excluded_topics": []},
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 200)
+        topics = json.loads(body)
+        candidate = topics["candidates"][0]
+        bundle_id = topics["selection_bundle_id"]
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {
+                "selection_bundle_id": bundle_id,
+                "candidate_id": candidate["id"],
+                "production_options": {"target_duration_seconds": 52},
+            },
+            self.secure_headers(**{"Idempotency-Key": "retry-source-create-0001"}),
+        )
+        self.assertEqual(status, 201)
+        source = json.loads(body)
+
+        source_path = root / "jobs" / source["id"] / "job.json"
+        source_raw = json.loads(source_path.read_text(encoding="utf-8"))
+        source_raw.update({
+            "status": "failed",
+            "last_error": "场景3与上一幕重复同一信息结构",
+            "last_failed_stage": None,
+            "automatic_controller_failure": {
+                "code": "automatic_stage_attempts_exhausted",
+                "stage": "content",
+                "reason": "自动生产达到上限后安全停止",
+                "source_error": "场景3与上一幕重复同一信息结构",
+                "stage_attempts": 8,
+                "maximum_stage_attempts": 8,
+            },
+            "automatic_controller": {
+                "mode": "mechanical",
+                "status": "failed",
+                "stage_attempts": 8,
+                "maximum_stage_attempts": 8,
+            },
+            "budget": {
+                "limit": 7,
+                "attempted": 7,
+                "succeeded": 7,
+                "failed": 0,
+                "events": [],
+            },
+        })
+        app.job_store._write(source_path, source_raw)
+        source_before_retry = json.loads(source_path.read_text(encoding="utf-8"))
+
+        # A rule recorded after the failed task's original creation must be
+        # bound from the trusted server memory at retry time.
+        app.learning_store.record_correction(
+            {
+                "message": "这个项目后续文案必须先说明检测条件和适用边界",
+                "scope": "project",
+                "actor": "测试操作员",
+                "mode": "defer",
+            },
+            source_raw["production_input"]["capability_pack"],
+        )
+        current_rules = app.learning_store.rules_for(
+            source_raw["production_input"]["capability_pack"]["id"],
+            job_id=source["id"],
+        )
+        retry_headers = self.secure_headers(
+            **{"Idempotency-Key": "same-topic-retry-0001"}
+        )
+        status, _, body = self.request(
+            "POST", f"/api/jobs/{source['id']}/retry", {}, retry_headers
+        )
+        self.assertEqual(status, 201)
+        retried = json.loads(body)
+        self.assertNotEqual(retried["id"], source["id"])
+        self.assertEqual(retried["retry_of_job_id"], source["id"])
+        self.assertEqual(retried["status"], "authorized")
+        self.assertIsNotNone(retried["authorized_at"])
+        self.assertEqual(retried["plan"], source_raw["plan"])
+        self.assertEqual(
+            retried["provider_provenance"], source_raw["provider_provenance"]
+        )
+        self.assertEqual(retried["capability_pack"], source_raw["capability_pack"])
+        for field, value in source_raw["production_input"].items():
+            if field != "learning_rules":
+                self.assertEqual(retried["production_input"][field], value, field)
+        self.assertEqual(retried["production_input"]["topic"], candidate["title"])
+        self.assertEqual(retried["production_input"]["candidate_id"], candidate["id"])
+        self.assertEqual(retried["production_input"]["selection_bundle_id"], bundle_id)
+        self.assertEqual(retried["production_input"]["learning_rules"], current_rules)
+        self.assertEqual(
+            retried["budget"],
+            {"limit": 7, "attempted": 0, "succeeded": 0, "failed": 0, "events": []},
+        )
+        self.assertEqual(retried["runs"], [])
+        self.assertEqual(retried["approvals"]["research"]["status"], "pending")
+        self.assertEqual(retried["approvals"]["compliance"]["status"], "pending")
+        self.assertEqual(
+            json.loads(source_path.read_text(encoding="utf-8")), source_before_retry
+        )
+
+        # A restart must recover the same job from its durable creation
+        # binding.  A crash after its first planned write is also recoverable:
+        # replay finishes authorization without creating a third task.
+        retry_path = root / "jobs" / retried["id"] / "job.json"
+        retry_raw = json.loads(retry_path.read_text(encoding="utf-8"))
+        retry_raw["status"] = "planned"
+        retry_raw["authorized_at"] = None
+        app.job_store._write(retry_path, retry_raw)
+        app.job_store = JobStore(root, stage_review_mode="mechanical")
+        replay_status, _, replay_body = self.request(
+            "POST", f"/api/jobs/{source['id']}/retry", {}, retry_headers
+        )
+        self.assertEqual(replay_status, 200)
+        replayed = json.loads(replay_body)
+        self.assertEqual(replayed["id"], retried["id"])
+        self.assertEqual(replayed["status"], "authorized")
+        replay_status, _, replay_body = self.request(
+            "POST", f"/api/jobs/{source['id']}/retry", {}, retry_headers
+        )
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(json.loads(replay_body)["id"], retried["id"])
+        self.assertEqual(len(app.job_store.list()), 2)
+        self.assertEqual(
+            json.loads(source_path.read_text(encoding="utf-8")), source_before_retry
+        )
+
+        status, _, body = self.request(
+            "POST",
+            f"/api/jobs/{source['id']}/retry",
+            {"force": True},
+            self.secure_headers(**{"Idempotency-Key": "retry-malformed-0001"}),
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(json.loads(body)["error"]["code"], "unprocessable")
+        status, _, body = self.request(
+            "POST",
+            f"/api/jobs/{source['id']}/retry",
+            {},
+            self.secure_headers(),
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"]["code"], "invalid_idempotency_key")
+
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {
+                "production_input": {
+                    "topic": "尚未失败的任务不能直接创建重试任务",
+                    "audience": "普通用户",
+                }
+            },
+            self.secure_headers(**{"Idempotency-Key": "retry-nonterminal-create-0001"}),
+        )
+        self.assertEqual(status, 201)
+        nonterminal = json.loads(body)
+        status, _, body = self.request(
+            "POST",
+            f"/api/jobs/{nonterminal['id']}/retry",
+            {},
+            self.secure_headers(**{"Idempotency-Key": "retry-nonterminal-0001"}),
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["error"]["code"], "conflict")
+
+        # Reusing the first key for another source path is a durable conflict,
+        # even though both request bodies are the required empty object.
+        nonterminal_path = root / "jobs" / nonterminal["id"] / "job.json"
+        another_failed = json.loads(nonterminal_path.read_text(encoding="utf-8"))
+        another_failed.update({
+            "status": "failed",
+            "automatic_controller_failure": {
+                "code": "automatic_stage_attempts_exhausted",
+                "stage": "content",
+            },
+        })
+        app.job_store._write(nonterminal_path, another_failed)
+        status, _, body = self.request(
+            "POST",
+            f"/api/jobs/{nonterminal['id']}/retry",
+            {},
+            retry_headers,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["error"]["code"], "idempotency_conflict")
+
+        # A failed render of the user's exact browser revision must never be
+        # cloned as a fresh topic retry: that would silently discard the
+        # preserved script and return to content generation.
+        another_failed["automatic_controller_failure"] = {
+            "code": "exact_script_render_failed_preserved",
+            "stage": "render",
+        }
+        another_failed["script_revision"] = {
+            "status": "render_failed",
+            "editor": "本地浏览器用户",
+        }
+        app.job_store._write(nonterminal_path, another_failed)
+        job_count_before_exact_retry = len(app.job_store.list())
+        status, _, body = self.request(
+            "POST",
+            f"/api/jobs/{nonterminal['id']}/retry",
+            {},
+            self.secure_headers(
+                **{"Idempotency-Key": "retry-exact-script-forbidden-0001"}
+            ),
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["error"]["code"], "conflict")
+        self.assertIn("全文改稿", json.loads(body)["error"]["message"])
+        self.assertEqual(len(app.job_store.list()), job_count_before_exact_retry)
+
     def test_operator_correction_becomes_scoped_rule_without_authorizing_job(self):
         pack = local_capability_pack("为本地餐饮门店制作一条新品介绍短视频")
         status, _, body = self.request(
@@ -1048,6 +1403,126 @@ class ApiV2Tests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["rule"]["status"], "disabled")
+
+    def test_completed_mechanical_job_accepts_user_revision_and_preserves_old_video(self):
+        status, _, body = self.request(
+            "POST",
+            "/api/demo-job",
+            {"production_input": {"topic": "报告里的低数值应该怎么理解？", "audience": "新房家庭"}},
+            self.secure_headers(**{"Idempotency-Key": "completed-revision-create-0001"}),
+        )
+        self.assertEqual(status, 201)
+        job = json.loads(body)
+        raw, folder = app.job_store._load_v2(job["id"])
+        raw["status"] = "complete"
+        raw["current_run_id"] = "previous-success-run"
+        raw["approvals"]["research"] = {"status": "approved"}
+        raw["approvals"]["compliance"] = {"status": "approved"}
+        app.job_store._write(folder / "job.json", raw)
+
+        status, _, body = self.request(
+            "POST",
+            "/api/agent/corrections",
+            {
+                "job_id": job["id"],
+                "message": "开头更直接，结尾改成三条明确行动建议",
+                "kind": "content",
+                "scope": "task",
+                "mode": "defer",
+                "actor": "伪造审核人",
+            },
+            self.secure_headers(**{"Idempotency-Key": "completed-revision-submit-0001"}),
+        )
+        self.assertEqual(status, 201)
+        result = json.loads(body)
+        self.assertEqual(result["correction"]["actor"], "本地浏览器用户")
+        self.assertEqual(result["correction"]["scope"], "task")
+        self.assertEqual(result["job"]["status"], "research_approved")
+        self.assertEqual(result["job"]["current_run_id"], "previous-success-run")
+        self.assertEqual(result["job"]["approvals"]["research"]["status"], "approved")
+        self.assertEqual(result["job"]["approvals"]["compliance"]["status"], "pending")
+
+    def test_completed_mechanical_job_patches_exact_script_then_renders_once(self):
+        app.job_store = JobStore(Path(self.temp.name), stage_review_mode="mechanical")
+        job = app.job_store.create(
+            local_fallback_plan("生成赛题视频", []),
+            {"topic": "气味小就代表甲醛少吗？", "audience": "新房家庭"},
+        )
+        runner = MechanicalStageRunner()
+        job = app.job_store.approve(job["id"])
+        job = app.job_store.advance(job["id"], runner, "api-exact-research")
+        job = app.job_store.advance(job["id"], runner, "api-exact-content")
+        job = app.job_store.advance(job["id"], runner, "api-exact-render")
+        previous_run = job["current_run_id"]
+        previous_video = app.job_store.resolve_artifact(
+            job["id"], "final.mp4", previous_run
+        ).read_bytes()
+
+        status, _, body = self.request(
+            "GET", f"/api/jobs/{job['id']}/artifacts/approved_script.json",
+            headers={"Cookie": self.cookie},
+        )
+        self.assertEqual(status, 200)
+        source_script = json.loads(body)["script"]
+        revised_script = source_script.replace(
+            "持续通风",
+            "记录检测时间、门窗状态、仪器位置和异常情况，持续有效通风",
+        )
+        revision_body = {
+            "script": revised_script,
+            "base_run_id": previous_run,
+            "base_approved_script_sha256": hashlib.sha256(
+                body.encode("utf-8")
+            ).hexdigest(),
+        }
+        headers = self.secure_headers(
+            **{"Idempotency-Key": "api-exact-script-revision-0001"}
+        )
+        status, _, response = self.request(
+            "PATCH", f"/api/jobs/{job['id']}/script", revision_body, headers,
+        )
+        self.assertEqual(status, 200, response)
+        patched = json.loads(response)
+        self.assertEqual(patched["status"], "compliance_approved")
+        self.assertEqual(patched["current_run_id"], previous_run)
+
+        status, _, replay_body = self.request(
+            "PATCH", f"/api/jobs/{job['id']}/script", revision_body, headers,
+        )
+        self.assertEqual(status, 200, replay_body)
+        self.assertTrue(json.loads(replay_body)["replayed"])
+
+        class ApiExactScriptRunner(ExactScriptRenderRunner):
+            def __init__(self, *args, **kwargs):
+                super().__init__()
+
+        with mock.patch.object(app, "ProductionRunner", ApiExactScriptRunner):
+            status, _, response = self.request(
+                "POST", f"/api/jobs/{job['id']}/run", {},
+                self.secure_headers(
+                    **{"Idempotency-Key": "api-exact-script-render-0001"}
+                ),
+            )
+        self.assertEqual(status, 200, response)
+        completed = json.loads(response)
+        self.assertEqual(completed["status"], "complete")
+        self.assertNotEqual(completed["current_run_id"], previous_run)
+        self.assertEqual(
+            app.job_store.resolve_artifact(job["id"], "final.mp4", previous_run).read_bytes(),
+            previous_video,
+        )
+        self.assertEqual(
+            json.loads(
+                app.job_store.resolve_artifact(job["id"], "approved_script.json").read_text(
+                    encoding="utf-8"
+                )
+            )["script"],
+            revised_script,
+        )
+        self.assertEqual(
+            app.job_store.resolve_public_evidence_source(job["id"])["run_id"],
+            completed["current_run_id"],
+        )
 
     def test_agent_test_correction_actor_is_server_bound_and_never_claims_a_human(self):
         app.job_store = JobStore(Path(self.temp.name), stage_review_mode="agent_test")

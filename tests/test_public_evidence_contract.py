@@ -21,6 +21,7 @@ from core.review_policy import (
     HUMAN_IDENTITY,
     HUMAN_STAGE_REVIEW,
     HUMAN_SCRIPT_EDIT_IDENTITY,
+    LOCAL_BROWSER_EDITOR,
     MECHANICAL_IDENTITY,
     MECHANICAL_REVIEWER,
     MECHANICAL_STAGE_REVIEW,
@@ -378,6 +379,53 @@ class PublicEvidenceContractTests(unittest.TestCase):
                 contradictory_current_record, allow_legacy_human=True
             ),
             (HUMAN_STAGE_REVIEW, []),
+        )
+
+    def test_mechanical_evidence_accepts_only_changed_exact_browser_revision(self):
+        mechanical_manifest = {
+            "review_policy": {
+                "stage_review_mode": MECHANICAL_STAGE_REVIEW,
+                "final_human_acceptance_required": True,
+            }
+        }
+        base_script = "这是当前成功成片使用的原始完整文案。"
+        revised_script = "这是用户在本地浏览器中直接改过的完整文案。"
+        exact_revision = {
+            **BROWSER_SCRIPT_EDIT_LABELS,
+            "script": revised_script,
+            "edited_at": "2026-08-13T12:00:00+08:00",
+            "editor_identity": {
+                "editor": LOCAL_BROWSER_EDITOR,
+                **HUMAN_SCRIPT_EDIT_IDENTITY,
+            },
+            "base_run_id": "20260813-120000-render",
+            "base_approved_script_sha256": "a" * 64,
+            "base_script_text_sha256": hashlib.sha256(
+                base_script.encode("utf-8")
+            ).hexdigest(),
+        }
+        self.assertEqual(
+            _validate_script_edit_contract(
+                mechanical_manifest, exact_revision, "motion_v0.3"
+            ),
+            [],
+        )
+
+        no_effect = dict(exact_revision)
+        no_effect["script"] = base_script
+        self.assertTrue(any(
+            "相同" in error
+            for error in _validate_script_edit_contract(
+                mechanical_manifest, no_effect, "motion_v0.3"
+            )
+        ))
+
+        missing_provenance = dict(exact_revision)
+        missing_provenance.pop("base_run_id")
+        self.assertTrue(
+            _validate_script_edit_contract(
+                mechanical_manifest, missing_provenance, "motion_v0.3"
+            )
         )
 
     def test_public_evidence_sanitizes_email_and_strict_mainland_phone(self):

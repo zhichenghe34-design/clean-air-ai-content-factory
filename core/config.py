@@ -11,15 +11,19 @@ from core.provider import validate_provider_base_url
 from core.secrets import SecretStorageError, protect_secret, unprotect_secret
 
 
+CONFIG_SCHEMA_VERSION = 2
+LEGACY_DEFAULT_PROVIDER_MODEL = "deepseek-v4-flash"
+CUSTOMER_PROVIDER_MODEL = "deepseek-v4-pro"
 DEFAULT_STORAGE_ROOT = str(Path.home() / "ShiyiAIGC")
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    "schema_version": CONFIG_SCHEMA_VERSION,
     "provider": {
         "name": "DeepSeek",
         "kind": "openai_compatible",
         "base_url": "https://api.deepseek.com",
-        "model": "deepseek-v4-flash",
+        "model": CUSTOMER_PROVIDER_MODEL,
         "api_key_env": "DEEPSEEK_API_KEY",
         "thinking": "disabled",
         "reasoning_effort": "high",
@@ -81,6 +85,7 @@ class ConfigStore:
         self._session_api_key = ""
         self.secret_warning = ""
         self._migrate_legacy_secret()
+        self._migrate_legacy_default_model()
 
     def load(self) -> dict[str, Any]:
         data: dict[str, Any] = {}
@@ -118,7 +123,11 @@ class ConfigStore:
         roots = merged.get("discovery", {}).get("roots", [])
         merged["discovery"]["roots"] = [str(Path(p).expanduser()) for p in roots if str(p).strip()]
         merged["storage"]["root"] = str(self._validated_storage_root(merged["storage"].get("root", "")))
-        self.ensure_storage_layout(merged)
+        # This is an internal, future resource catalogue root rather than the
+        # product install path or current job storage.  Do not create an unused
+        # directory on every customer start or when they only save an API Key.
+        if "storage" in safe:
+            self.ensure_storage_layout(merged)
         self._atomic_json(self.config_path, merged)
 
         if api_key:
@@ -226,6 +235,28 @@ class ConfigStore:
             self._atomic_json(self.secrets_path, encrypted)
         except (OSError, SecretStorageError) as exc:
             self.secret_warning = f"旧明文密钥迁移失败，已停止使用：{type(exc).__name__}"
+
+    def _migrate_legacy_default_model(self) -> None:
+        """Move only the former shipped default to Pro, once."""
+        if not self.config_path.exists():
+            return
+        try:
+            payload = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        try:
+            schema_version = int(payload.get("schema_version", 1))
+        except (TypeError, ValueError):
+            schema_version = 1
+        if schema_version >= CONFIG_SCHEMA_VERSION:
+            return
+        provider = payload.get("provider")
+        if isinstance(provider, dict) and provider.get("model") == LEGACY_DEFAULT_PROVIDER_MODEL:
+            provider["model"] = DEFAULT_CONFIG["provider"]["model"]
+        payload["schema_version"] = CONFIG_SCHEMA_VERSION
+        self._atomic_json(self.config_path, payload)
 
     def _has_valid_persisted_key(self) -> bool:
         if not self.secrets_path.exists():

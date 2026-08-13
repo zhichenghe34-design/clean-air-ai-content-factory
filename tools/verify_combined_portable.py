@@ -183,6 +183,7 @@ WINDOWS_PORTABLE_PATH_BUDGET = 248
 ROOT_LAUNCHER_NAME = "启动时宜Agent内容工厂.bat"
 STOP_LAUNCHER_NAME = "关闭时宜Agent内容工厂.bat"
 MIGRATION_LAUNCHER_NAME = "迁移旧版数据.bat"
+INSTALLER_LAUNCHER_NAME = "安装到D盘.bat"
 USAGE_NAME = "使用说明.txt"
 SKIPPED_DIRECTORY_NAMES = frozenset(
     {".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__", "node_modules"}
@@ -198,7 +199,17 @@ REPO_TREE_ALLOWLIST: dict[str, frozenset[str]] = {
 
 
 ROOT_FILES = frozenset(
-    {"app.py", "LICENSE", ROOT_LAUNCHER_NAME, STOP_LAUNCHER_NAME, MIGRATION_LAUNCHER_NAME, USAGE_NAME, PACKAGE_MANIFEST, CHECKSUMS_FILE}
+    {
+        "app.py",
+        "LICENSE",
+        ROOT_LAUNCHER_NAME,
+        STOP_LAUNCHER_NAME,
+        MIGRATION_LAUNCHER_NAME,
+        INSTALLER_LAUNCHER_NAME,
+        USAGE_NAME,
+        PACKAGE_MANIFEST,
+        CHECKSUMS_FILE,
+    }
 )
 ROOT_DIRECTORIES = frozenset(
     {"agent-skills", "catalog", "core", "docs", "engine", "examples", "licenses", "runtime", "scripts", "static", "third_party", "tools"}
@@ -210,8 +221,9 @@ EXACT_FILES = frozenset(
         "docs/fonts/NotoSansSC-Bold.ttf",
         "docs/fonts/OFL.txt",
         "docs/fonts/SOURCE.md",
+        "scripts/install_combined.py",
         "scripts/launch_combined.py",
-    "scripts/launch_combined.ps1",
+        "scripts/launch_combined.ps1",
         "tools/verify_combined_portable.py",
         "tools/build_public_evidence.py",
         "tools/verify_public_evidence.py",
@@ -2424,6 +2436,24 @@ def _verify_mpt_and_launchers(
         errors.append("旧版数据迁移 BAT 未使用便携 Python 调用受约束的复制入口。")
     if "verify_combined_portable.py" in migration_launcher:
         errors.append("迁移 BAT 不得在 Python 启动器之外重复执行整包完整性校验")
+    installer_launcher = _decode_text(read(INSTALLER_LAUNCHER_NAME))
+    required_installer_fragments = (
+        f'set "SHIYI_INSTALLER_PYTHON={shared_python}"',
+        '"%SHIYI_INSTALLER_PYTHON%" -I -S -B -X utf8 "%~dp0scripts\\install_combined.py" --source-root "%~dp0."',
+    )
+    if any(fragment not in installer_launcher for fragment in required_installer_fragments):
+        errors.append("安装 BAT 未使用包内 Python 调用受约束的一键安装入口。")
+    installer_script = _decode_text(read("scripts/install_combined.py"))
+    required_installer_script_fragments = (
+        'INSTALLER_CONTRACT = "SHIYI_COMBINED_INSTALLER_V1"',
+        'ATOMIC_PUBLISH_CONTRACT = "SHIYI_ATOMIC_UPGRADE_WITH_ROLLBACK_V1"',
+        "MINIMUM_FREE_BYTES = 2 * 1024 * 1024 * 1024",
+        "staging_errors = verifier(staging)",
+        "_publish_staged_install(",
+        'target.with_name(target.name + ".previous")',
+    )
+    if any(fragment not in installer_script for fragment in required_installer_script_fragments):
+        errors.append("一键安装脚本未固定 2GB、复制后验包与同卷原子升级回滚合同。")
     powershell_launcher = _decode_text(read("scripts/launch_combined.ps1"))
     required_powershell_fragments = (
         '$packageManifest = Join-Path $projectRoot "PACKAGE-MANIFEST.json"',
@@ -2432,7 +2462,15 @@ def _verify_mpt_and_launchers(
     )
     if any(fragment not in powershell_launcher for fragment in required_powershell_fragments):
         errors.append("PowerShell 启动器未固定便携 Python 或隔离解释器启动参数。")
-    for relative in (ROOT_LAUNCHER_NAME, STOP_LAUNCHER_NAME, MIGRATION_LAUNCHER_NAME, "scripts/launch_combined.ps1", "scripts/launch_combined.py"):
+    for relative in (
+        ROOT_LAUNCHER_NAME,
+        STOP_LAUNCHER_NAME,
+        MIGRATION_LAUNCHER_NAME,
+        INSTALLER_LAUNCHER_NAME,
+        "scripts/install_combined.py",
+        "scripts/launch_combined.ps1",
+        "scripts/launch_combined.py",
+    ):
         if DOWNLOAD_COMMAND_RE.search(_decode_text(read(relative))):
             errors.append(f"{relative} 含运行时下载或安装命令")
     return errors

@@ -32,6 +32,7 @@ from core.capability_pack import (
 from core.capability_registry import CapabilityPackConflictError, CapabilityPackRegistry
 from core.config import ConfigStore
 from core.discovery import ProjectDiscovery
+from core.evidence_report import build_human_evidence_report
 from core.learning import LearningError, LearningStore
 from core.orchestrator import (
     ConflictError,
@@ -56,8 +57,8 @@ from core.production import (
     MOTION_ENGINE_MODE,
     ProductionRunner,
     _resolve_hyperframes_runtime,
-    estimate_narration_duration,
     resolve_production_mode,
+    review_narration_pacing,
     review_script,
 )
 from core.production_engine import (
@@ -104,7 +105,6 @@ LAUNCH_INSTANCE_SHA256 = (
 del _launch_instance_token
 
 config_store = ConfigStore(RUNTIME_DIR)
-config_store.ensure_storage_layout()
 _explicit_review_mode = os.environ.get("SHIYI_STAGE_REVIEW_MODE", "").strip()
 if _explicit_review_mode and _explicit_review_mode not in STAGE_REVIEW_MODES:
     raise RuntimeError("SHIYI_STAGE_REVIEW_MODE必须是human、agent_test或mechanical")
@@ -123,6 +123,11 @@ SESSION_ID = secrets.token_urlsafe(32)
 CSRF_TOKEN = secrets.token_urlsafe(32)
 provider_session_state = {"verified_signature": None, "verified_at": None, "revision": 0}
 PRETASK_PROVIDER_LIMIT = 3
+# The project discovery and package catalogue endpoints are development and
+# operations surfaces.  Customer builds keep the implementation available for
+# audited internal use, but do not expose local paths, hardware inventory or
+# unreleased components unless an operator opts in before process start.
+INTERNAL_DIAGNOSTICS_ENABLED = os.environ.get("SHIYI_INTERNAL_DIAGNOSTICS", "").strip() == "1"
 pretask_provider_budgets: OrderedDict[str, BudgetLedger] = OrderedDict()
 correction_replays: OrderedDict[str, dict] = OrderedDict()
 topic_selection_bundles: OrderedDict[str, dict] = OrderedDict()
@@ -194,7 +199,7 @@ def prepare_public_evidence_export(job_id: str) -> dict[str, object]:
             except Exception:
                 return None
             expected = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_id": job_id,
                 "run_id": run_id,
                 "filename": filename,
@@ -206,6 +211,7 @@ def prepare_public_evidence_export(job_id: str) -> dict[str, object]:
             }
             if (
                 errors
+                or manifest.get("public_package_schema_version") != 2
                 or manifest.get("job_id") != job_id
                 or manifest.get("run_id") != run_id
                 or manifest.get("source_manifest_sha256") != source_manifest_sha256
@@ -241,7 +247,7 @@ def prepare_public_evidence_export(job_id: str) -> dict[str, object]:
             ):
                 raise ConflictError("当前成功运行在导出期间变化或未通过严格证据校验")
             metadata = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_id": job_id,
                 "run_id": run_id,
                 "filename": filename,
@@ -970,17 +976,23 @@ class AppHandler(BaseHTTPRequestHandler):
             elif path == "/api/config":
                 self.json_response(config_store.public_config())
             elif path == "/api/tools":
+                if not INTERNAL_DIAGNOSTICS_ENABLED:
+                    raise FileNotFoundError("接口不存在")
                 with state_lock:
                     self.json_response({"tools": app_state["tools"], "last_scan": app_state["last_scan"], "report": app_state["last_scan_report"]})
             elif path == "/api/jobs":
                 self.json_response({"jobs": job_store.list()})
             elif path == "/api/learning":
+                if not INTERNAL_DIAGNOSTICS_ENABLED:
+                    raise FileNotFoundError("接口不存在")
                 self.json_response({
                     "memories": learning_store.list_memories(),
                     "rules": learning_store.list_rules(),
                     "skills": learning_store.list_skills(),
                 })
             elif path == "/api/capability-packs":
+                if not INTERNAL_DIAGNOSTICS_ENABLED:
+                    raise FileNotFoundError("接口不存在")
                 self.json_response({"capability_packs": capability_registry.list()})
             elif path.startswith("/api/jobs/") and path.endswith("/public-evidence.zip"):
                 parts = path.strip("/").split("/")
@@ -988,6 +1000,12 @@ class AppHandler(BaseHTTPRequestHandler):
                     raise FileNotFoundError("接口不存在")
                 self.require_local_session()
                 self.serve_public_evidence(prepare_public_evidence_export(parts[2]))
+            elif path.startswith("/api/jobs/") and path.endswith("/evidence-report.html"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 4 or parts[3] != "evidence-report.html":
+                    raise FileNotFoundError("接口不存在")
+                self.require_local_session()
+                self.serve_evidence_report(parts[2])
             elif path.startswith("/api/jobs/") and "/review-artifacts/" in path:
                 parts = path.strip("/").split("/")
                 if len(parts) != 5:
@@ -1009,8 +1027,12 @@ class AppHandler(BaseHTTPRequestHandler):
                     raise FileNotFoundError("接口不存在")
                 self.json_response(job_with_engine_summary(job_store.get(parts[2])))
             elif path == "/api/catalog":
+                if not INTERNAL_DIAGNOSTICS_ENABLED:
+                    raise FileNotFoundError("接口不存在")
                 self.json_response(package_catalog.load())
             elif path == "/api/hardware":
+                if not INTERNAL_DIAGNOSTICS_ENABLED:
+                    raise FileNotFoundError("接口不存在")
                 catalog = package_catalog.load()
                 hardware = HardwareProbe.probe()
                 profile = package_catalog.select_profile(catalog, hardware["gpu"]["vram_gb"])
@@ -1023,6 +1045,8 @@ class AppHandler(BaseHTTPRequestHandler):
                     "storage": config_store.public_config()["storage"],
                 })
             elif path == "/api/storage":
+                if not INTERNAL_DIAGNOSTICS_ENABLED:
+                    raise FileNotFoundError("接口不存在")
                 self.json_response({"storage": config_store.public_config()["storage"]})
             elif path.startswith("/api/"):
                 self.error_response("not_found", "接口不存在", HTTPStatus.NOT_FOUND)
@@ -1039,6 +1063,8 @@ class AppHandler(BaseHTTPRequestHandler):
             if path == "/api/config":
                 self.json_response(save_configuration(body))
             elif path == "/api/discover":
+                if not INTERNAL_DIAGNOSTICS_ENABLED:
+                    raise FileNotFoundError("接口不存在")
                 self.json_response(self._discover(body))
             elif path == "/api/provider/test":
                 clear_provider_connection_verified()
@@ -1061,6 +1087,8 @@ class AppHandler(BaseHTTPRequestHandler):
             elif path == "/api/agent/plan":
                 self.json_response(self._plan(body))
             elif path == "/api/agent/corrections":
+                if not INTERNAL_DIAGNOSTICS_ENABLED:
+                    raise FileNotFoundError("接口不存在")
                 self.json_response(self._record_correction(body), HTTPStatus.CREATED)
             elif path == "/api/jobs":
                 plan = body.get("plan")
@@ -1078,6 +1106,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.json_response(job, HTTPStatus.CREATED)
             elif path == "/api/demo-job":
                 job, replayed = self._create_demo_job(body)
+                self.json_response(job, HTTPStatus.OK if replayed else HTTPStatus.CREATED)
+            elif path.startswith("/api/jobs/") and path.endswith("/retry"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 4 or parts[0] != "api" or parts[1] != "jobs" or parts[3] != "retry":
+                    raise FileNotFoundError("接口不存在")
+                job, replayed = self._retry_failed_job(parts[2], body)
                 self.json_response(job, HTTPStatus.OK if replayed else HTTPStatus.CREATED)
             elif path.startswith("/api/jobs/") and path.endswith("/approve"):
                 self.json_response(job_store.approve(path.split("/")[3]))
@@ -1153,10 +1187,13 @@ class AppHandler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             body = self.read_json()
             if path.startswith("/api/jobs/") and path.endswith("/script"):
+                request_key = self.headers.get("Idempotency-Key", "").strip()
+                if not IDEMPOTENCY_RE.fullmatch(request_key):
+                    error = WorkflowError("脚本改稿请求必须携带有效的Idempotency-Key")
+                    error.status, error.code = 400, "invalid_idempotency_key"
+                    raise error
                 value = str(body.get("script", "")).strip()
-                estimate = estimate_narration_duration(value)
-                if not 35 <= float(estimate["estimated_seconds"]) <= 75:
-                    raise UnprocessableError("脚本预计口播时长必须在35到75秒之间", details=estimate)
+                estimate = review_narration_pacing(value)
                 job_id = path.split("/")[3]
                 job = job_store.get(job_id)
                 production_input = job.get("production_input") or {}
@@ -1181,8 +1218,13 @@ class AppHandler(BaseHTTPRequestHandler):
                     ),
                     estimate,
                     editor,
+                    base_run_id=body.get("base_run_id"),
+                    base_approved_script_sha256=body.get("base_approved_script_sha256"),
+                    idempotency_key=request_key,
                 ))
             elif path.startswith("/api/learning/rules/"):
+                if not INTERNAL_DIAGNOSTICS_ENABLED:
+                    raise FileNotFoundError("接口不存在")
                 parts = path.strip("/").split("/")
                 if len(parts) != 4:
                     raise FileNotFoundError("接口不存在")
@@ -1203,20 +1245,11 @@ class AppHandler(BaseHTTPRequestHandler):
         provider_configured = bool(config["provider"]["has_api_key"])
         provider_signature = provider_configuration_signature()
         with state_lock:
-            tools = list(app_state["tools"])
             provider_connection_verified = bool(
                 provider_signature
                 and provider_session_state["verified_signature"] == provider_signature
             )
             provider_verified_at = provider_session_state["verified_at"] if provider_connection_verified else None
-        catalog = package_catalog.load()
-        discovered_capabilities = {cap for tool in tools for cap in tool.get("capabilities", [])}
-        bundled_capabilities = {
-            cap
-            for package in catalog.get("packages", [])
-            if package.get("trust_status") == "approved_bundled_skill"
-            for cap in package.get("capabilities", [])
-        }
         motion_summary = production_mode_summary("motion")
         footage_summary = production_mode_summary("footage")
         motion_status = {key: value for key, value in motion_summary.items() if key != "selected_mode"}
@@ -1224,9 +1257,14 @@ class AppHandler(BaseHTTPRequestHandler):
         motion_status.update({"role": "primary", "selectable": motion_status.get("health") == "ready"})
         footage_status.update({
             "role": "secondary",
-            "selectable": footage_status.get("enabled") is True and footage_status.get("health") == "ready",
+            # The bundled MPT runtime is a technical integration base, not a
+            # customer-ready semantic footage library.  Health must never be
+            # presented as a released operator capability.
+            "operator_ready": False,
+            "selectable": False,
+            "disabled_reason": "当前版本尚未开放实拍素材；本版本仅支持纯动画",
         })
-        return {
+        result = {
             "name": "时宜 Agent 内容工厂",
             "version": "0.3.0",
             "schema_version": 2,
@@ -1246,15 +1284,8 @@ class AppHandler(BaseHTTPRequestHandler):
             "provider_state": (
                 "verified" if provider_connection_verified else "configured" if provider_configured else "unconfigured"
             ),
-            "tool_count": len(tools),
-            "capabilities": sorted(discovered_capabilities | bundled_capabilities),
             "job_count": len(job_store.list()),
             "safe_mode": not config["security"].get("allow_external_commands", False),
-            "catalog_package_count": len(catalog.get("packages", [])),
-            "catalog_install_enabled": catalog["policy"]["auto_install_enabled"],
-            "memory_count": len(learning_store.list_memories()),
-            "learned_skill_count": len(learning_store.list_skills()),
-            "dynamic_capability_pack_count": len(capability_registry.list()),
             # Kept for v0.2/v0.3 clients that expect one default engine.
             "production_engine": motion_summary,
             # This is an availability catalogue, not a claim that either engine
@@ -1265,6 +1296,28 @@ class AppHandler(BaseHTTPRequestHandler):
                 "footage": footage_status,
             },
         }
+        if INTERNAL_DIAGNOSTICS_ENABLED:
+            with state_lock:
+                tools = list(app_state["tools"])
+            catalog = package_catalog.load()
+            discovered_capabilities = {cap for tool in tools for cap in tool.get("capabilities", [])}
+            bundled_capabilities = {
+                cap
+                for package in catalog.get("packages", [])
+                if package.get("trust_status") == "approved_bundled_skill"
+                for cap in package.get("capabilities", [])
+            }
+            result.update({
+                "internal_diagnostics_enabled": True,
+                "tool_count": len(tools),
+                "capabilities": sorted(discovered_capabilities | bundled_capabilities),
+                "catalog_package_count": len(catalog.get("packages", [])),
+                "catalog_install_enabled": catalog["policy"]["auto_install_enabled"],
+                "memory_count": len(learning_store.list_memories()),
+                "learned_skill_count": len(learning_store.list_skills()),
+                "dynamic_capability_pack_count": len(capability_registry.list()),
+            })
+        return result
 
     def _discover(self, body: dict) -> dict:
         config = config_store.load()
@@ -1340,13 +1393,16 @@ class AppHandler(BaseHTTPRequestHandler):
 
         supplied_pack = production_input.get("capability_pack")
         normalized = validate_topic_input(production_input)
-        if normalized.get("production_mode") == "footage":
+        if normalized.get("production_mode") != "motion":
             footage_status = production_mode_summary("footage")
-            if footage_status.get("enabled") is not True or footage_status.get("health") != "ready":
-                raise UnprocessableError(
-                    "实拍素材引擎尚未就绪，请选择纯动画或先完成MoneyPrinterTurbo启动校验",
-                    details={"production_mode": "footage", "engine_health": footage_status.get("health")},
-                )
+            raise UnprocessableError(
+                "当前版本只开放纯动画；实拍素材和混合模式尚未开放",
+                details={
+                    "production_mode": normalized.get("production_mode"),
+                    "operator_ready": False,
+                    "engine_health": footage_status.get("health"),
+                },
+            )
         pack = normalized["capability_pack"]
         if supplied_pack is None or pack.get("source") in {"local", "legacy"}:
             pack = self._publish_capability_pack(pack)
@@ -1430,6 +1486,49 @@ class AppHandler(BaseHTTPRequestHandler):
             )
             replayed = False
         return job, replayed
+
+    def _retry_failed_job(self, source_job_id: str, body: dict) -> tuple[dict, bool]:
+        """Create and authorize a fresh same-topic task for a terminal failure."""
+
+        request_key = self.headers.get("Idempotency-Key", "").strip()
+        if not IDEMPOTENCY_RE.fullmatch(request_key):
+            error = WorkflowError("重试请求必须携带有效的Idempotency-Key")
+            error.status, error.code = 400, "invalid_idempotency_key"
+            raise error
+        if body:
+            raise UnprocessableError("重试请求正文必须是空JSON对象")
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "operation": "retry_failed_job",
+                    "source_job_id": source_job_id,
+                    "body": body,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+        source = job_store.get(source_job_id)
+        production_input = source.get("production_input") or {}
+        pack = production_input.get("capability_pack")
+        rules = (
+            learning_store.rules_for(str(pack["id"]), job_id=source_job_id)
+            if isinstance(pack, dict) and pack.get("id")
+            else []
+        )
+        retry, replayed = job_store.retry_idempotent(
+            source_job_id,
+            idempotency_key=request_key,
+            fingerprint=fingerprint,
+            trusted_learning_rules=rules,
+        )
+        # Creation and authorization are deliberately separate durable writes.
+        # If the process stops between them, the same key replays the planned
+        # task and this idempotent step safely finishes authorization.
+        authorized = job_store.ensure_retry_authorized(retry["id"], source_job_id)
+        return authorized, replayed
 
     @staticmethod
     def _safe_topic_candidates(
@@ -2000,11 +2099,7 @@ class AppHandler(BaseHTTPRequestHandler):
         learning_payload["actor"] = (
             CODEX_TEST_REVIEWER
             if policy["stage_review_mode"] == AGENT_TEST_REVIEW
-            else (
-                MECHANICAL_REVIEWER
-                if policy["stage_review_mode"] == MECHANICAL_STAGE_REVIEW
-                else "本地浏览器用户"
-            )
+            else "本地浏览器用户"
         )
         if correction_kind == "capability":
             requested_scope = body.get("scope")
@@ -2218,6 +2313,28 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Disposition", f'inline; filename="{name}"')
         self.security_headers()
+        self.end_headers()
+        self.wfile.write(content)
+
+    def serve_evidence_report(self, job_id: str) -> None:
+        artifact_folder = job_store.resolve_artifact(job_id, "manifest.json").parent
+        content = build_human_evidence_report(
+            artifact_folder,
+            asset_prefix=f"/api/jobs/{job_id}/artifacts/",
+            package_download_url=f"/api/jobs/{job_id}/public-evidence.zip",
+        ).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Disposition", 'inline; filename="evidence-report.html"')
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self'; media-src 'self'; "
+            "style-src 'unsafe-inline'; script-src 'none'; frame-ancestors 'none'",
+        )
         self.end_headers()
         self.wfile.write(content)
 
