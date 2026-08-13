@@ -261,7 +261,16 @@ CUSTOMER_ASSET_MAP = {
 }
 FIRST_PARTY_PYTHON_ROOTS = ("app.py", "core", "scripts", "tools", "product-tools")
 DEPENDENCY_JUNK_DIRECTORY_NAMES = frozenset(
-    {".github", "__tests__", "test", "tests"}
+    {".github", "__tests__", "_tests", "test", "tests"}
+)
+DEPENDENCY_LOOSE_TEST_PATHS = frozenset(
+    {
+        "Lib/site-packages/aiohttp/test_utils.py",
+        "Lib/site-packages/annotated_types/test_cases.py",
+    }
+)
+DEPENDENCY_LOOSE_TEST_PATHS_CASEFOLDED = frozenset(
+    item.casefold() for item in DEPENDENCY_LOOSE_TEST_PATHS
 )
 MPT_APP_SUFFIX_ALLOWLIST = frozenset({".py", ".json"})
 SKIPPED_DIRECTORY_NAMES = frozenset(
@@ -460,6 +469,9 @@ def _copy_python_runtime(source: Path, destination: Path) -> None:
 def _is_dependency_junk_relative(relative: Path) -> bool:
     """Exclude upstream development/test directories, never importable modules."""
 
+    normalized = relative.as_posix().casefold()
+    if normalized in DEPENDENCY_LOOSE_TEST_PATHS_CASEFOLDED:
+        return True
     if any(part.casefold() in DEPENDENCY_JUNK_DIRECTORY_NAMES for part in relative.parts[:-1]):
         return True
     name = relative.name.casefold()

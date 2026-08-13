@@ -168,7 +168,7 @@ def base_lock() -> dict[str, object]:
             "repository": "owner/project",
             "tag": "v0.3.0",
             "object_code_asset_name_regex": (
-                r"^ShiyiContentFactory-v0\.3\.0-motion-primary-"
+                r"^ShiyiContentFactory-v0\.3\.0-(?:motion-primary|customer-clean-motion)-"
                 r"[0-9a-f]{7,40}-Windows-x64\.zip$"
             ),
         },

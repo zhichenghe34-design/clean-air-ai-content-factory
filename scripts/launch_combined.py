@@ -18,7 +18,7 @@ import time
 import tomllib
 import webbrowser
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 from urllib.request import ProxyHandler, Request, build_opener
@@ -181,6 +181,7 @@ class LauncherConfig:
     browser_version: str | None = None
     browser_strategy: str | None = None
     browser_minimum_major: int | None = None
+    motion_runtime_alias_root: Path | None = None
 
 
 def _file_sha256(path: Path) -> str:
@@ -452,6 +453,11 @@ def _write_launcher_state(
         "app": _process_entry(app_process, app_executable, app_started_at),
         "mpt": _process_entry(engine_process, config.mpt_python, engine_started_at),
     }
+    if config.motion_runtime_alias_root is not None:
+        state["motion_runtime_alias"] = {
+            "drive": config.motion_runtime_alias_root.drive.upper(),
+            "target": str(config.project_root.resolve()),
+        }
     _atomic_json(path, state)
     return path
 
@@ -515,6 +521,179 @@ def _query_windows_process(pid: int, *, runner: Callable[..., subprocess.Complet
 
 def _same_windows_path(left: str, right: str) -> bool:
     return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+
+def _motion_runtime_needs_drive_alias(project_root: Path) -> bool:
+    """Avoid a reviewed Node/HyperFrames Windows crash below physical `&` paths."""
+
+    return os.name == "nt" and "&" in str(project_root)
+
+
+def _subst_executable() -> Path:
+    executable = _trusted_windows_root() / "System32" / "subst.exe"
+    if not executable.is_file():
+        raise LauncherError(
+            "MOTION_RUNTIME_ALIAS_UNAVAILABLE",
+            "当前 Windows 缺少动画运行时路径兼容组件。",
+        )
+    return executable
+
+
+def _subst_alias_matches(alias_root: Path, project_root: Path) -> bool:
+    try:
+        alias_manifest = alias_root / "PACKAGE-MANIFEST.json"
+        project_manifest = project_root / "PACKAGE-MANIFEST.json"
+        return bool(
+            alias_manifest.is_file()
+            and project_manifest.is_file()
+            and os.path.samefile(alias_manifest, project_manifest)
+        )
+    except OSError:
+        return False
+
+
+def _available_motion_runtime_alias_roots() -> tuple[Path, ...]:
+    return tuple(
+        alias_root
+        for letter in "ZYXWVUTSRQPONMLKJIH"
+        if not (alias_root := Path(f"{letter}:\\")).exists()
+    )
+
+
+def _remove_motion_runtime_alias(
+    alias_root: Path | None,
+    project_root: Path,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    strict: bool = False,
+) -> bool:
+    if alias_root is None or os.name != "nt":
+        return True
+    if not alias_root.exists():
+        return True
+    if not _subst_alias_matches(alias_root, project_root):
+        if strict:
+            raise LauncherError(
+                "MOTION_RUNTIME_ALIAS_MISMATCH",
+                "动画运行时临时盘符已被其他路径占用，已拒绝删除。",
+            )
+        return False
+    completed = runner(
+        [str(_subst_executable()), alias_root.drive, "/D"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        check=False,
+    )
+    if completed.returncode != 0 or alias_root.exists():
+        if strict:
+            raise LauncherError(
+                "MOTION_RUNTIME_ALIAS_REMOVE_FAILED",
+                "动画运行时临时盘符未能安全清理。",
+            )
+        return False
+    return True
+
+
+def _prepare_motion_runtime_alias(
+    config: LauncherConfig,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> LauncherConfig:
+    if not config.motion_runtime_required or not _motion_runtime_needs_drive_alias(config.project_root):
+        return config
+    if config.node_executable is None or config.hyperframes_cli is None:
+        raise LauncherError("MOTION_RUNTIME_ALIAS_INVALID", "动画运行时缺少可映射入口。")
+
+    root = config.project_root.resolve(strict=True)
+    path_fields = {
+        "node_executable": config.node_executable,
+        "hyperframes_cli": config.hyperframes_cli,
+        "ffmpeg": config.ffmpeg,
+        "ffprobe": config.ffprobe,
+        "font_regular": config.font_regular,
+        "font_bold": config.font_bold,
+    }
+    relative_fields: dict[str, Path] = {}
+    for field_name, raw_path in path_fields.items():
+        try:
+            relative_fields[field_name] = raw_path.resolve(strict=True).relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise LauncherError(
+                "MOTION_RUNTIME_ALIAS_INVALID",
+                "动画运行时入口不在当前便携包内。",
+                field=field_name,
+            ) from exc
+
+    subst = _subst_executable()
+    for alias_root in _available_motion_runtime_alias_roots():
+        letter = alias_root.drive[:1]
+        completed = runner(
+            [str(subst), f"{letter}:", str(root)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+            check=False,
+        )
+        if completed.returncode != 0:
+            continue
+        if not _subst_alias_matches(alias_root, root):
+            _remove_motion_runtime_alias(alias_root, root, runner=runner, strict=False)
+            continue
+        replacements = {
+            name: alias_root / relative
+            for name, relative in relative_fields.items()
+        }
+        return replace(
+            config,
+            **replacements,
+            motion_runtime_alias_root=alias_root,
+        )
+    raise LauncherError(
+        "MOTION_RUNTIME_ALIAS_UNAVAILABLE",
+        "当前没有可安全使用的临时盘符，无法从含 & 的目录启动动画运行时。",
+    )
+
+
+def _record_motion_runtime_alias(state_path: Path, config: LauncherConfig) -> None:
+    alias_root = config.motion_runtime_alias_root
+    if alias_root is None:
+        return
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LauncherError("LAUNCHER_STATE_INVALID", "无法记录动画运行时临时盘符。") from exc
+    launcher = state.get("launcher") if isinstance(state, dict) else None
+    if (
+        not isinstance(state, dict)
+        or not isinstance(launcher, dict)
+        or launcher.get("pid") != os.getpid()
+        or not _same_windows_path(str(state.get("project_root", "")), str(config.project_root))
+    ):
+        raise LauncherError("LAUNCHER_STATE_INVALID", "动画运行时临时盘符不属于当前启动器。")
+    state["motion_runtime_alias"] = {
+        "drive": alias_root.drive.upper(),
+        "target": str(config.project_root.resolve()),
+    }
+    _atomic_json(state_path, state)
+
+
+def _state_motion_runtime_alias(state: Mapping[str, object], project_root: Path) -> Path | None:
+    value = state.get("motion_runtime_alias")
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"drive", "target"}:
+        raise LauncherError("LAUNCHER_STATE_INVALID", "动画运行时临时盘符状态无效。")
+    drive = value.get("drive")
+    target = value.get("target")
+    if (
+        not isinstance(drive, str)
+        or re.fullmatch(r"[A-Z]:", drive) is None
+        or not isinstance(target, str)
+        or not _same_windows_path(target, str(project_root))
+    ):
+        raise LauncherError("LAUNCHER_STATE_INVALID", "动画运行时临时盘符状态无效。")
+    return Path(f"{drive}\\")
 
 
 def _trusted_windows_root() -> Path:
@@ -833,6 +1012,9 @@ def _claim_launcher_state(
                     break
             if active:
                 raise LauncherError("WORKBENCH_ALREADY_RUNNING", "当前便携包已经在运行，请使用已有浏览器页面或先执行关闭入口。")
+            stale_alias = _state_motion_runtime_alias(existing, root)
+            if stale_alias is not None:
+                _remove_motion_runtime_alias(stale_alias, root, strict=True)
             path.unlink(missing_ok=True)
             if attempt:
                 break
@@ -862,6 +1044,7 @@ def stop_recorded_processes(
         raise LauncherError("LAUNCHER_STATE_ROOT_MISMATCH", "停止状态缺少有效的原始包路径。")
     if not _same_windows_path(str(recorded_root), str(root)):
         raise LauncherError("LAUNCHER_STATE_ROOT_MISMATCH", "停止状态不属于当前便携包。")
+    motion_runtime_alias = _state_motion_runtime_alias(state, root)
     try:
         baseline = dt.datetime.fromisoformat(str(state["started_at"]).replace("Z", "+00:00"))
     except (KeyError, ValueError) as exc:
@@ -919,6 +1102,13 @@ def stop_recorded_processes(
         if completed.returncode not in {0, 128, 255}:
             raise LauncherError("PROCESS_STOP_FAILED", "本包进程树未能完整停止。", pid=pid)
         stopped.append(pid)
+    if motion_runtime_alias is not None:
+        _remove_motion_runtime_alias(
+            motion_runtime_alias,
+            root,
+            runner=runner,
+            strict=True,
+        )
     state_path.unlink(missing_ok=True)
     return {"status": "stopped", "message": "本包工作台与生产引擎已停止。", "stopped_pids": stopped}
 
@@ -1952,7 +2142,7 @@ def run_combined(
         finally:
             process_terminator(app_process)
             process_terminator(engine_process)
-            if launcher_state_path is not None:
+            if launcher_state_path is not None and config.motion_runtime_alias_root is None:
                 _remove_own_launcher_state(launcher_state_path)
 
 
@@ -2101,7 +2291,7 @@ def _run_motion_primary(
             # can outlive both child processes.  Revoke it on every motion
             # launcher exit so stale bytes never advertise a stopped MPT.
             _write_mpt_health_state(mpt_health_file, False)
-            if launcher_state_path is not None:
+            if launcher_state_path is not None and config.motion_runtime_alias_root is None:
                 _remove_own_launcher_state(launcher_state_path)
 
 
@@ -2360,6 +2550,7 @@ def _emit(payload: Mapping[str, object]) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     early_launcher_state: Path | None = None
+    motion_alias_config: LauncherConfig | None = None
     try:
         args = build_parser().parse_args(argv)
         if args.stop:
@@ -2373,12 +2564,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             _emit(result)
             return 0
         project_root = Path(args.project_root).expanduser().resolve()
-        if (project_root / "PACKAGE-MANIFEST.json").is_file() and not args.preflight_only:
+        # A packaged preflight can create the same temporary subst alias as a
+        # normal launch.  Claim the exact package owner state first for both
+        # paths: if `/D` later fails, the recorded drive/target survives and a
+        # subsequent preflight or --stop can recover it without guessing or
+        # deleting an unrelated mapping.
+        if (project_root / "PACKAGE-MANIFEST.json").is_file():
             early_launcher_state = _claim_launcher_state(
                 project_root,
                 started_at=dt.datetime.now(dt.timezone.utc).isoformat(),
             )
         config = config_from_args(args)
+        config = _prepare_motion_runtime_alias(config)
+        motion_alias_config = config if config.motion_runtime_alias_root is not None else None
+        if early_launcher_state is not None and motion_alias_config is not None:
+            _record_motion_runtime_alias(early_launcher_state, motion_alias_config)
         validate_preinstalled_layout(config)
         motion_health_verified = probe_preinstalled_runtimes(config)
         if config.preflight_only:
@@ -2425,7 +2625,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 3
     finally:
-        if early_launcher_state is not None:
+        alias_removed = True
+        if motion_alias_config is not None:
+            alias_removed = _remove_motion_runtime_alias(
+                motion_alias_config.motion_runtime_alias_root,
+                motion_alias_config.project_root,
+                strict=False,
+            )
+        if early_launcher_state is not None and alias_removed:
             _remove_own_launcher_state(early_launcher_state)
 
 

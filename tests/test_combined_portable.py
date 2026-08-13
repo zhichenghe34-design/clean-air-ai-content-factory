@@ -1103,6 +1103,9 @@ class CombinedPortableTests(unittest.TestCase):
     def test_customer_package_freezes_sources_and_prunes_dependency_junk(self) -> None:
         self._write(self.python_runtime, "Lib/site-packages/fixture/tests/test_hidden.py", "raise RuntimeError\n")
         self._write(self.python_runtime, "Lib/site-packages/fixture/test_utils.py", "VALUE = 1\n")
+        self._write(self.python_runtime, "Lib/site-packages/sniffio/_tests/test_hidden.py", "raise RuntimeError\n")
+        self._write(self.python_runtime, "Lib/site-packages/aiohttp/test_utils.py", "raise RuntimeError\n")
+        self._write(self.python_runtime, "Lib/site-packages/annotated_types/test_cases.py", "raise RuntimeError\n")
         motion_inputs = self._motion_inputs("customer-clean")
         assert motion_inputs.motion_runtime is not None
         hyperframes_source = motion_inputs.motion_runtime.hyperframes_runtime
@@ -1133,6 +1136,9 @@ class CombinedPortableTests(unittest.TestCase):
 
         self.assertFalse((inputs.output / "runtime/python/Lib/site-packages/fixture/tests").exists())
         self.assertTrue((inputs.output / "runtime/python/Lib/site-packages/fixture/test_utils.py").is_file())
+        self.assertFalse((inputs.output / "runtime/python/Lib/site-packages/sniffio/_tests").exists())
+        self.assertFalse((inputs.output / "runtime/python/Lib/site-packages/aiohttp/test_utils.py").exists())
+        self.assertFalse((inputs.output / "runtime/python/Lib/site-packages/annotated_types/test_cases.py").exists())
         self.assertFalse((inputs.output / "runtime/hyperframes/node_modules/esbuild/tests").exists())
         self.assertFalse((inputs.output / "runtime/hyperframes/node_modules/esbuild/.github").exists())
         self.assertFalse((inputs.output / "runtime/hyperframes/node_modules/esbuild/test_utils.js").exists())

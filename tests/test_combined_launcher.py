@@ -26,14 +26,18 @@ from scripts.launch_combined import (
     build_app_command,
     build_app_environment,
     _claim_launcher_state,
+    _prepare_motion_runtime_alias,
     _query_windows_process,
+    _remove_motion_runtime_alias,
     _same_windows_path,
+    _state_motion_runtime_alias,
     _write_launcher_state,
     build_parser,
     build_engine_command,
     build_engine_environment,
     config_from_args,
     import_legacy_runtime,
+    main,
     probe_preinstalled_runtimes,
     resolve_trusted_system_edge,
     run_combined,
@@ -1390,6 +1394,141 @@ class CombinedLauncherTests(unittest.TestCase):
             {"healthy": False, "schema_version": 1},
             json.loads(health_path.read_text(encoding="utf-8")),
         )
+
+    @unittest.skipUnless(os.name == "nt", "subst compatibility is Windows-only")
+    def test_motion_runtime_uses_drive_alias_for_ampersand_package_root(self):
+        package = self.root / "customer & package" / "Shiyi"
+        paths = {
+            "node_executable": package / "runtime/node/node.exe",
+            "hyperframes_cli": package / "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs",
+            "ffmpeg": package / "runtime/ffmpeg/ffmpeg.exe",
+            "ffprobe": package / "runtime/ffmpeg/ffprobe.exe",
+            "font_regular": package / "docs/fonts/NotoSansSC-Regular.ttf",
+            "font_bold": package / "docs/fonts/NotoSansSC-Bold.ttf",
+        }
+        for path in paths.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"fixture")
+        (package / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
+        motion = LauncherConfig(
+            **{
+                **self.config.__dict__,
+                "project_root": package,
+                "motion_runtime_required": True,
+                **paths,
+            }
+        )
+        calls = []
+
+        def runner(command, **_kwargs):
+            calls.append(list(command))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+
+        fake_subst = self.root / "subst.exe"
+        fake_subst.write_bytes(b"fixture")
+        alias_root = Path("Z:\\")
+        with (
+            patch("scripts.launch_combined._subst_executable", return_value=fake_subst),
+            patch("scripts.launch_combined._available_motion_runtime_alias_roots", return_value=(alias_root,)),
+            patch("scripts.launch_combined._subst_alias_matches", return_value=True),
+        ):
+            mapped = _prepare_motion_runtime_alias(motion, runner=runner)
+
+        self.assertEqual([[str(fake_subst), "Z:", str(package.resolve())]], calls)
+        self.assertEqual(alias_root, mapped.motion_runtime_alias_root)
+        self.assertEqual(alias_root / "runtime/node/node.exe", mapped.node_executable)
+        self.assertEqual(
+            alias_root / "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs",
+            mapped.hyperframes_cli,
+        )
+        self.assertEqual(package.resolve(), mapped.project_root)
+        state = {
+            "motion_runtime_alias": {"drive": "Z:", "target": str(package.resolve())}
+        }
+        self.assertEqual(alias_root, _state_motion_runtime_alias(state, package.resolve()))
+        with self.assertRaises(LauncherError):
+            _state_motion_runtime_alias(
+                {"motion_runtime_alias": {"drive": "Z:", "target": str(self.project)}},
+                package.resolve(),
+            )
+
+    @unittest.skipUnless(os.name == "nt", "subst compatibility is Windows-only")
+    def test_motion_runtime_alias_delete_failure_is_reported_without_guessing(self):
+        alias_root = Path("Z:\\")
+        fake_subst = self.root / "subst.exe"
+        fake_subst.write_bytes(b"fixture")
+        commands = []
+
+        def runner(command, **_kwargs):
+            commands.append(list(command))
+            return subprocess.CompletedProcess(command, 1, b"", b"delete failed")
+
+        with (
+            patch("scripts.launch_combined._subst_executable", return_value=fake_subst),
+            patch("scripts.launch_combined._subst_alias_matches", return_value=True),
+            patch.object(Path, "exists", return_value=True),
+        ):
+            removed = _remove_motion_runtime_alias(
+                alias_root,
+                self.project,
+                runner=runner,
+                strict=False,
+            )
+
+        self.assertFalse(removed)
+        self.assertEqual([[str(fake_subst), "Z:", "/D"]], commands)
+
+    def test_packaged_preflight_records_alias_and_keeps_owner_state_when_delete_fails(self):
+        package = self.root / "customer & package" / "Shiyi"
+        package.mkdir(parents=True)
+        (package / "PACKAGE-MANIFEST.json").write_text("{}\n", encoding="utf-8")
+        state_path = self.root / "launcher-state.json"
+        alias_root = Path("Z:\\")
+        config = LauncherConfig(
+            **{
+                **self.config.__dict__,
+                "project_root": package,
+                "preflight_only": True,
+                "motion_runtime_alias_root": alias_root,
+            }
+        )
+        events = []
+
+        def claim(*_args, **_kwargs):
+            events.append("claim")
+            return state_path
+
+        def prepare(value):
+            events.append("prepare")
+            return value
+
+        def record(*_args, **_kwargs):
+            events.append("record")
+
+        with (
+            patch("scripts.launch_combined._claim_launcher_state", side_effect=claim),
+            patch("scripts.launch_combined.config_from_args", return_value=config),
+            patch("scripts.launch_combined._prepare_motion_runtime_alias", side_effect=prepare),
+            patch("scripts.launch_combined._record_motion_runtime_alias", side_effect=record),
+            patch("scripts.launch_combined.validate_preinstalled_layout"),
+            patch("scripts.launch_combined.probe_preinstalled_runtimes", return_value=False),
+            patch("scripts.launch_combined.select_loopback_port", side_effect=(18954, 18955)),
+            patch("scripts.launch_combined._remove_motion_runtime_alias", return_value=False) as remove_alias,
+            patch("scripts.launch_combined._remove_own_launcher_state") as remove_state,
+        ):
+            exit_code = main(
+                [
+                    "--project-root",
+                    str(package),
+                    "--preflight-only",
+                    "--no-open",
+                ]
+            )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(["claim", "prepare", "record"], events)
+        remove_alias.assert_called_once_with(alias_root, package, strict=False)
+        remove_state.assert_not_called()
 
     def test_controller_starts_engine_before_app_sets_exact_cors_and_cleans_both(self):
         created = []

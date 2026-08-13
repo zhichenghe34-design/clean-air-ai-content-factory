@@ -188,7 +188,16 @@ USAGE_NAME = "使用说明.txt"
 SKIPPED_DIRECTORY_NAMES = frozenset(
     {".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__", "node_modules"}
 )
-DEPENDENCY_JUNK_DIRECTORY_NAMES = frozenset({".github", "__tests__", "test", "tests"})
+DEPENDENCY_JUNK_DIRECTORY_NAMES = frozenset({".github", "__tests__", "_tests", "test", "tests"})
+DEPENDENCY_LOOSE_TEST_PATHS = frozenset(
+    {
+        "runtime/python/Lib/site-packages/aiohttp/test_utils.py",
+        "runtime/python/Lib/site-packages/annotated_types/test_cases.py",
+    }
+)
+DEPENDENCY_LOOSE_TEST_PATHS_CASEFOLDED = frozenset(
+    item.casefold() for item in DEPENDENCY_LOOSE_TEST_PATHS
+)
 REPO_TREE_ALLOWLIST: dict[str, frozenset[str]] = {
     "core": frozenset({".pyc"}),
     "static": frozenset(
@@ -1908,7 +1917,8 @@ def _verify_layout(names: list[str]) -> list[str]:
         if relative.startswith(("runtime/python/", "runtime/hyperframes/")):
             dependency_name = PurePosixPath(relative).name.casefold()
             if (
-                dependency_name == "conftest.py"
+                relative.casefold() in DEPENDENCY_LOOSE_TEST_PATHS_CASEFOLDED
+                or dependency_name == "conftest.py"
                 or re.fullmatch(r".+\.(?:test|spec)\.(?:js|cjs|mjs|jsx|ts|tsx)", dependency_name)
                 or re.fullmatch(r"test[-_].+\.(?:js|cjs|mjs|ts)", dependency_name)
             ):

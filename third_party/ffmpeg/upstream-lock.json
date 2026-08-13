@@ -383,7 +383,7 @@
   "release_contract": {
     "repository": "zhichenghe34-design/clean-air-ai-content-factory",
     "tag": "v0.3.0",
-    "object_code_asset_name_regex": "^ShiyiContentFactory-v0\\.3\\.0-motion-primary-[0-9a-f]{7,40}-Windows-x64\\.zip$",
+    "object_code_asset_name_regex": "^ShiyiContentFactory-v0\\.3\\.0-(?:motion-primary|customer-clean-motion)-[0-9a-f]{7,40}-Windows-x64\\.zip$",
     "required_source_asset": "ShiyiContentFactory-v0.3.0-FFmpeg-LGPL-source-d3ad8a7.zip",
     "policy": "The Windows object-code ZIP and this exact source companion must be attached to the same v0.3.0 GitHub Release with matching byte sizes and SHA-256 digests before publication."
   },

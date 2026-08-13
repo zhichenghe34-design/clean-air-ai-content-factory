@@ -90,7 +90,8 @@ capability report contract.
 
 Local freezing proves reproducibility and identity only; it is not public
 source availability. Before publication, the exact source asset and an object ZIP named
-`ShiyiContentFactory-v0.3.0-motion-primary-<commit>-Windows-x64.zip` must be on
+`ShiyiContentFactory-v0.3.0-motion-primary-<commit>-Windows-x64.zip` or
+`ShiyiContentFactory-v0.3.0-customer-clean-motion-<commit>-Windows-x64.zip` must be on
 the same `v0.3.0` GitHub Release. A local file, future-download promise, or
 source link alone does not pass.
 
