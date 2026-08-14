@@ -53,7 +53,7 @@ class CombinedInstallerTests(unittest.TestCase):
         )
         selection = select_install_target(
             status,
-            {"LOCALAPPDATA": str(Path("C:/Users/备用用户/AppData/Local"))},
+            {"LOCALAPPDATA": str(Path("C:/TestProfiles/备用用户/AppData/Local"))},
         )
         self.assertTrue(selection.uses_preferred_drive)
         self.assertEqual(
@@ -64,7 +64,7 @@ class CombinedInstallerTests(unittest.TestCase):
 
     def test_missing_d_drive_falls_back_to_current_user_local_app_data(self) -> None:
         status = assess_preferred_drive(exists=False)
-        local_app_data = Path("C:/Users/测试 用户/AppData/Local")
+        local_app_data = Path("C:/TestProfiles/测试 用户/AppData/Local")
         selection = select_install_target(status, {"LOCALAPPDATA": str(local_app_data)})
         self.assertFalse(selection.uses_preferred_drive)
         self.assertEqual(

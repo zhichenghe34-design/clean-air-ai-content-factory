@@ -15,8 +15,8 @@
   "runtime": {
     "ffmpeg_lock": {
       "path": "third_party/ffmpeg/upstream-lock.json",
-      "bytes": 14442,
-      "sha256": "CC3BA8E7FC376108A2E277F9B387EBA8232D154E479776C8028CFD938E766C37",
+        "bytes": 14468,
+        "sha256": "1948BCAB27FB0E7850BB2179BC09DABB86E40EA1BA6CE19D2C94806D6AAFE7EA",
       "ffmpeg_version": "8.0.git",
       "ffmpeg_commit": "d3ad8a7fee6a647c6362e4a105d949282d50a98f",
       "license": "LGPL-2.1-or-later"
