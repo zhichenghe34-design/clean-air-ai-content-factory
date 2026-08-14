@@ -109,11 +109,11 @@ def build_default_program_audio(
 
     if not narration_path.is_file() or narration_path.stat().st_size <= 44:
         raise FileNotFoundError("缺少可用的普通中文播报音频")
-    if not ffmpeg_path.is_file():
-        raise FileNotFoundError("缺少随包FFmpeg，无法生成节目音频")
     normalized_script_sha = str(script_sha256).strip().upper()
     if len(normalized_script_sha) != 64 or any(value not in "0123456789ABCDEF" for value in normalized_script_sha):
         raise ValueError("script_sha256无效")
+    if not ffmpeg_path.is_file():
+        raise FileNotFoundError("缺少随包FFmpeg，无法生成节目音频")
     duration = float(duration_seconds)
     variant = int(normalized_script_sha[:8], 16) % 3
     synthesize_builtin_bgm(bgm_path, duration_seconds=duration, variant=variant)

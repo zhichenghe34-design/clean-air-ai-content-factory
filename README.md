@@ -101,7 +101,7 @@ VALIDATION.md          机器复算说明
 
 v0.3.0 客户包在发布前完成了以下验证：
 
-- 当前 536 项 Python 测试：`536 passed, 13 skipped`
+- 当前 538 项 Python 测试：`538 passed, 13 skipped`
 - JavaScript 语法检查通过
 - 客户包目录与 ZIP：`COMBINED_PORTABLE_OK`
 - 全新中文、空格及 `&` 物理路径冷启动通过

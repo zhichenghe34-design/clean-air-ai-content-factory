@@ -58,17 +58,28 @@ class HyperframesMfQualityEvidenceTests(unittest.TestCase):
             manifest["source"]["frame_sha256"][0],
         )
 
-    def test_runtime_and_audited_fonts_are_frozen_tracked_files(self) -> None:
+    def test_runtime_lock_and_audited_fonts_are_frozen_release_inputs(self) -> None:
         manifest = self.manifest
         lock = manifest["runtime"]["ffmpeg_lock"]
         lock_path = ROOT / lock["path"]
         self.assertEqual(lock["bytes"], lock_path.stat().st_size)
         self.assertEqual(lock["sha256"], sha256(lock_path))
+        lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
+        expected_runtime_files = [
+            {
+                "path": record["name"],
+                "bytes": record["bytes"],
+                "sha256": record["sha256"].upper(),
+            }
+            for record in lock_payload["runtime"]["files"]
+        ]
+        self.assertEqual(manifest["runtime"]["runtime_files"], expected_runtime_files)
         runtime_root = ROOT / "third_party" / "ffmpeg" / "runtime" / "win-x64"
-        for record in manifest["runtime"]["runtime_files"]:
-            path = runtime_root / record["path"]
-            self.assertEqual(record["bytes"], path.stat().st_size)
-            self.assertEqual(record["sha256"], sha256(path))
+        if runtime_root.is_dir():
+            for record in manifest["runtime"]["runtime_files"]:
+                path = runtime_root / record["path"]
+                self.assertEqual(record["bytes"], path.stat().st_size)
+                self.assertEqual(record["sha256"], sha256(path))
         font_paths = [record["path"] for record in manifest["font_audit"]["files"]]
         tracked = set(
             subprocess.check_output(

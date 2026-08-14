@@ -136,7 +136,7 @@ class PublicEvidenceExportTests(unittest.TestCase):
         self.assertEqual(first["filename"], rebuilt["filename"])
         self.assertRegex(str(first["filename"]), r"^shiyi-public-evidence-[A-Za-z0-9-]+\.zip$")
         archive_path = Path(rebuilt["path"])
-        self.assertTrue(archive_path.is_relative_to(self.root / "exports"))
+        self.assertTrue(os.path.samefile(archive_path.parents[2], self.root / "exports"))
         metadata_path = archive_path.with_name(archive_path.name + ".json")
         metadata_text = metadata_path.read_text(encoding="ascii")
         self.assertNotIn(str(self.root), metadata_text)

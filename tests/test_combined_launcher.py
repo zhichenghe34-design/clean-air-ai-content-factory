@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -26,6 +27,7 @@ from scripts.launch_combined import (
     build_app_command,
     build_app_environment,
     _claim_launcher_state,
+    _emit,
     _prepare_motion_runtime_alias,
     _query_windows_process,
     _remove_motion_runtime_alias,
@@ -169,7 +171,12 @@ class CombinedLauncherTests(unittest.TestCase):
         payload = self._edge_identity_payload(**payload_overrides)
 
         def runner(command, **kwargs):
-            self.assertEqual(str(self.edge.resolve()), kwargs["env"]["SHIYI_EDGE_SIGNATURE_TARGET"])
+            self.assertTrue(
+                _same_windows_path(
+                    str(self.edge),
+                    kwargs["env"]["SHIYI_EDGE_SIGNATURE_TARGET"],
+                )
+            )
             return subprocess.CompletedProcess(command, 0, json.dumps(payload).encode("utf-8"), b"")
 
         return runner
@@ -190,7 +197,7 @@ class CombinedLauncherTests(unittest.TestCase):
                 program_files_roots=(self.program_files,),
                 powershell=self.powershell,
             )
-        self.assertEqual(self.edge.resolve(), detected_path)
+        self.assertTrue(os.path.samefile(self.edge, detected_path))
         self.assertEqual("151.0.4129.72", version)
 
     def test_trusted_system_edge_fails_closed_when_missing_or_too_old(self):
@@ -1441,7 +1448,7 @@ class CombinedLauncherTests(unittest.TestCase):
             alias_root / "runtime/hyperframes/node_modules/hyperframes/bin/hyperframes.mjs",
             mapped.hyperframes_cli,
         )
-        self.assertEqual(package.resolve(), mapped.project_root)
+        self.assertTrue(os.path.samefile(package, mapped.project_root))
         state = {
             "motion_runtime_alias": {"drive": "Z:", "target": str(package.resolve())}
         }
@@ -1451,6 +1458,39 @@ class CombinedLauncherTests(unittest.TestCase):
                 {"motion_runtime_alias": {"drive": "Z:", "target": str(self.project)}},
                 package.resolve(),
             )
+
+    def test_launcher_json_survives_a_narrow_windows_console(self):
+        output = io.BytesIO()
+        console = io.TextIOWrapper(output, encoding="cp1252", errors="strict", write_through=True)
+        with patch("sys.stdout", console):
+            _emit({"message": "预检通过", "status": "ready"})
+        rendered = output.getvalue().decode("ascii").strip()
+        self.assertIn("\\u", rendered)
+        self.assertEqual(
+            json.loads(rendered),
+            {"message": "预检通过", "status": "ready"},
+        )
+        console.detach()
+
+    @unittest.skipUnless(os.name == "nt", "8.3 path aliases are Windows-only")
+    def test_same_windows_path_expands_a_real_8dot3_alias(self):
+        import ctypes
+
+        long_path = self.root / "directory with a long name" / "identity file.exe"
+        long_path.parent.mkdir(parents=True)
+        long_path.write_bytes(b"identity")
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetShortPathNameW(
+            str(long_path),
+            buffer,
+            len(buffer),
+        )
+        if not 0 < int(length) < len(buffer) or buffer.value == str(long_path):
+            self.skipTest("the current volume does not expose an 8.3 alias")
+        self.assertTrue(_same_windows_path(str(long_path), buffer.value))
+        sibling = long_path.with_name("different identity file.exe")
+        sibling.write_bytes(b"identity")
+        self.assertFalse(_same_windows_path(str(sibling), buffer.value))
 
     @unittest.skipUnless(os.name == "nt", "subst compatibility is Windows-only")
     def test_motion_runtime_alias_delete_failure_is_reported_without_guessing(self):

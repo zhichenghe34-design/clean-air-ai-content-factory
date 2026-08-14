@@ -520,7 +520,25 @@ def _query_windows_process(pid: int, *, runner: Callable[..., subprocess.Complet
 
 
 def _same_windows_path(left: str, right: str) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+    def normalized(value: str) -> str:
+        absolute = os.path.abspath(value)
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                buffer = ctypes.create_unicode_buffer(32768)
+                length = ctypes.windll.kernel32.GetLongPathNameW(
+                    absolute,
+                    buffer,
+                    len(buffer),
+                )
+                if 0 < int(length) < len(buffer):
+                    absolute = buffer.value
+            except (AttributeError, OSError, ValueError):
+                pass
+        return os.path.normcase(os.path.normpath(absolute))
+
+    return normalized(left) == normalized(right)
 
 
 def _motion_runtime_needs_drive_alias(project_root: Path) -> bool:
@@ -790,7 +808,10 @@ def _validate_trusted_system_edge_path(
             resolved = expected.resolve(strict=True)
         except OSError as exc:
             raise LauncherError("SYSTEM_EDGE_PATH_UNTRUSTED", "Microsoft Edge 路径无法安全解析。") from exc
-        if not resolved.is_relative_to(root) or not _same_windows_path(str(resolved), str(expected)):
+        if (
+            not _same_windows_path(str(resolved.parent), str(expected.parent))
+            or not _same_windows_path(str(resolved), str(expected))
+        ):
             raise LauncherError("SYSTEM_EDGE_PATH_UNTRUSTED", "Microsoft Edge 不在受信 Program Files 固定路径。")
         return resolved
     raise LauncherError("SYSTEM_EDGE_PATH_UNTRUSTED", "仅允许 Program Files 下的 Microsoft Edge 系统安装。")
@@ -2545,7 +2566,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _emit(payload: Mapping[str, object]) -> None:
-    print(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True), flush=True)
+    value = dict(payload)
+    rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        rendered.encode(encoding, errors="strict")
+    except (LookupError, UnicodeEncodeError):
+        # Direct test runners and older Windows consoles may expose cp1252 or
+        # another narrow encoding.  Preserve valid JSON and the exact message
+        # through escapes instead of crashing the launcher while reporting it.
+        rendered = json.dumps(value, ensure_ascii=True, sort_keys=True)
+    print(rendered, flush=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
