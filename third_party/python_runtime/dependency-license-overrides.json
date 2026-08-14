@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "status": "complete",
+  "verified_overrides": [
+    {
+      "name": "langchain-core",
+      "version": "1.5.3",
+      "spdx": "MIT",
+      "source_repository": "https://github.com/langchain-ai/langchain",
+      "source_tag": "langchain-core==1.5.3",
+      "source_commit": "01d8481ae3d457ec3751cbb0331ea3a4b720fa90",
+      "source_url": "https://raw.githubusercontent.com/langchain-ai/langchain/01d8481ae3d457ec3751cbb0331ea3a4b720fa90/LICENSE",
+      "source_sha256": "4EC67E4CA6E6721DBA849B2CA82261597C86A61EE214BBF21416006B7B2D0478",
+      "license_file": "dependency-licenses/langchain-core-1.5.3-MIT.txt",
+      "license_sha256": "4EC67E4CA6E6721DBA849B2CA82261597C86A61EE214BBF21416006B7B2D0478",
+      "additional_evidence": []
+    },
+    {
+      "name": "langsmith",
+      "version": "0.10.17",
+      "spdx": "MIT",
+      "source_repository": "https://github.com/langchain-ai/langsmith-sdk",
+      "source_tag": "v0.10.17",
+      "source_commit": "ea8caba352b122b6f36fc5eaf45756ca00470e0a",
+      "source_url": "https://raw.githubusercontent.com/langchain-ai/langsmith-sdk/ea8caba352b122b6f36fc5eaf45756ca00470e0a/LICENSE",
+      "source_sha256": "34E0B9842C7A31D34E53BC7EB224E81E07A34996106E029BBC72DEA2D449F496",
+      "license_file": "dependency-licenses/langsmith-0.10.17-MIT.txt",
+      "license_sha256": "34E0B9842C7A31D34E53BC7EB224E81E07A34996106E029BBC72DEA2D449F496",
+      "additional_evidence": []
+    },
+    {
+      "name": "loguru",
+      "version": "0.7.3",
+      "spdx": "MIT",
+      "source_repository": "https://github.com/Delgan/loguru",
+      "source_tag": "0.7.3",
+      "source_commit": "ae3bfd1b85b6b4a3db535f69b975687c79498be4",
+      "source_url": "https://raw.githubusercontent.com/Delgan/loguru/ae3bfd1b85b6b4a3db535f69b975687c79498be4/LICENSE",
+      "source_sha256": "B35D026CC7ACA9D5859A02EB87DDF7A386A24C986838651BD1F283F94E003327",
+      "license_file": "dependency-licenses/loguru-0.7.3-MIT.txt",
+      "license_sha256": "B35D026CC7ACA9D5859A02EB87DDF7A386A24C986838651BD1F283F94E003327",
+      "additional_evidence": []
+    },
+    {
+      "name": "primp",
+      "version": "1.3.1",
+      "spdx": "MIT",
+      "source_repository": "https://github.com/deedy5/primp",
+      "source_tag": "v1.3.1",
+      "source_commit": "f662999ad2a44bfad4ee433f8d37dd4a231f3154",
+      "source_url": "https://raw.githubusercontent.com/deedy5/primp/f662999ad2a44bfad4ee433f8d37dd4a231f3154/crates/primp/LICENSE-MIT",
+      "source_sha256": "47D4E1803702728E03D30F8A848AE2249BA274BBD9F8443E803F7924D83CD371",
+      "license_file": "dependency-licenses/primp-1.3.1-MIT.txt",
+      "license_sha256": "47D4E1803702728E03D30F8A848AE2249BA274BBD9F8443E803F7924D83CD371",
+      "additional_evidence": [
+        {
+          "kind": "notice",
+          "source_kind": "embedded-runtime-sbom-derived-license-corpus",
+          "bound_runtime_path": "Lib/site-packages/primp-1.3.1.dist-info/sboms/primp-python.cyclonedx.json",
+          "bound_runtime_sha256": "726216799D98ABF36AA3D623F3E8A3FC63F70F39B43813DE27C13F89BD797897",
+          "component_count": 236,
+          "dependency_count": 237,
+          "component_identity_sha256": "0FA06D3F634E86CDE5BB03E97DD66306DBBC336A6BAC33B3A99CD553C134A47F",
+          "encoded_file": "dependency-licenses/primp-1.3.1-third-party-licenses.txt.gz.b64",
+          "encoded_sha256": "915C908035FCD8029B692298907C6D7AC0FEBFBE965BE357140F11F86A12A665",
+          "encoding": "base64+gzip",
+          "evidence_file": "dependency-licenses/primp-1.3.1-third-party-licenses.txt",
+          "evidence_sha256": "3D390B586A4AB7C3A6BBD2478A881DDA9D1FBB57A3EEABD9865A4323CDD55B03",
+          "evidence_size": 794639
+        }
+      ]
+    }
+  ],
+  "unresolved": []
+}

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "patch_id": "shiyi-hyperframes-windows-mf",
+  "patch_version": "1.2.0",
+  "component": "hyperframes@0.7.86",
+  "license": "Apache-2.0",
+  "upstream": {
+    "repository": "https://github.com/heygen-com/hyperframes",
+    "tag": "v0.7.86",
+    "commit": "1a52351f05237433006e6ca92db18feafed16fed",
+    "npm_integrity": "sha512-R8Vds5hY9XULMsCGUa+qynC7F0tL7KZyDaL6cgQ4xyJAATC9fOIPgRMOBkOHYd9JOntRqbR9bFSsfK7mYJjaow=="
+  },
+  "patcher": {
+    "path": "tools/apply_hyperframes_windows_mf_patch.py",
+    "sha256": "AFBF8F7F85A4B30FA3E521B2428DF9D1966DBED09B45336955CC0FBC9CB093B6",
+    "input_policy": "accept only the exact upstream or exact patched dist/cli.js SHA-256",
+    "write_policy": "atomic same-directory replacement after deterministic output hash verification"
+  },
+  "modified_files": [
+    {
+      "path": "dist/cli.js",
+      "upstream_sha256": "B89672986C4487A133B241261AC610EA9F9CCDE467F206E18A60BEFFACAB6CB8",
+      "patched_sha256": "86DA751BA397FF551355BA0C90370D732A297C3DC4652C981E9A8146D8EAC108",
+      "purposes": [
+        "embed a prominent Apache-2.0 modified-file notice immediately after the executable shebang",
+        "replace every H.264 output-encoding path with the shared Windows Media Foundation policy; non-output capability probes remain inert",
+        "fail closed before output encoding for H.265, GPU requests, missing h264_mf, and unadapted portable MP4 paths",
+        "disable npm update checks, background package or skill checks, Google Fonts resolution, and external stylesheet fetching",
+        "keep browser discovery byte-independent so a caller can inject system Edge or an open-source Chromium executable"
+      ]
+    }
+  ],
+  "codec_contract": {
+    "strategy": "h264_mf",
+    "encoder": "h264_mf",
+    "rate_control": "quality unless an explicit bitrate requires cbr",
+    "quality_tiers": {
+      "draft": 60,
+      "standard": 72,
+      "high": 80
+    },
+    "scenario": "archive",
+    "hw_encoding": 0,
+    "b_frames": 0,
+    "pixel_format": "yuv420p",
+    "fixed_gop_paths": [
+      "chunk encode",
+      "streaming encode",
+      "CFR normalization"
+    ],
+    "profile_override": null,
+    "required_probe_video_codec": "h264"
+  },
+  "patched_bundle_audit": {
+    "prohibited_tokens": [
+      "libx264",
+      "openh264",
+      "rav1e",
+      "-x264-params"
+    ],
+    "executable_preset_argument_count": 0,
+    "executable_crf_argument_count": 5,
+    "crf_exception": "All five remaining -crf arguments are structurally confined to libvpx VP8/VP9 branches; no H.264 path uses CRF.",
+    "profile_v_argument_count": 3,
+    "profile_v_exception": "All three remaining -profile:v arguments are structurally confined to ProRes branches; no H.264 profile is forced."
+  },
+  "offline_contract": {
+    "update_check": "disabled",
+    "command_metadata": {
+      "version": "0.7.86",
+      "updateAvailable": false,
+      "offline": true
+    },
+    "external_font_resolution": "disabled",
+    "external_stylesheet_fetch": "disabled",
+    "runtime_downloads": "disabled"
+  },
+  "embedded_modified_file_notice": "Apache-2.0 modification notice: Shanghai Shiyi Brand Management Co., Ltd. modified this file via shiyi-hyperframes-windows-mf v1.2.0 for the Windows Media Foundation H.264 and offline-runtime policies; this is not the unmodified upstream file.",
+  "formal_packaging_contract": {
+    "staging_steps": [
+      "install or extract hyperframes@0.7.86 from the frozen npm artifact",
+      "verify the upstream dist/cli.js SHA-256",
+      "run tools/apply_hyperframes_windows_mf_patch.py against the staging package root",
+      "run the patcher again with --check",
+      "regenerate the complete runtime manifest after patching"
+    ],
+    "mpt_video_codec": "h264_mf",
+    "report_fields": {
+      "codec_strategy": "h264_mf",
+      "patch_id": "shiyi-hyperframes-windows-mf",
+      "patch_version": "1.2.0",
+      "patched_cli_sha256": "86DA751BA397FF551355BA0C90370D732A297C3DC4652C981E9A8146D8EAC108"
+    },
+    "forbidden_delivery_state": "A manually edited or otherwise untracked node_modules tree is not a release input."
+  }
+}

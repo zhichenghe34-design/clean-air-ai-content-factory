@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "asset_id": "clean-air-device-neutral-v1",
+  "file": "clean-air-device-neutral-v1.png",
+  "sha256": "3DB55B365071136E56952DBEFE97B501E9A8743B3FAEAEC5DB24304295AE21E7",
+  "bytes": 1513170,
+  "created_at": "2026-08-11",
+  "generator": "OpenAI built-in image generation",
+  "generation_mode": "text_to_image",
+  "source_images_used": false,
+  "intended_use": "internal trial motion background for the clean-air capability pack",
+  "rights_boundary": "fictional unbranded product visual; internal trial only until project owner accepts release use",
+  "content_constraints": {
+    "brand_marks": false,
+    "printed_claims": false,
+    "people": false,
+    "third_party_product_reference": false
+  }
+}

@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1080, height=1920" />
+  <style>
+    @font-face { font-family: "Noto Sans SC"; src: url("assets/NotoSansSC-Regular.ttf") format("truetype"); font-weight: 400; }
+    @font-face { font-family: "Noto Sans SC"; src: url("assets/NotoSansSC-Bold.ttf") format("truetype"); font-weight: 700 900; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; background: #f4f1e8; }
+    body { color: #12342b; font-family: "Noto Sans SC", sans-serif; }
+    #root { position: relative; width: 1080px; height: 1920px; overflow: hidden; background: linear-gradient(160deg, #f7f4eb 0%, #eef2e8 58%, #e5eee5 100%); }
+    .paper-grid { position: absolute; inset: 0; opacity: .32; background-image: linear-gradient(rgba(18,52,43,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(18,52,43,.055) 1px, transparent 1px); background-size: 72px 72px; pointer-events: none; }
+    .brand { position: absolute; z-index: 50; left: 58px; top: 44px; display: flex; align-items: center; gap: 12px; font-size: 21px; font-weight: 800; letter-spacing: .08em; }
+    .brand i { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; background: #1f5a46; color: #fff; font-style: normal; }
+    .series { position: absolute; z-index: 50; right: 58px; top: 52px; color: #537068; font-size: 19px; font-weight: 700; letter-spacing: .12em; }
+    #scenes { position: absolute; inset: 0; }
+    .scene { position: absolute; inset: 0; width: 1080px; height: 1920px; overflow: hidden; }
+    .content { position: absolute; left: 64px; right: 64px; top: 142px; bottom: 356px; }
+    .header { position: absolute; left: 0; right: 0; top: 0; height: 340px; border-top: 2px solid rgba(31,90,70,.22); padding-top: 36px; }
+    .scene-number { position: absolute; z-index: 3; right: 0; top: 30px; width: 112px; color: #65766f; font-size: 70px; font-weight: 900; letter-spacing: -.04em; text-align: right; }
+    .kicker { color: #678113; font-size: 25px; font-weight: 900; letter-spacing: .06em; }
+    h1 { max-width: calc(100% - 160px); margin: 20px 0 0; color: #12342b; font-size: 58px; line-height: 1.12; letter-spacing: -.035em; text-wrap: balance; overflow-wrap: anywhere; }
+    h1.long-title { font-size: 51px; line-height: 1.14; }
+    .argument { margin-top: 22px; max-width: calc(100% - 110px); color: #4b625b; font-size: 25px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
+    .visual { position: absolute; left: 0; right: 0; top: 370px; bottom: 0; overflow: hidden; border: 2px solid rgba(31,90,70,.18); border-radius: 36px; background: rgba(255,255,252,.76); box-shadow: 0 28px 70px rgba(36,72,59,.08); }
+    .visual-inner { position: absolute; inset: 34px; display: flex; flex-direction: column; min-width: 0; }
+    .visual-heading { flex: 0 0 auto; display: flex; align-items: center; gap: 18px; min-width: 0; min-height: 68px; color: #12342b; font-size: 29px; line-height: 1.3; font-weight: 900; overflow-wrap: anywhere; }
+    .visual-heading::before { content: ""; flex: 0 0 13px; width: 13px; height: 48px; border-radius: 9px; background: #C8E35B; box-shadow: inset 0 0 0 2px rgba(18,52,43,.08); }
+    .visual-body { position: relative; flex: 1 1 auto; min-height: 0; margin-top: 24px; }
+    .caption { position: absolute; z-index: 40; left: 58px; right: 58px; top: 1592px; height: 242px; display: grid; place-items: center; padding: 30px 44px; border: 2px solid #1f5a46; border-radius: 26px; background: #12342b; color: #fff; font-size: 31px; font-weight: 700; line-height: 1.52; text-align: center; overflow: hidden; }
+    .caption::before { content: "旁白"; position: absolute; left: 24px; top: -17px; padding: 5px 15px; border-radius: 9px; background: #C8E35B; color: #12342b; font-size: 17px; font-weight: 900; letter-spacing: .08em; }
+    .semantic-progress { position: absolute; z-index: 45; left: 58px; right: 58px; bottom: 45px; height: 7px; overflow: hidden; border-radius: 8px; background: rgba(31,90,70,.13); }
+    .semantic-progress i { display: block; width: 100%; height: 100%; transform-origin: left center; background: #1f5a46; }
+    .reveal { will-change: opacity, transform; }
+
+    .low-layout { height: 100%; display: grid; grid-template-columns: 1.12fr .3fr 1fr; gap: 24px; align-items: center; }
+    .reading-card, .verdict-card { height: 660px; min-width: 0; box-sizing: border-box; padding: 34px 22px; display: flex; flex-direction: column; justify-content: center; align-items: center; border-radius: 30px; text-align: center; overflow: hidden; }
+    .reading-card { border: 3px solid #1f5a46; background: #edf6ee; }
+    .reading-card small, .verdict-card small { color: #567169; font-size: 23px; font-weight: 800; }
+    .reading-card strong { width: 100%; max-width: 100%; margin: 18px 0 8px; color: #1f5a46; font-size: 58px; line-height: 1.16; letter-spacing: -.04em; overflow-wrap: anywhere; word-break: break-word; }
+    .reading-card span { max-width: 100%; font-size: 27px; font-weight: 800; overflow-wrap: anywhere; }
+    .logic-not { display: grid; place-items: center; width: 90px; height: 90px; border-radius: 50%; background: #b84c2e; color: #fff; font-size: 52px; font-weight: 900; }
+    .verdict-card { border: 3px dashed #d76d4b; background: #fff2ec; }
+    .verdict-card strong { margin-top: 22px; color: #b64f31; font-size: 51px; line-height: 1.2; }
+    .status-strip { position: absolute; left: 24px; right: 24px; bottom: 18px; display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+    .status-strip span { padding: 15px 10px; border-radius: 13px; background: #edf1e9; color: #35564c; font-size: 18px; font-weight: 800; text-align: center; }
+
+    .condition-layout { height: 100%; display: grid; grid-template-columns: 1.2fr .9fr; gap: 28px; align-items: stretch; }
+    .room-map { position: relative; border: 3px solid #1f5a46; border-radius: 28px; background: #eef5ec; overflow: hidden; }
+    .room-map::before { content: "室内测量示意"; position: absolute; left: 24px; top: 22px; color: #4b665c; font-size: 21px; font-weight: 800; }
+    .room-wall { position: absolute; left: 56px; right: 56px; top: 116px; bottom: 90px; border: 8px solid #6f8e82; border-top-color: #1f5a46; }
+    .window { position: absolute; right: 48px; top: 98px; width: 130px; height: 54px; border: 6px solid #6ca4a0; background: #d9f1ef; }
+    .measure-dot { position: absolute; left: 47%; top: 53%; width: 86px; height: 86px; margin: -43px; border: 7px solid #e87955; border-radius: 50%; }
+    .measure-dot::before, .measure-dot::after { content: ""; position: absolute; background: #e87955; }
+    .measure-dot::before { left: 34px; top: -28px; width: 7px; height: 130px; }
+    .measure-dot::after { left: -28px; top: 34px; width: 130px; height: 7px; }
+    .condition-list { height: 100%; display: grid; grid-template-rows: repeat(var(--item-count), minmax(0,1fr)); gap: 18px; }
+    .condition-card { min-height: 0; display: grid; grid-template-columns: 74px 1fr; align-items: center; gap: 20px; padding: 24px; border: 2px solid rgba(31,90,70,.22); border-radius: 23px; background: #fff; color: #23493d; font-size: 30px; font-weight: 900; }
+    .condition-card b { display: grid; place-items: center; width: 66px; height: 66px; border-radius: 50%; background: #C8E35B; color: #12342b; font-size: 26px; }
+
+    .single-layout { height: 100%; display: grid; grid-template-columns: .82fr 1.55fr; gap: 30px; align-items: stretch; }
+    .single-count { min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 34px 24px; border-radius: 32px; background: #1f5a46; color: #fff; }
+    .single-count strong { font-size: 116px; line-height: 1; font-variant-numeric: tabular-nums; }
+    .single-count span { margin-top: 18px; font-size: 29px; font-weight: 900; }
+    .boundary-list { height: 100%; display: grid; grid-template-rows: repeat(var(--secondary-count), minmax(0,1fr)); gap: 20px; }
+    .boundary-card { min-height: 0; display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 22px; padding: 24px 28px; border: 2px solid rgba(215,109,75,.34); border-radius: 22px; background: #fff7f2; color: #3c514a; font-size: 28px; font-weight: 800; }
+    .boundary-card b { color: #d76d4b; font-size: 42px; }
+
+    .process-layout { height: 100%; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 26px; }
+    .process-layout[data-item-count="3"] { grid-template-columns: 1fr; grid-template-rows: repeat(3,minmax(0,1fr)); }
+    .process-step { position: relative; display: flex; flex-direction: column; justify-content: center; padding: 30px 32px 30px 112px; border: 2px solid rgba(31,90,70,.25); border-radius: 26px; background: #f7faf5; color: #21483c; font-size: 28px; font-weight: 900; }
+    .process-step b { position: absolute; left: 28px; top: 50%; width: 60px; height: 60px; margin-top: -30px; display: grid; place-items: center; border-radius: 50%; background: #1f5a46; color: #fff; font-size: 26px; }
+    .process-step small { margin-top: 12px; color: #6a7e77; font-size: 20px; font-weight: 700; }
+
+    .product-layout { height: 100%; display: grid; grid-template-columns: repeat(3,1fr); gap: 22px; align-items: center; }
+    .product-card { height: 510px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border: 2px solid rgba(31,90,70,.24); border-radius: 28px; background: #fff; text-align: center; }
+    .product-icon { position: relative; width: 128px; height: 150px; margin-bottom: 40px; border: 8px solid #1f5a46; border-radius: 12px; }
+    .product-icon::before, .product-icon::after { content: ""; position: absolute; left: 22px; right: 22px; height: 7px; background: #C8E35B; }
+    .product-icon::before { top: 48px; } .product-icon::after { top: 82px; }
+    .product-card:nth-child(2) .product-icon { border-radius: 50% 50% 18px 18px; }
+    .product-card:nth-child(3) .product-icon { transform: rotate(0deg); border-radius: 50%; }
+    .product-card strong { color: #183f33; font-size: 32px; line-height: 1.25; }
+    .product-card span { margin-top: 20px; color: #526861; font-size: 21px; line-height: 1.45; }
+
+    .final-layout { height: 100%; position: relative; }
+    .final-core { position: absolute; left: 50%; top: 50%; width: 310px; height: 310px; margin: -155px; display: grid; place-items: center; padding: 36px; border: 8px solid #1f5a46; border-radius: 50%; background: #fff; color: #12342b; font-size: 35px; font-weight: 900; line-height: 1.25; text-align: center; }
+    .final-item { position: absolute; width: 270px; min-height: 126px; display: grid; place-items: center; padding: 22px; border: 3px solid #86a332; border-radius: 22px; background: #f5f9e7; color: #28483e; font-size: 29px; font-weight: 900; text-align: center; }
+    .final-item.i1 { left: 30px; top: 72px; } .final-item.i2 { right: 30px; top: 72px; }
+    .final-item.i3 { left: 30px; bottom: 72px; } .final-item.i4 { right: 30px; bottom: 72px; }
+    .final-layout[data-item-count="2"] .final-item.i1 { left: 0; top: calc(50% - 63px); bottom: auto; }
+    .final-layout[data-item-count="2"] .final-item.i2 { right: 0; top: calc(50% - 63px); bottom: auto; }
+    .final-layout[data-item-count="3"] .final-item.i3 { left: calc(50% - 135px); bottom: 38px; }
+    .final-axis { position: absolute; left: 50%; top: 50%; width: 520px; height: 520px; margin: -260px; border: 3px dashed rgba(31,90,70,.24); border-radius: 50%; }
+
+    .points-layout { height: 100%; display: grid; grid-template-rows: repeat(var(--item-count), minmax(0,1fr)); gap: 18px; }
+    .point-row { min-height: 0; display: flex; align-items: center; gap: 24px; padding: 24px 30px; border: 2px solid rgba(31,90,70,.24); border-radius: 22px; background: #fff; color: #25483d; font-size: 28px; font-weight: 900; }
+    .point-row b { color: #748d0f; font-size: 32px; }
+    .points-layout[data-item-count="1"] { grid-template-rows: 380px; align-content: center; padding: 70px 0; }
+    .points-layout[data-item-count="1"] .point-row { padding: 52px; gap: 36px; font-size: 38px; line-height: 1.35; }
+    .points-layout[data-item-count="1"] .point-row b { flex: 0 0 auto; font-size: 92px; line-height: 1; opacity: .7; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="clean-air-motion-output" data-no-timeline data-start="0" data-duration="__DURATION__" data-width="1080" data-height="1920" data-fps="30">
+    __AUDIO_ELEMENT__
+    <div class="paper-grid" data-layout-ignore></div>
+    <div class="brand"><i>时</i><span>净界AI内容工厂</span></div>
+    <div class="series">室内空气判断 · 科普样片</div>
+    <div id="scenes"></div>
+  </div>
+  <script>
+    const plan = __MOTION_PLAN_JSON__;
+    const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[character]);
+    const finite = (element, keyframes, timing) => {
+      if (!element) throw new Error("科普动画目标缺失");
+      const animation = element.animate(keyframes, {...timing, fill: "both", iterations: 1});
+      animation.pause();
+      return animation;
+    };
+    const itemsOf = (scene) => {
+      const value = scene.visual_content;
+      if (!value || !Array.isArray(value.items) || !value.items.length) throw new Error(`场景 ${scene.id} 缺少旁白绑定图解`);
+      return value.items.map(esc);
+    };
+    const visualMarkup = (scene) => {
+      const visual = scene.visual_content;
+      const items = itemsOf(scene);
+      const heading = esc(visual.headline);
+      const primary = items[0] || esc(visual.summary) || heading;
+      const secondary = items[1] || esc(visual.summary) || primary;
+      if (visual.kind === "low-reading") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body low-layout"><div class="reading-card reveal" data-item-index="0"><small>当前主张</small><strong>${primary}</strong><span>先看这一项</span></div><div class="logic-not reveal">≠</div><div class="verdict-card reveal" data-item-index="1"><small>不能直接推出</small><strong>${secondary}</strong></div><div class="status-strip">${items.slice(2).map((item,index)=>`<span class="reveal" data-item-index="${index+2}">${item}</span>`).join("")}</div></div></div>`;
+      if (visual.kind === "measurement-conditions") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body condition-layout" data-item-count="${items.length}"><div class="room-map reveal"><div class="room-wall"></div><div class="window"></div><div class="measure-dot"></div></div><div class="condition-list" style="--item-count:${items.length}">${items.map((item,index)=>`<div class="condition-card reveal" data-item-index="${index}"><b>${String(index+1).padStart(2,"0")}</b><span>${item}</span></div>`).join("")}</div></div></div>`;
+      if (visual.kind === "single-reading") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body single-layout" data-item-count="${items.length}"><div class="single-count reveal" data-item-index="0"><strong>01</strong><span>${primary}</span></div><div class="boundary-list" style="--secondary-count:${items.length-1}">${items.slice(1).map((item,index)=>`<div class="boundary-card reveal" data-item-index="${index+1}"><b>${String(index+2).padStart(2,"0")}</b><span>${item}</span></div>`).join("")}</div></div></div>`;
+      if (visual.kind === "retest-process") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body process-layout" data-item-count="${items.length}">${items.map((item,index)=>`<div class="process-step reveal" data-item-index="${index}"><b>${index+1}</b><span>${item}</span></div>`).join("")}</div></div>`;
+      if (visual.kind === "product-conditions") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body product-layout" data-item-count="${items.length}">${items.map((item,index)=>`<div class="product-card reveal" data-item-index="${index}"><i class="product-icon"></i><strong>${item}</strong></div>`).join("")}</div></div>`;
+      if (visual.kind === "final-checklist") return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body final-layout" data-item-count="${items.length}"><div class="final-axis reveal"></div><div class="final-core reveal">${primary}</div>${items.map((item,index)=>`<div class="final-item i${index+1} reveal" data-item-index="${index}">${item}</div>`).join("")}</div></div>`;
+      return `<div class="visual-inner"><div class="visual-heading reveal">${heading}</div><div class="visual-body points-layout" data-item-count="${items.length}" style="--item-count:${items.length}">${items.map((item,index)=>`<div class="point-row reveal" data-item-index="${index}"><b>${String(index+1).padStart(2,"0")}</b><span>${item}</span></div>`).join("")}</div></div>`;
+    };
+    const densityContract = {
+      "low-reading": [".reading-card,.verdict-card,.status-strip span", .42],
+      "measurement-conditions": [".room-map,.condition-card", .55],
+      "single-reading": [".single-count,.boundary-card", .62],
+      "retest-process": [".process-step", .70],
+      "product-conditions": [".product-card", .52],
+      "final-checklist": [".final-core,.final-item", .25],
+      "explain-points": [".point-row", .70]
+    };
+    const assertVisualDensity = (node, scene) => {
+      const body = node.querySelector(".visual-body");
+      const contract = densityContract[scene.visual_content.kind];
+      if (!body || !contract) throw new Error(`场景 ${scene.id} 缺少视觉密度合同`);
+      const bodyBox = body.getBoundingClientRect();
+      const targetArea = Array.from(body.querySelectorAll(contract[0])).reduce((total, element) => {
+        const box = element.getBoundingClientRect();
+        return total + Math.max(0, box.width) * Math.max(0, box.height);
+      }, 0);
+      const ratio = targetArea / Math.max(1, bodyBox.width * bodyBox.height);
+      const minimumRatio = scene.visual_content.kind === "explain-points" && Number(body.dataset.itemCount) === 1
+        ? .34
+        : contract[1];
+      node.dataset.visualDensityRatio = ratio.toFixed(3);
+      if (!Number.isFinite(ratio) || ratio < minimumRatio) {
+        throw new Error(`场景 ${scene.id} 有效信息仅占视觉区 ${(ratio * 100).toFixed(1)}%，会产生大面积空白`);
+      }
+    };
+    const scenesRoot = document.getElementById("scenes");
+    plan.scenes.forEach((scene, index) => {
+      const node = document.createElement("section");
+      node.className = "scene clip";
+      node.id = scene.id;
+      node.setAttribute("data-start", String(scene.start));
+      node.setAttribute("data-duration", String(Number(scene.end) - Number(scene.start)));
+      node.setAttribute("data-track-index", String(index + 1));
+      const titleClass = String(scene.title || "").length > 16 ? "reveal long-title" : "reveal";
+      node.innerHTML = `<div class="content"><header class="header"><div class="scene-number">${String(index+1).padStart(2,"0")}</div><div class="kicker reveal">${esc(scene.kicker)}</div><h1 class="${titleClass}">${esc(scene.title)}</h1><div class="argument reveal">${esc(scene.visual_content.summary)}</div></header><div class="visual">${visualMarkup(scene)}</div></div><div class="caption"><span>${esc(scene.caption)}</span></div><div class="semantic-progress" data-layout-ignore><i></i></div>`;
+      scenesRoot.appendChild(node);
+      assertVisualDensity(node, scene);
+      const titleBox = node.querySelector("h1").getBoundingClientRect();
+      const numberBox = node.querySelector(".scene-number").getBoundingClientRect();
+      if (titleBox.right > numberBox.left - 18 || titleBox.bottom > node.querySelector(".header").getBoundingClientRect().bottom) {
+        throw new Error(`场景 ${scene.id} 标题侵入编号或超出头部安全区`);
+      }
+      const startMs = Number(scene.start) * 1000;
+      const durationMs = Math.max(1200, (Number(scene.end) - Number(scene.start)) * 1000);
+      node.querySelectorAll(".reveal").forEach((element, itemIndex) => finite(element, [
+        {opacity:1, transform:"scale(.975)"},
+        {opacity:1, transform:"scale(1)"}
+      ], {duration:Math.min(360, durationMs * .08), delay:startMs + Math.min(210,itemIndex*34), easing:"cubic-bezier(.2,0,0,1)"}));
+      finite(node.querySelector(".semantic-progress i"), [
+        {transform:"scaleX(0)"},
+        {transform:"scaleX(1)"}
+      ], {duration:durationMs, delay:startMs, easing:"linear"});
+      const semanticSelectors = {
+        "low-reading": ".reading-card,.verdict-card",
+        "measurement-conditions": ".condition-card",
+        "single-reading": ".single-count,.boundary-card",
+        "retest-process": ".process-step",
+        "product-conditions": ".product-card",
+        "final-checklist": ".final-item",
+        "explain-points": ".point-row"
+      };
+      const unorderedTargets = Array.from(node.querySelectorAll(semanticSelectors[scene.visual_content.kind] || ".reveal"));
+      const requestedOrder = Array.isArray(scene.visual_content.focus_order) ? scene.visual_content.focus_order : [];
+      const semanticTargets = requestedOrder
+        .map(itemIndex => unorderedTargets.find(element => Number(element.dataset.itemIndex) === Number(itemIndex)))
+        .filter(Boolean);
+      unorderedTargets.forEach(element => { if (!semanticTargets.includes(element)) semanticTargets.push(element); });
+      semanticTargets.forEach((element, itemIndex) => {
+        const baseStyle = getComputedStyle(element);
+        const baseColor = baseStyle.backgroundColor;
+        const baseBorder = baseStyle.borderColor;
+        const activeColor = element.classList.contains("single-count") ? "rgb(47,114,90)" : element.classList.contains("verdict-card") ? "rgb(255,209,193)" : element.classList.contains("reading-card") ? "rgb(207,235,211)" : "rgb(220,236,160)";
+        const slot = .86 / Math.max(1, semanticTargets.length);
+        const begin = .04 + itemIndex * slot;
+        const peak = begin + slot * .54;
+        const finish = begin + slot;
+        finite(element, [
+          {offset:0,backgroundColor:baseColor,borderColor:baseBorder,boxShadow:"0 0 0 rgba(118,144,15,0)"},
+          {offset:begin,backgroundColor:baseColor,borderColor:baseBorder,boxShadow:"0 0 0 rgba(118,144,15,0)"},
+          {offset:peak,backgroundColor:activeColor,borderColor:"rgb(118,144,15)",boxShadow:"0 0 0 8px rgba(200,227,91,.58)"},
+          {offset:finish,backgroundColor:baseColor,borderColor:baseBorder,boxShadow:"0 0 0 rgba(118,144,15,0)"},
+          {offset:1,backgroundColor:baseColor,borderColor:baseBorder,boxShadow:"0 0 0 rgba(118,144,15,0)"}
+        ], {duration:durationMs,delay:startMs,easing:"linear"});
+      });
+      const reading = node.querySelector(".reading-card strong");
+      if (reading) finite(reading, [{transform:"scale(.82)",color:"#76900f"},{transform:"scale(1.08)",color:"#1f5a46",offset:.58},{transform:"scale(1)",color:"#1f5a46"}], {duration:900,delay:startMs+120,easing:"ease-out"});
+      const dot = node.querySelector(".measure-dot");
+      if (dot) finite(dot, [{transform:"scale(.72)",opacity:.45},{transform:"scale(1.12)",opacity:1,offset:.6},{transform:"scale(1)",opacity:1}], {duration:760,delay:startMs+90,easing:"ease-out"});
+      const core = node.querySelector(".final-core");
+      if (core) finite(core, [{transform:"scale(.82)",opacity:.25},{transform:"scale(1.04)",opacity:1,offset:.62},{transform:"scale(1)",opacity:1}], {duration:820,delay:startMs+100,easing:"ease-out"});
+    });
+  </script>
+</body>
+</html>

@@ -349,6 +349,32 @@ def _infer_industry(goal: str) -> str:
     return "通用企业与内容服务"
 
 
+def _infer_audience(goal: str) -> str:
+    """Keep an explicit audience from the user's goal instead of a UI placeholder."""
+
+    # A normal brief often embeds the audience in the middle of a sentence,
+    # for example "制作一条面向新房家庭的竖屏短视频".  Requiring punctuation
+    # before 面向 discarded that audience and produced the meaningless UI
+    # placeholder "目标客户与内容受众".  Stop before common deliverable words
+    # so the media format itself is not mistaken for part of the audience.
+    match = re.search(r"(?:主要)?面向([^，。；;]{2,40}?)(?=(?:制作|创作|生成|[，。；;]|$))", goal)
+    if match:
+        audience = _clean_space(match.group(1)).strip("，。；;:：")
+        # In “面向<受众>的<交付物>”, remove only a known deliverable suffix
+        # from the end.  Do not let an earlier “的” inside the audience (for
+        # example “有疑虑的业主”) terminate the capture.
+        audience = re.sub(
+            r"的(?:新品|科普|品牌|营销|宣传|系列|批量|竖屏|横屏)*"
+            r"(?:短视频|视频|内容|文案|方案|介绍)$",
+            "",
+            audience,
+            flags=re.IGNORECASE,
+        ).strip("，。；;:：")
+        if audience:
+            return audience
+    return "目标客户与内容受众"
+
+
 def _infer_platforms(goal: str) -> list[str]:
     known = ("抖音", "TikTok", "小红书", "视频号", "快手", "B站", "YouTube")
     selected = [platform for platform in known if platform.casefold() in goal.casefold()]
@@ -686,6 +712,7 @@ def local_capability_pack(goal: object, memory_rules: list[Any] | None = None) -
     raw = {
         "industry": _infer_industry(normalized_goal),
         "goal": normalized_goal,
+        "audience": _infer_audience(normalized_goal),
         "platforms": _infer_platforms(normalized_goal),
         "content_purpose": _infer_purpose(normalized_goal),
         "risk_level": _infer_risk(normalized_goal),
@@ -736,8 +763,75 @@ def legacy_clean_air_pack() -> dict[str, Any]:
 
 
 def _short_title(value: str, maximum: int = 56) -> str:
-    text = _clean_space(value).strip("，。；;:：!?！？")
-    return text if len(text) <= maximum else f"{text[: maximum - 1]}…"
+    # Keep an intentional question/exclamation mark: it carries the editorial
+    # angle of a real topic card.  Remove only separators and sentence periods.
+    text = _clean_space(value).strip("，。；;:：")
+    if len(text) <= maximum:
+        return text
+    terminal = text[-1] if text[-1] in "!?！？" else ""
+    prefix_budget = maximum - 2 if terminal else maximum - 1
+    return f"{text[:prefix_budget]}…{terminal}"
+
+
+def _derive_topic_focus(goal: str, snapshot: dict[str, Any]) -> str:
+    """Turn a production brief into a subject that can be narrated as a topic.
+
+    A goal describes who should make which deliverable for whom.  It is not a
+    usable video title.  Prefer the caller's explicit content focus and bind it
+    to the named business object; fall back to the action payload or the
+    capability snapshot instead of truncating the raw brief mid-sentence.
+    """
+
+    normalized = _clean_space(goal).strip("，。；;:：")
+    subject_match = re.match(
+        r"^(?:为|给)(.{2,40}?)(?:制作|创作|生成|策划|打造|介绍|讲解|说明|宣传|推广)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    subject = subject_match.group(1).strip("，。；;:：") if subject_match else ""
+    focus_match = re.search(
+        r"(?:重点|主要|集中)(?:讲清|说明|介绍|展示|解释|讲解|呈现)[：:\s]*"
+        r"([^。；;]{2,80})",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    focus = focus_match.group(1).strip("，。；;:：") if focus_match else ""
+
+    if not focus and subject_match:
+        payload = normalized[subject_match.end():]
+        payload = re.split(r"[，,](?:重点|主要|集中)", payload, maxsplit=1)[0]
+        payload = re.sub(r"^一(?:条|组|套|个)\s*", "", payload)
+        audience_prefix = str(snapshot.get("audience", "")).strip()
+        if audience_prefix:
+            payload = re.sub(
+                rf"^面向{re.escape(audience_prefix)}的",
+                "",
+                payload,
+            )
+        payload = re.sub(
+            r"(?:竖屏|横屏|系列|批量|品牌|营销|宣传)?(?:短视频|视频|内容|文案|方案)$",
+            "",
+            payload,
+            flags=re.IGNORECASE,
+        )
+        focus = payload.strip("，。；;:：")
+        if focus in {"新品", "科普", "品牌", "营销", "宣传", "介绍"}:
+            focus = ""
+
+    if subject and focus:
+        if subject in focus:
+            combined = focus
+        elif re.match(r"^(?:为什么|为何|如何|怎么|哪些|是否|能否|什么)", focus):
+            combined = f"{subject}：{focus}"
+        else:
+            combined = f"{subject}的{focus}"
+    elif focus:
+        combined = focus
+    elif subject:
+        combined = f"{subject}的{snapshot['content_purpose']}"
+    else:
+        combined = f"{snapshot['industry']}的{snapshot['content_purpose']}"
+    return _short_title(combined, 42)
 
 
 def local_topic_candidates(
@@ -760,10 +854,10 @@ def local_topic_candidates(
     }
 
     snapshot = validated["snapshot"]
-    focus = _short_title(normalized_goal, 42)
+    focus = _derive_topic_focus(normalized_goal, snapshot)
     audience = snapshot["audience"]
     label = _short_title(snapshot["label"], 28)
-    templates = (
+    generic_templates = (
         (f"先讲清楚：{focus}", "从用户最先需要理解的问题切入，先建立清晰判断。"),
         (f"{audience}最容易忽略的三个判断点", "用有限要点降低理解成本，同时保留证据和适用边界。"),
         (f"从需求到结果：{label}的可靠选择路径", "以真实决策过程组织内容，避免只堆叠功能和口号。"),
@@ -772,6 +866,16 @@ def local_topic_candidates(
         (f"在60秒内说清{focus}的边界", "主动说明什么能做、什么不能承诺，增强可信度。"),
         (f"{audience}可以立即使用的检查清单", "将抽象信息转成可执行的核对步骤，不代替专业判断。"),
         (f"常见误解反转：重新理解{focus}", "以“误解—证据—边界”结构完成一次简洁纠偏。"),
+    )
+    clean_air_templates = (
+        ("甲醛检测数值低，就能安心入住吗？", "从最常见的入住判断切入，区分检测数值、检测条件与结论边界。"),
+        ("甲醛检测前，哪些条件必须先记录？", "把门窗状态、检测位置和持续时间组织成可执行的核对顺序。"),
+        ("除甲醛结论，如何核对来源和适用边界？", "先查来源和适用条件，避免把有限证据外推成入住保证。"),
+    )
+    templates = (
+        (*clean_air_templates, *generic_templates)
+        if _contains_any(normalized_goal, ("甲醛", "除醛", "测醛"))
+        else generic_templates
     )
 
     candidates: list[dict[str, str]] = []

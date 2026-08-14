@@ -7,13 +7,13 @@ import unittest
 from pathlib import Path
 
 from core.capability_pack import legacy_clean_air_pack
-from core.config import ConfigStore
+from core.config import CONFIG_SCHEMA_VERSION, ConfigStore
 from core.catalog import CatalogError, PackageCatalog
 from core.discovery import ProjectDiscovery
 from core.motion_director import MotionPlanError, build_motion_plan, build_motion_project, derive_motion_segments, validate_motion_plan
 from core.orchestrator import JobStore, local_fallback_plan
 from core.provider import BudgetLedger, OpenAICompatibleProvider, ProviderError
-from core.production import DEFAULT_SCRIPT, ProductionRunner, review_script
+from core.production import DEFAULT_SCRIPT, ProductionRunner, build_local_variants, review_script
 from core.web_agent import WebResearchAgent, bind_exact_evidence_candidates, normalize_research_result
 from core.web_tools import TrustedWebToolRegistry
 
@@ -22,10 +22,10 @@ class ConfigTests(unittest.TestCase):
     def test_defaults_and_safe_key_handling(self):
         with tempfile.TemporaryDirectory() as folder:
             store = ConfigStore(Path(folder))
-            self.assertEqual(store.load()["provider"]["model"], "deepseek-v4-flash")
+            self.assertEqual(store.load()["provider"]["model"], "deepseek-v4-pro")
             self.assertEqual(store.load()["research"]["max_model_turns"], 2)
-            public = store.save({"provider": {"model": "custom-model", "api_key": "secret", "persist_api_key": False}})
-            self.assertEqual(public["provider"]["model"], "custom-model")
+            public = store.save({"provider": {"model": "deepseek-v4-pro", "api_key": "secret", "persist_api_key": False}})
+            self.assertEqual(public["provider"]["model"], "deepseek-v4-pro")
             self.assertTrue(public["provider"]["has_api_key"])
             self.assertFalse((Path(folder) / "secrets.json").exists())
             self.assertNotIn("secret", (Path(folder) / "config.json").read_text(encoding="utf-8"))
@@ -40,6 +40,25 @@ class ConfigTests(unittest.TestCase):
             for name in ("tools", "models", "downloads", "cache", "temp", "logs", "projects"):
                 self.assertTrue((storage / name).is_dir())
 
+    def test_saving_only_provider_does_not_create_unused_resource_catalogue(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = Path(folder) / "runtime"
+            runtime.mkdir()
+            unused = Path(folder) / "unused-resource-catalogue"
+            (runtime / "config.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": CONFIG_SCHEMA_VERSION,
+                        "provider": {"model": "deepseek-v4-pro"},
+                        "storage": {"root": str(unused)},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            ConfigStore(runtime).save({"provider": {"model": "deepseek-v4-pro"}})
+            self.assertFalse(unused.exists())
+
     def test_storage_rejects_drive_root(self):
         if os.name != "nt":
             self.skipTest("Windows drive-root rule")
@@ -47,6 +66,34 @@ class ConfigTests(unittest.TestCase):
             store = ConfigStore(Path(folder) / "runtime")
             with self.assertRaises(ValueError):
                 store.save({"storage": {"root": Path(folder).anchor}})
+
+    def test_legacy_shipped_flash_default_is_migrated_to_pro_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = Path(folder)
+            path = runtime / "config.json"
+            path.write_text(
+                json.dumps({"provider": {"model": "deepseek-v4-flash"}}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            store = ConfigStore(runtime)
+            self.assertEqual("deepseek-v4-pro", store.load()["provider"]["model"])
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(CONFIG_SCHEMA_VERSION, persisted["schema_version"])
+            self.assertEqual("deepseek-v4-pro", persisted["provider"]["model"])
+
+    def test_legacy_custom_model_is_preserved_while_schema_is_marked(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = Path(folder)
+            path = runtime / "config.json"
+            path.write_text(
+                json.dumps({"provider": {"model": "customer-model"}}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            store = ConfigStore(runtime)
+            self.assertEqual("customer-model", store.load()["provider"]["model"])
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(CONFIG_SCHEMA_VERSION, persisted["schema_version"])
+            self.assertEqual("customer-model", persisted["provider"]["model"])
 
 
 class CatalogTests(unittest.TestCase):
@@ -90,6 +137,12 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class ProviderTests(unittest.TestCase):
+    def test_provider_fallback_matches_new_install_default(self):
+        with tempfile.TemporaryDirectory() as folder:
+            default_model = ConfigStore(Path(folder)).load()["provider"]["model"]
+        provider = OpenAICompatibleProvider({"base_url": "https://api.deepseek.com"}, "")
+        self.assertEqual(provider.model, default_model)
+
     def test_parse_fenced_json(self):
         value = OpenAICompatibleProvider.parse_json_content('```json\n{"goal":"x","steps":[]}\n```')
         self.assertEqual(value["goal"], "x")
@@ -451,7 +504,7 @@ class WebAgentTests(unittest.TestCase):
         self.assertNotIn("human_verified", json.dumps(candidate, ensure_ascii=False))
         self.assertNotIn("reviewer", candidate)
 
-    def test_seed_source_prefetch_preserves_exact_evidence_when_budget_is_exhausted(self):
+    def test_seed_source_prefetch_fails_closed_without_adversarial_review_capability(self):
         excerpt = "广告使用数据、统计资料、调查结果、文摘、引用语等引证内容的，应当真实、准确，并表明出处。引证内容有适用范围和有效期限的，应当明确表示。"
 
         def law_extract(url, output_dir):
@@ -476,7 +529,13 @@ class WebAgentTests(unittest.TestCase):
                 capability_pack=legacy_clean_air_pack(),
             )
         self.assertEqual(result["tool_trace"][0]["tool"], "extract_url")
-        self.assertEqual(result["evidence_review"]["script_eligible_count"], 1)
+        self.assertEqual(len(result["findings"]), 1)
+        self.assertFalse(result["findings"][0]["script_eligible"])
+        self.assertEqual(result["evidence_review"]["script_eligible_count"], 0)
+        self.assertTrue(result["strict_audit"]["model_review_required"])
+        self.assertEqual(result["strict_audit"]["model_review_status"], "missing")
+        self.assertEqual(result["strict_audit"]["passed_count"], 0)
+        self.assertIn("反证审核能力不可用", result["strict_audit"]["model_review_error"])
         self.assertIn("预算已耗尽", result["evidence_gaps"][0])
 
     def test_off_topic_search_is_reanchored_to_the_selected_topic(self):
@@ -527,7 +586,13 @@ class OrchestratorTests(unittest.TestCase):
             job = jobs.create(plan, production_input={"topic": "气味小就代表甲醛少吗？"})
             jobs.approve(job["id"])
             with self.assertRaises(Exception):
-                jobs.update_script(job["id"], DEFAULT_SCRIPT, review_script(DEFAULT_SCRIPT), {"estimated_seconds": 50})
+                jobs.update_script(
+                    job["id"],
+                    DEFAULT_SCRIPT,
+                    review_script(DEFAULT_SCRIPT),
+                    {"estimated_seconds": 50},
+                    "何sir",
+                )
 
 
 class ProductionTests(unittest.TestCase):
@@ -594,9 +659,33 @@ class ProductionTests(unittest.TestCase):
         segments = derive_motion_segments("气味小就代表甲醛少吗？", script)
         self.assertGreaterEqual(len(segments), 4)
         joined = "".join(item["caption"] for item in segments)
+        self.assertEqual(joined, script)
         self.assertIn("新家具", joined)
         self.assertNotIn("除醛率 99", joined)
         self.assertTrue(all(len(item["caption"]) <= 62 for item in segments))
+
+    def test_motion_segments_preserve_full_formal_local_safe_script(self):
+        pack = legacy_clean_air_pack()
+        script = build_local_variants(
+            "为什么数值低不代表安全？",
+            "准备入住的新房家庭",
+            capability_pack=pack,
+        )[0]["script"]
+        segments = derive_motion_segments(
+            "为什么数值低不代表安全？",
+            script,
+            capability_pack=pack,
+        )
+        self.assertEqual(
+            ProductionRunner._caption_binding_text("".join(item["caption"] for item in segments)),
+            ProductionRunner._caption_binding_text(script),
+        )
+        self.assertTrue(4 <= len(segments) <= 8)
+        self.assertTrue(all(1 <= len(item["caption"]) <= 62 for item in segments))
+
+    def test_motion_segments_fail_closed_instead_of_truncating_oversized_script(self):
+        with self.assertRaisesRegex(MotionPlanError, "完整字幕容量"):
+            derive_motion_segments("超长脚本", "甲" * (8 * 62 + 1))
 
 
 if __name__ == "__main__":

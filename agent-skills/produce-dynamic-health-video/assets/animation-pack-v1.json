@@ -1,0 +1,239 @@
+{
+  "schema_version": "1.0",
+  "pack_id": "shiyi-animation-pack-v1",
+  "version": "1.1.0",
+  "sha256": "645b3291b362d57b172ed3368c8208961f36b51f8674eb4f64a6dc3807dfdc7d",
+  "renderer": "hyperframes-waapi-v1",
+  "renderer_families": [
+    {"id": "radial-focus", "renderer": "hyperframes-waapi-v1", "description": "圆环、靶心与外围信号汇聚的参数化径向构图"},
+    {"id": "evidence-lens", "renderer": "hyperframes-waapi-v1", "description": "资料面板、字段线与焦点镜头的参数化证据构图"},
+    {"id": "space-scale", "renderer": "hyperframes-waapi-v1", "description": "容器、平面与适用范围关系的参数化空间构图"},
+    {"id": "sequential-flow", "renderer": "hyperframes-waapi-v1", "description": "步骤节点、检查清单与决策阶梯的参数化流程构图"},
+    {"id": "temporal-wave", "renderer": "hyperframes-waapi-v1", "description": "时钟、时间轴与节奏轨道的参数化时间构图"},
+    {"id": "document-stack", "renderer": "hyperframes-waapi-v1", "description": "资料页、来源层与引用页签的参数化文档构图"},
+    {"id": "binary-compare", "renderer": "hyperframes-waapi-v1", "description": "双栏方案、条件差异与权衡关系的参数化比较构图"},
+    {"id": "orbit-conclusion", "renderer": "hyperframes-waapi-v1", "description": "多要点向行动或边界结论汇聚的参数化收束构图"},
+    {"id": "threshold-gauge", "renderer": "hyperframes-waapi-v1", "description": "风险刻度、合规进度与置信指针的参数化仪表构图"},
+    {"id": "layered-pyramid", "renderer": "hyperframes-waapi-v1", "description": "证据层级、决策卡层与行动优先级的参数化分层构图"},
+    {"id": "network-map", "renderer": "hyperframes-waapi-v1", "description": "来源、受众与行动节点之间关系的参数化网络构图"},
+    {"id": "shield-boundary", "renderer": "hyperframes-waapi-v1", "description": "安全护盾、主张门禁与适用围栏的参数化边界构图"}
+  ],
+  "blocks": [
+    {
+      "id": "stat-ring", "label": "数据圆环", "renderer_family": "radial-focus",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["hook", "metric", "evidence"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "数据圆环分段缩放入场", "secondary": "中心结论有限次数呼吸强调", "transition": "lime-wipe"}
+    },
+    {
+      "id": "signal-grid", "label": "信号汇聚", "renderer_family": "radial-focus",
+      "allowed_pack_modes": ["generic"], "semantic_tags": ["hook", "audience", "evidence"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "四向信号节点依次进入核心", "secondary": "网格核心有限次数聚焦", "transition": "lime-wipe"}
+    },
+    {
+      "id": "target-burst", "label": "靶心破题", "renderer_family": "radial-focus",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["hook", "action", "risk"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "多层靶环逐级锁定中心", "secondary": "警示刻度有限向外扩散", "transition": "orange-wipe"}
+    },
+    {
+      "id": "magnifier", "label": "证据放大镜", "renderer_family": "evidence-lens",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["evidence", "document", "risk"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "放大镜沿字段有限往返", "secondary": "资料字段依次显现", "transition": "green-wipe"}
+    },
+    {
+      "id": "focus-lens", "label": "依据聚焦", "renderer_family": "evidence-lens",
+      "allowed_pack_modes": ["generic"], "semantic_tags": ["source", "evidence", "boundary"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "方形焦框移动到关键依据", "secondary": "边界字段逐项强调", "transition": "green-wipe"}
+    },
+    {
+      "id": "source-spotlight", "label": "来源探照", "renderer_family": "evidence-lens",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["source", "document", "evidence"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "圆形探照区域扫描来源卡", "secondary": "来源徽标按顺序点亮", "transition": "lime-wipe"}
+    },
+    {
+      "id": "liquid-chamber", "label": "尺度与空间", "renderer_family": "space-scale",
+      "allowed_pack_modes": ["legacy_clean_air"], "semantic_tags": ["space", "metric", "boundary"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "液体容器与空间框展开", "secondary": "液面按有限时长升起", "transition": "lime-wipe"}
+    },
+    {
+      "id": "room-map", "label": "空间平面图", "renderer_family": "space-scale",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["space", "audience", "boundary"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "房间平面分区依次展开", "secondary": "场景标记有限次数定位", "transition": "green-wipe"}
+    },
+    {
+      "id": "scope-box", "label": "适用范围框", "renderer_family": "space-scale",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["space", "boundary", "comparison"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "嵌套范围框由外向内收束", "secondary": "适用与不适用区域分次标记", "transition": "orange-wipe"}
+    },
+    {
+      "id": "process-flow", "label": "步骤流程", "renderer_family": "sequential-flow",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["process", "action", "boundary"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "流程节点按顺序展开", "secondary": "连接进度向前推进", "transition": "lime-wipe"}
+    },
+    {
+      "id": "checklist-path", "label": "核验清单", "renderer_family": "sequential-flow",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["process", "evidence", "action"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "检查卡片逐条确认", "secondary": "完成标记有限次落位", "transition": "green-wipe"}
+    },
+    {
+      "id": "decision-ladder", "label": "决策阶梯", "renderer_family": "sequential-flow",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["process", "comparison", "action"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "决策阶梯逐级抬升", "secondary": "行动箭头沿阶梯推进", "transition": "orange-wipe"}
+    },
+    {
+      "id": "clock-wave", "label": "时钟波形", "renderer_family": "temporal-wave",
+      "allowed_pack_modes": ["legacy_clean_air"], "semantic_tags": ["timeline", "metric", "process"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "时钟指针按有限角度推进", "secondary": "波形柱依次起伏", "transition": "green-wipe"}
+    },
+    {
+      "id": "timeline-pulse", "label": "时间轴脉冲", "renderer_family": "temporal-wave",
+      "allowed_pack_modes": ["generic"], "semantic_tags": ["timeline", "process", "action"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "水平时间轴按阶段推进", "secondary": "节点依次有限脉冲", "transition": "green-wipe"}
+    },
+    {
+      "id": "cadence-track", "label": "节奏轨道", "renderer_family": "temporal-wave",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["timeline", "process", "evidence"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "多轨节奏条依次铺开", "secondary": "证据拍点有限次数点亮", "transition": "lime-wipe"}
+    },
+    {
+      "id": "report-scan", "label": "报告核验", "renderer_family": "document-stack",
+      "allowed_pack_modes": ["legacy_clean_air"], "semantic_tags": ["document", "source", "evidence"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "报告面板升起并有限扫描", "secondary": "字段逐行显现", "transition": "green-wipe"}
+    },
+    {
+      "id": "source-stack", "label": "来源卡片", "renderer_family": "document-stack",
+      "allowed_pack_modes": ["generic"], "semantic_tags": ["source", "document", "evidence"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "来源卡片分层升起", "secondary": "核验标记逐项显现", "transition": "green-wipe"}
+    },
+    {
+      "id": "citation-pages", "label": "引用页签", "renderer_family": "document-stack",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["document", "source", "boundary"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "引用页签按层级错位展开", "secondary": "边界标签有限次数盖章", "transition": "lime-wipe"}
+    },
+    {
+      "id": "compare", "label": "条件对照", "renderer_family": "binary-compare",
+      "allowed_pack_modes": ["legacy_clean_air"], "semantic_tags": ["comparison", "boundary", "risk"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "双栏条件对向进入", "secondary": "不等号有限次数强调", "transition": "orange-wipe"}
+    },
+    {
+      "id": "option-compare", "label": "方案比较", "renderer_family": "binary-compare",
+      "allowed_pack_modes": ["generic"], "semantic_tags": ["comparison", "boundary", "action"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "两种方案对向进入", "secondary": "适用范围有限次数强调", "transition": "orange-wipe"}
+    },
+    {
+      "id": "tradeoff-balance", "label": "权衡天平", "renderer_family": "binary-compare",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["comparison", "risk", "action"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "权衡横梁由倾斜回到平衡", "secondary": "两端条件砝码依次落位", "transition": "orange-wipe"}
+    },
+    {
+      "id": "orbit-summary", "label": "结论汇聚", "renderer_family": "orbit-conclusion",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["summary", "action", "boundary"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "六项要点向核心结论汇聚", "secondary": "核心光环有限次数强调", "transition": "lime-wipe"}
+    },
+    {
+      "id": "action-orbit", "label": "行动轨道", "renderer_family": "orbit-conclusion",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["summary", "process", "action"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "行动节点沿三条轨道归位", "secondary": "中心行动词有限次数放大", "transition": "green-wipe"}
+    },
+    {
+      "id": "boundary-orbit", "label": "边界轨道", "renderer_family": "orbit-conclusion",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["summary", "boundary", "risk"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "风险节点由外圈收拢到边界线", "secondary": "边界核心有限次数旋转强调", "transition": "orange-wipe"}
+    },
+    {
+      "id": "risk-gauge", "label": "风险刻度", "renderer_family": "threshold-gauge",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["metric", "risk", "boundary"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "半圆风险指针扫过有限刻度", "secondary": "风险区段按顺序点亮", "transition": "orange-wipe"}
+    },
+    {
+      "id": "compliance-meter", "label": "合规进度", "renderer_family": "threshold-gauge",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["metric", "evidence", "action"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "纵向合规条按步骤填充", "secondary": "核验节点依次确认", "transition": "green-wipe"}
+    },
+    {
+      "id": "confidence-dial", "label": "可信指针", "renderer_family": "threshold-gauge",
+      "allowed_pack_modes": ["generic"], "semantic_tags": ["metric", "evidence", "source"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "可信指针按来源权重转动", "secondary": "三层可信区有限展开", "transition": "lime-wipe"}
+    },
+    {
+      "id": "evidence-pyramid", "label": "证据金字塔", "renderer_family": "layered-pyramid",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["evidence", "source", "boundary"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "证据层级由底向顶建立", "secondary": "来源标签依次进入层内", "transition": "green-wipe"}
+    },
+    {
+      "id": "decision-stack", "label": "决策卡层", "renderer_family": "layered-pyramid",
+      "allowed_pack_modes": ["generic"], "semantic_tags": ["comparison", "process", "action"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "决策卡从后向前错层落位", "secondary": "选择标记有限次数切换", "transition": "lime-wipe"}
+    },
+    {
+      "id": "priority-layers", "label": "行动优先级", "renderer_family": "layered-pyramid",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["action", "risk", "process"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "优先级条由低到高展开", "secondary": "风险标记按级别有限点亮", "transition": "orange-wipe"}
+    },
+    {
+      "id": "source-network", "label": "来源网络", "renderer_family": "network-map",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["source", "evidence", "document"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "来源节点沿连接线依次显现", "secondary": "中心证据节点有限聚焦", "transition": "green-wipe"}
+    },
+    {
+      "id": "audience-network", "label": "受众网络", "renderer_family": "network-map",
+      "allowed_pack_modes": ["generic"], "semantic_tags": ["audience", "action", "process"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "受众群组从三侧接入中心", "secondary": "路径标签按顺序点亮", "transition": "lime-wipe"}
+    },
+    {
+      "id": "action-network", "label": "行动网络", "renderer_family": "network-map",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["action", "process", "boundary"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "行动节点沿分支路径逐级推进", "secondary": "终点边界节点有限强调", "transition": "orange-wipe"}
+    },
+    {
+      "id": "safety-shield", "label": "安全护盾", "renderer_family": "shield-boundary",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["risk", "boundary", "action"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "护盾轮廓由下向上建立", "secondary": "安全检查项依次通过", "transition": "green-wipe"}
+    },
+    {
+      "id": "claim-guard", "label": "主张门禁", "renderer_family": "shield-boundary",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["boundary", "evidence", "source"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "证据卡依次穿过主张门禁", "secondary": "拦截标记有限次数关闭", "transition": "orange-wipe"}
+    },
+    {
+      "id": "scope-fence", "label": "适用围栏", "renderer_family": "shield-boundary",
+      "allowed_pack_modes": ["generic", "legacy_clean_air"], "semantic_tags": ["boundary", "space", "risk"],
+      "duration_seconds": {"minimum": 3.5, "maximum": 20.0}, "text_limits": {"kicker": 32, "title": 32, "caption": 62},
+      "motion": {"primary": "四段适用围栏按顺序闭合", "secondary": "范围核心有限次数缩放", "transition": "orange-wipe"}
+    }
+  ]
+}

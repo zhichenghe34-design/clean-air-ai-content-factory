@@ -727,7 +727,9 @@ function transcodeAndInspect(rawPath, introFrame, outputPath, ffmpeg, ffprobe) {
       + '[intro][body]concat=n=2:v=1:a=0,format=yuv420p[outv]',
     '-map', '[outv]',
     '-t', String(TARGET_SECONDS),
-    '-an', '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
+    '-an', '-c:v', 'h264_mf',
+    '-rate_control', 'quality', '-quality', '72',
+    '-scenario', 'archive', '-hw_encoding', '0', '-bf', '0',
     '-movflags', '+faststart', outputPath,
   ], 'Demo 转码');
 

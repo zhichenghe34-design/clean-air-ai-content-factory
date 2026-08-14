@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "HyperFrames",
+  "repository": "https://github.com/heygen-com/hyperframes",
+  "upstream_tag": "v0.7.86",
+  "upstream_commit": "1a52351f05237433006e6ca92db18feafed16fed",
+  "npm_package": "hyperframes",
+  "npm_version": "0.7.86",
+  "npm_resolved": "https://registry.npmjs.org/hyperframes/-/hyperframes-0.7.86.tgz",
+  "npm_integrity": "sha512-R8Vds5hY9XULMsCGUa+qynC7F0tL7KZyDaL6cgQ4xyJAATC9fOIPgRMOBkOHYd9JOntRqbR9bFSsfK7mYJjaow==",
+  "license": "Apache-2.0",
+  "license_source": "https://raw.githubusercontent.com/heygen-com/hyperframes/v0.7.86/LICENSE",
+  "license_sha256": "4259155FB06F127687EE7B0A8A3682D45132DB0F2DA26CBC0B7A2D1E796436B8",
+  "modified_distribution": {
+    "status": "patched_for_windows_media_foundation_and_offline_runtime",
+    "patch_manifest": "windows-mf-patch.json",
+    "patch_id": "shiyi-hyperframes-windows-mf",
+    "patch_version": "1.2.0",
+    "modified_files": [
+      {
+        "path": "dist/cli.js",
+        "upstream_sha256": "B89672986C4487A133B241261AC610EA9F9CCDE467F206E18A60BEFFACAB6CB8",
+        "patched_sha256": "86DA751BA397FF551355BA0C90370D732A297C3DC4652C981E9A8146D8EAC108"
+      }
+    ]
+  }
+}

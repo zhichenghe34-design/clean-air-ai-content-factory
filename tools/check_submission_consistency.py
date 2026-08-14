@@ -134,7 +134,9 @@ def main() -> int:
         content = path.read_text(encoding="utf-8", errors="replace")
         label = str(path.relative_to(repo))
         for stale in stale_markers:
-            if stale in content:
+            # Numeric stale markers must not match the tail of a larger
+            # current value (for example, "32 项" inside "232 项").
+            if re.search(rf"(?<!\d){re.escape(stale)}", content):
                 errors.append(f"{label} 仍含过期口径：{stale}")
         for port in re.findall(r"127\.0\.0\.1:(\d+)", content):
             if port != "8765":

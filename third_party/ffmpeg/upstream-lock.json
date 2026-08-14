@@ -1,0 +1,400 @@
+{
+  "schema_version": 2,
+  "component": "Self-built FFmpeg LGPL shared Windows x64 runtime",
+  "distribution_status": "release_ready_source_companion_frozen",
+  "license": "LGPL-2.1-or-later",
+  "build": {
+    "ffmpeg_version": "8.0.git",
+    "ffmpeg_commit": "d3ad8a7fee6a647c6362e4a105d949282d50a98f",
+    "target": "windows-x86_64-msvc-shared",
+    "external_libraries": [
+      "mediafoundation",
+      "zlib"
+    ],
+    "hardware_acceleration_system_interfaces": [
+      "d3d11va"
+    ],
+    "configuration_is_path_normalized": true,
+    "configure_flags": [
+      "--prefix=<BUILD_ROOT>/prefix",
+      "--toolchain=msvc",
+      "--arch=x86_64",
+      "--target-os=win64",
+      "--enable-shared",
+      "--disable-static",
+      "--disable-debug",
+      "--disable-doc",
+      "--disable-ffplay",
+      "--disable-autodetect",
+      "--disable-network",
+      "--disable-avdevice",
+      "--enable-w32threads",
+      "--enable-zlib",
+      "--enable-ffmpeg",
+      "--enable-ffprobe",
+      "--enable-mediafoundation",
+      "--enable-d3d11va",
+      "--enable-encoder=h264_mf",
+      "--enable-encoder=aac",
+      "--extra-cflags=-I<BUILD_ROOT>/zlib-prefix/include",
+      "--extra-ldflags=-libpath:<BUILD_ROOT>/zlib-prefix/lib"
+    ],
+    "verified_config_macros": {
+      "CONFIG_GPL": 0,
+      "CONFIG_GPLV3": 0,
+      "CONFIG_VERSION3": 0,
+      "CONFIG_NETWORK": 0,
+      "CONFIG_SHARED": 1,
+      "CONFIG_STATIC": 0,
+      "CONFIG_ZLIB": 1,
+      "CONFIG_D3D11VA": 1,
+      "CONFIG_H264_MF_ENCODER": 1,
+      "CONFIG_AAC_ENCODER": 1,
+      "CONFIG_PNG_DECODER": 1
+    },
+    "sources": [
+      {
+        "id": "ffmpeg",
+        "name": "FFmpeg-d3ad8a7fee6a647c6362e4a105d949282d50a98f.tar.gz",
+        "companion_path": "sources/FFmpeg-d3ad8a7fee6a647c6362e4a105d949282d50a98f.tar.gz",
+        "commit": "d3ad8a7fee6a647c6362e4a105d949282d50a98f",
+        "bytes": 17492386,
+        "sha256": "6f7b70d14dbf30b14c2dd78423b289fdceef04e22d3ba7201ffb12066a6ec53b",
+        "upstream_url": "https://api.github.com/repos/FFmpeg/FFmpeg/tarball/d3ad8a7fee6a647c6362e4a105d949282d50a98f",
+        "license": "LGPL-2.1-or-later build; source archive also contains files under their stated per-file licenses"
+      },
+      {
+        "id": "zlib",
+        "name": "zlib-1.3.2.tar.gz",
+        "companion_path": "sources/zlib-1.3.2.tar.gz",
+        "version": "1.3.2",
+        "bytes": 1502830,
+        "sha256": "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16",
+        "upstream_url": "https://zlib.net/zlib-1.3.2.tar.gz",
+        "license": "Zlib"
+      }
+    ],
+    "repository_files": [
+      {
+        "path": "third_party/ffmpeg/build-lgpl-msvc.ps1",
+        "bytes": 11429,
+        "sha256": "0a039b60a10e9cedfeab20db4246ef30b6520e44cf42c094b70588d5dd669b46"
+      },
+      {
+        "path": "third_party/ffmpeg/probe-lgpl-runtime.py",
+        "bytes": 14628,
+        "sha256": "67d426d4cf23f827cb14021b7333daf7b5ee5eb0292b1e5af6a7cff29ece36de"
+      },
+      {
+        "path": "third_party/ffmpeg/make-source-companion.py",
+        "bytes": 3851,
+        "sha256": "7e879980d82ff1e5ac840233684c52f9152a05935fe95492e11b8260c14e432d"
+      },
+      {
+        "path": "third_party/ffmpeg/sanitize-build-evidence.py",
+        "bytes": 5149,
+        "sha256": "156c7b98f51790b48b8a75b664d2e1fafcf6414d32c41c16972be5b9422a7b41"
+      },
+      {
+        "path": "third_party/ffmpeg/patches/0001-localized-msvc-detection.patch",
+        "bytes": 730,
+        "sha256": "593e94caa81b1173e01fe56c4bf0f03349cf237096cd380764199d5a1173553d"
+      },
+      {
+        "path": "third_party/ffmpeg/licenses/FFmpeg-COPYING.LGPLv2.1",
+        "bytes": 26517,
+        "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30"
+      },
+      {
+        "path": "third_party/ffmpeg/licenses/FFmpeg-COPYING.LGPLv3",
+        "bytes": 7651,
+        "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768"
+      },
+      {
+        "path": "third_party/ffmpeg/licenses/FFmpeg-LICENSE.md",
+        "bytes": 4346,
+        "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af"
+      },
+      {
+        "path": "third_party/ffmpeg/licenses/zlib-LICENSE",
+        "bytes": 1002,
+        "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
+      },
+      {
+        "path": "tools/verify_ffmpeg_distribution.py",
+        "bytes": 37195,
+        "sha256": "69fe118dd7a829a71793e50a1806dadae5e68aeae7e56b6f32ceddb25c2caa0b"
+      }
+    ],
+    "toolchain": [
+      {
+        "id": "msys2-base",
+        "version": "20260611 / runtime 3.6.9-01d6c708",
+        "name": "msys2-base-x86_64-20260611.tar.xz",
+        "bytes": 53555380,
+        "sha256": "a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221",
+        "upstream_url": "https://github.com/msys2/msys2-installer/releases/download/2026-06-11/msys2-base-x86_64-20260611.tar.xz"
+      },
+      {
+        "id": "gnu-make",
+        "version": "4.4.1-3",
+        "name": "make-4.4.1-3-x86_64.pkg.tar.zst",
+        "bytes": 514683,
+        "sha256": "af0bdba17f06fe037f0194069adaa31a8fe45f1a11381501896aea1fae37bd5d",
+        "upstream_url": "https://repo.msys2.org/msys/x86_64/make-4.4.1-3-x86_64.pkg.tar.zst"
+      },
+      {
+        "id": "nasm",
+        "version": "2.16.03-1",
+        "name": "nasm-2.16.03-1-x86_64.pkg.tar.zst",
+        "bytes": 343935,
+        "sha256": "e5f54d79b94c0290579c20d092603dc97289887ba1c281ac0af88626bfbf1cab",
+        "upstream_url": "https://repo.msys2.org/msys/x86_64/nasm-2.16.03-1-x86_64.pkg.tar.zst"
+      },
+      {
+        "id": "diffutils",
+        "version": "3.12-1",
+        "name": "diffutils-3.12-1-x86_64.pkg.tar.zst",
+        "bytes": 394515,
+        "sha256": "7902c8ce3d4dd69a0f5e98dc9d5c83c17b23314ba486169db57ef6e2835ce3b6",
+        "upstream_url": "https://repo.msys2.org/msys/x86_64/diffutils-3.12-1-x86_64.pkg.tar.zst"
+      },
+      {
+        "id": "msvc-cl",
+        "version": "19.44.35228",
+        "name": "cl.exe",
+        "bytes": 677736,
+        "sha256": "88c8344236a27a6e727e0a8edc49aaa2690bdc7a9464b9d18cc7abe70a9f1c0d",
+        "upstream_url": "https://learn.microsoft.com/en-us/visualstudio/releases/2022/release-history"
+      },
+      {
+        "id": "msvc-link",
+        "version": "14.44.35228",
+        "name": "link.exe",
+        "bytes": 3252576,
+        "sha256": "ca11e6c45debd34bf652dfe984c5360a531a005ed78bf72852330c9c2590cf0d",
+        "upstream_url": "https://learn.microsoft.com/en-us/visualstudio/releases/2022/release-history"
+      },
+      {
+        "id": "msvc-nmake",
+        "version": "14.44.35228",
+        "name": "nmake.exe",
+        "bytes": 134560,
+        "sha256": "b05f089f67dba8df1d7cc38798b71e62a6ce8881b234dcfc80a657264597626c",
+        "upstream_url": "https://learn.microsoft.com/en-us/visualstudio/releases/2022/release-history"
+      },
+      {
+        "id": "windows-sdk-rc",
+        "version": "10.0.26100.7705",
+        "name": "rc.exe",
+        "bytes": 55640,
+        "sha256": "43da1503c262c30894c851589bf0155f8365d77e63a5f7bc13982320e3a6b42d",
+        "upstream_url": "https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/"
+      }
+    ]
+  },
+  "runtime": {
+    "directory": "third_party/ffmpeg/runtime/win-x64",
+    "files": [
+      {
+        "name": "avcodec-63.dll",
+        "bytes": 14030848,
+        "sha256": "6c4c5a12a84c940bcf12ca729f26f1629a97ba94b8159e6349ecbf176e7a2987",
+        "imports": ["avutil-61.dll", "kernel32.dll", "ole32.dll", "swresample-7.dll", "zlib1.dll"]
+      },
+      {
+        "name": "avfilter-12.dll",
+        "bytes": 4350976,
+        "sha256": "797cfb6fb27da31ca88f9a59508440cd98cb47290bbbde54f7c1089077751132",
+        "imports": ["avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "kernel32.dll", "swresample-7.dll", "swscale-10.dll", "user32.dll"]
+      },
+      {
+        "name": "avformat-63.dll",
+        "bytes": 2473472,
+        "sha256": "244505aafb3b37ae192b15b03fe871965fbe981082379e0c33bc43f3a7611758",
+        "imports": ["avcodec-63.dll", "avutil-61.dll", "kernel32.dll", "zlib1.dll"]
+      },
+      {
+        "name": "avutil-61.dll",
+        "bytes": 1143808,
+        "sha256": "37d6fec1955060f1fe867a86bdca968dcfddae76e0456c79dd63633e7befa2ae",
+        "imports": ["bcrypt.dll", "kernel32.dll"]
+      },
+      {
+        "name": "ffmpeg.exe",
+        "bytes": 592384,
+        "sha256": "53cc924afeffbe48bd94e569d0081b2eef64ebaea18b7966f7686947b0ebc1dc",
+        "imports": ["avcodec-63.dll", "avfilter-12.dll", "avformat-63.dll", "avutil-61.dll", "kernel32.dll", "psapi.dll", "shell32.dll", "swresample-7.dll", "swscale-10.dll"]
+      },
+      {
+        "name": "ffprobe.exe",
+        "bytes": 335872,
+        "sha256": "12324dccee8985b2d7f83f59c6be0617046df44dd8f25723bb1eecc20abe7a4a",
+        "imports": ["avcodec-63.dll", "avfilter-12.dll", "avformat-63.dll", "avutil-61.dll", "kernel32.dll", "shell32.dll", "swresample-7.dll", "swscale-10.dll"]
+      },
+      {
+        "name": "swresample-7.dll",
+        "bytes": 231424,
+        "sha256": "f7c0df579f8464534020f4dca1d870b5ba359c260bbc2450a272c159b16d8772",
+        "imports": ["avutil-61.dll", "kernel32.dll"]
+      },
+      {
+        "name": "swscale-10.dll",
+        "bytes": 1282560,
+        "sha256": "c8ad8c480404c68bb7e82a9eeef35d139fbd65ab632aeb4ce1adefeee8f3281a",
+        "imports": ["avutil-61.dll", "kernel32.dll"]
+      },
+      {
+        "name": "zlib1.dll",
+        "bytes": 226816,
+        "sha256": "ab4485b6302f4debaba78d70552445cd0a931610c664e7ff1c9639001d9062e3",
+        "imports": ["kernel32.dll"]
+      }
+    ],
+    "allowed_windows_system_imports": [
+      "bcrypt.dll",
+      "kernel32.dll",
+      "ole32.dll",
+      "psapi.dll",
+      "shell32.dll",
+      "user32.dll"
+    ],
+    "dynamically_loaded_windows_system_interfaces": [
+      "d3d11.dll",
+      "mfplat.dll"
+    ],
+    "external_runtime_components": [
+      {
+        "name": "zlib",
+        "version": "1.3.2",
+        "runtime_file": "zlib1.dll",
+        "license": "Zlib",
+        "source_companion_path": "sources/zlib-1.3.2.tar.gz"
+      }
+    ],
+    "msvc_runtime_linkage": "static /MT; no Visual C++ redistributable DLL required",
+    "forbidden_file_name_patterns": [
+      "(?i)\\.lib$",
+      "(?i)\\.(?:h|hpp|pdb|exp)$",
+      "(?i)^avdevice-",
+      "(?i)^ffplay\\.exe$",
+      "(?i)(?:x264|x265|rav1e|aom|vpx)"
+    ]
+  },
+  "capabilities": {
+    "status": "passed",
+    "report_member": "evidence/probe-report.json",
+    "report_bytes": 34520,
+    "report_sha256": "4500c23432a243672ffba5dd2cd71ea8e8dda7c16d7165563430cd346ed4ac49",
+    "required_command_names": [
+      "filters",
+      "png-sequence-h264-aac-canary",
+      "ffprobe-canary-json",
+      "png-image2pipe-h264",
+      "ffprobe-image2pipe-json",
+      "png-to-jpeg",
+      "decode-png",
+      "decode-jpeg",
+      "decode-wav",
+      "decode-mp3",
+      "extract-aac-adts",
+      "decode-aac",
+      "extract-h264-annexb",
+      "decode-h264",
+      "mov-remux",
+      "ffprobe-mov-json",
+      "decode-mov",
+      "concat-demux-copy",
+      "ffprobe-concat-json",
+      "srt-movtext-mux",
+      "ffprobe-caption-json"
+    ],
+    "required_filters": [
+      "amix",
+      "aresample",
+      "atempo",
+      "format",
+      "fps",
+      "scale",
+      "setpts"
+    ],
+    "canary_contract": {
+      "video_codec": "h264",
+      "encoder": "h264_mf",
+      "audio_codec": "aac",
+      "width": 1080,
+      "height": 1920,
+      "pixel_format": "yuv420p",
+      "frame_rate": "30/1",
+      "duration_seconds": 1.0
+    },
+    "hyperframes": {
+      "png_image2pipe": "passed",
+      "png_sequence": "passed",
+      "h264_mf_mp4": "passed",
+      "native_aac": "passed",
+      "ffprobe_json": "passed"
+    },
+    "moneyprinterturbo": {
+      "png_jpeg_wav_mp3_aac_h264_decode": "passed",
+      "mp4_mov_mux_demux": "passed",
+      "concat_demux": "passed",
+      "timing_scaling_audio_filters": "passed",
+      "srt_to_mov_text": "passed"
+    }
+  },
+  "source_companion": {
+    "status": "frozen",
+    "name": "ShiyiContentFactory-v0.3.0-FFmpeg-LGPL-source-d3ad8a7.zip",
+    "bytes": 19314160,
+    "sha256": "a09a28824f6c5ebbfc8cf724136701fa6adfe7f35ba58670a85f48a9ca856c08",
+    "root_prefix": "ShiyiContentFactory-v0.3.0-FFmpeg-LGPL-source-d3ad8a7",
+    "manifest_name": "MANIFEST.json",
+    "manifest_bytes": 4979,
+    "manifest_sha256": "d34a882a96238d11a75225adf1db430d7f3797d7babddb69b353cd9ca7419deb",
+    "required_members": [
+      "BUILD-AND-SOURCE-NOTICE.md",
+      "sources/FFmpeg-d3ad8a7fee6a647c6362e4a105d949282d50a98f.tar.gz",
+      "sources/zlib-1.3.2.tar.gz",
+      "patches/0001-localized-msvc-detection.patch",
+      "scripts/build-lgpl-msvc.ps1",
+      "scripts/probe-lgpl-runtime.py",
+      "scripts/verify_ffmpeg_distribution.py",
+      "build/build.log",
+      "build/configure.log",
+      "build/config.h",
+      "build/config_components.h",
+      "build/ffmpeg-buildconf.txt",
+      "build/install.log",
+      "build/zlib-build.log",
+      "build/build-attempts.md",
+      "toolchain/toolchain-manifest.json",
+      "evidence/pe-imports.json",
+      "evidence/probe-report.json",
+      "evidence/sensitive-scan.json",
+      "evidence/canary-1080x1920-h264-aac.mp4",
+      "evidence/probe-tone.mp3",
+      "licenses/FFmpeg-COPYING.LGPLv2.1",
+      "licenses/FFmpeg-COPYING.LGPLv3",
+      "licenses/FFmpeg-LICENSE.md",
+      "licenses/zlib-LICENSE"
+    ]
+  },
+  "release_contract": {
+    "repository": "zhichenghe34-design/clean-air-ai-content-factory",
+    "tag": "v0.3.0",
+    "object_code_asset_name_regex": "^ShiyiContentFactory-v0\\.3\\.0-(?:motion-primary|customer-clean-motion)-[0-9a-f]{7,40}-Windows-x64\\.zip$",
+    "required_source_asset": "ShiyiContentFactory-v0.3.0-FFmpeg-LGPL-source-d3ad8a7.zip",
+    "policy": "The Windows object-code ZIP and this exact source companion must be attached to the same v0.3.0 GitHub Release with matching byte sizes and SHA-256 digests before publication."
+  },
+  "supersedes": {
+    "contract": "third_party/ffmpeg/historical-gpl-btbn-lock.json",
+    "status": "historical_blocked_not_used_by_builder_or_release_gate",
+    "reason": "The former BtbN GPL runtime required a multi-gigabyte source closure and remained blocked. It is not part of the curated runtime or formal release contract."
+  },
+  "official_compliance_references": [
+    "https://ffmpeg.org/legal.html",
+    "https://ffmpeg.org/doxygen/trunk/md_LICENSE.html",
+    "https://zlib.net/"
+  ]
+}

@@ -9,7 +9,15 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXTRACT_SCRIPT = REPO_ROOT / "agent-skills" / "extract-web-platform-content" / "scripts" / "extract_url.py"
+PACKAGED_EXTRACT_SCRIPT = REPO_ROOT / "product-tools" / "extract_url.pyc"
+SOURCE_EXTRACT_SCRIPT = (
+    REPO_ROOT
+    / "agent-skills"
+    / "extract-web-platform-content"
+    / "scripts"
+    / "extract_url.py"
+)
+EXTRACT_SCRIPT = PACKAGED_EXTRACT_SCRIPT if PACKAGED_EXTRACT_SCRIPT.is_file() else SOURCE_EXTRACT_SCRIPT
 
 
 class SearchProvider(Protocol):
@@ -70,8 +78,19 @@ class TrustedWebToolRegistry:
         self.trace: list[dict[str, Any]] = []
         self.allowed_urls: set[str] = set()
         self.topic = ""
-        for url in seed_urls or []:
-            self.allowed_urls.add(canonical_url(url))
+        self.authorize_seed_urls(seed_urls or [])
+
+    def authorize_seed_urls(self, urls: list[str] | tuple[str, ...]) -> list[str]:
+        """Authorize bounded, server-selected seed pages before tool execution."""
+
+        normalized: list[str] = []
+        for url in urls:
+            value = canonical_url(url)
+            if value not in self.allowed_urls:
+                self.allowed_urls.add(value)
+            if value not in normalized:
+                normalized.append(value)
+        return normalized
 
     def set_topic(self, topic: str) -> None:
         self.topic = str(topic).strip()[:120]
@@ -171,7 +190,14 @@ class TrustedWebToolRegistry:
         parser_root = str(self.config.get("media_parser_root", "")).strip()
         if parser_root:
             command.extend(["--media-parser-root", parser_root])
-        process = subprocess.run(command, capture_output=True, text=True, timeout=660)
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=660,
+        )
         result_path = output_dir / "extraction.json"
         if not result_path.is_file():
             detail = (process.stderr or process.stdout or "提取工具未生成结果")[-1200:]

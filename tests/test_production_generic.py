@@ -6,11 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from core.capability_pack import local_capability_pack
 from core.motion_director import build_motion_plan, build_motion_project, derive_motion_segments
 from core.production import (
     ProductionRunner,
     build_local_variants,
     estimate_narration_duration,
+    review_narration_pacing,
     review_script,
 )
 
@@ -65,6 +67,17 @@ LEGACY_TERMS = ("甲醛", "除醛", "新房", "入住", "检测报告", "实验�
 
 
 class GenericProductionTests(unittest.TestCase):
+    def test_no_key_research_keeps_findings_empty_instead_of_fabricating_evidence(self):
+        runner = ProductionRunner(provider=None, research_config={"enabled": True})
+        with tempfile.TemporaryDirectory() as folder_name:
+            research = runner.run_research_stage(
+                Path(folder_name),
+                {"topic": "如何跟进第一次接触的企业客户？", "audience": "销售新人"},
+            )["research"]
+        self.assertEqual(research["status"], "offline")
+        self.assertEqual(research["findings"], [])
+        self.assertEqual(research["sources"], [])
+
     def test_offline_variants_are_topic_bound_process_only_and_duration_safe(self):
         topic = "如何跟进第一次接触的企业客户？"
         variants = build_local_variants(topic, "销售新人", [], GENERIC_PACK, LEARNING_RULES)
@@ -77,6 +90,30 @@ class GenericProductionTests(unittest.TestCase):
             estimate = estimate_narration_duration(item["script"])
             self.assertGreaterEqual(estimate["estimated_seconds"], 35)
             self.assertLessEqual(estimate["estimated_seconds"], 75)
+
+    def test_default_generic_topic_is_mechanically_paced_without_human_rewrite(self):
+        topic = "目标客户与内容受众最容易忽略的三个判断点"
+        audience = "目标客户与内容受众"
+        variants = build_local_variants(topic, audience, [], GENERIC_PACK, [])
+
+        self.assertEqual(len(variants), 4)
+        for item in variants:
+            self.assertEqual(item["source"], "local_process_only")
+            self.assertIn(topic, item["script"])
+            self.assertIn(audience, item["script"])
+            self.assertEqual(review_narration_pacing(item["script"])["status"], "passed")
+            self.assertEqual(review_script(item["script"], [], GENERIC_PACK, [])["status"], "passed")
+
+    def test_normal_topic_keeps_negative_qualifier_at_the_end_verbatim(self):
+        topic = "宣传数据看似亮眼但缺少完整来源与使用边界时不能直接当作结果"
+        self.assertEqual(len(topic), 29)
+        variants = build_local_variants(topic, "潜在企业客户", [], GENERIC_PACK, [])
+
+        for item in variants:
+            self.assertIn(topic, item["script"])
+            self.assertIn("不能直接当作结果", item["script"])
+            self.assertEqual(review_narration_pacing(item["script"])["status"], "passed")
+            self.assertEqual(review_script(item["script"], [], GENERIC_PACK, [])["status"], "passed")
 
     def test_evidence_fallback_uses_strict_claim_not_freeform_review_summary(self):
         finding = {
@@ -116,6 +153,68 @@ class GenericProductionTests(unittest.TestCase):
             self.assertTrue(result["blocked"], script)
             self.assertTrue(any(item["type"] == warning_type for item in result["warnings"]), script)
 
+    def test_trusted_dynamic_clean_air_pack_allows_clean_air_terms_without_weakening_other_scopes(self):
+        goal = (
+            "为上海本地除甲醛服务企业制作一条面向新装修家庭的52秒竖屏科普视频，"
+            "解释为什么数值低不等于安全，并明确证据边界。"
+        )
+        clean_air_pack = local_capability_pack(goal)
+        finding = {
+            "finding_id": "finding-cctv-page-formal-e2e",
+            "claim": "央视网转载的上观新闻文章称：甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "allowed_use": "可以带归属地说明：该报道认为检测盒只能看出大致范围。",
+            "source_label": "央视网转载上观新闻页面",
+            "claim_scope": "source_page_statement_only",
+            "source_scope": "source_page_statement_only",
+            "independent_fact_supported": False,
+            "strict_review_status": "proven_for_limited_use",
+            "script_eligible": True,
+            "evidence": [{
+                "source_type": "source_page",
+                "source_scope": "source_page_statement_only",
+                "excerpt": "甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            }],
+        }
+        script = (
+            "先别急着下结论，先看哪些内容已经被证据支持。"
+            "央视网转载的上观新闻文章称：甲醛检测盒只能看出室内甲醛浓度的大致范围。"
+            "这项结论只适用于原证据的对象、时间和范围，不能外推。"
+            "最后交给刚完成装修、准备入住新房的上海家庭复核。"
+        )
+
+        allowed = review_script(script, [finding], clean_air_pack, [])
+        self.assertFalse(allowed["blocked"], allowed["warnings"])
+        self.assertFalse(any(
+            item["type"] == "legacy_domain_leak" for item in allowed["warnings"]
+        ))
+        clean_air_synonyms = review_script(
+            "除醛科普请保存检测报告。", [], clean_air_pack, []
+        )
+        self.assertFalse(clean_air_synonyms["blocked"], clean_air_synonyms["warnings"])
+
+        generic_pack = local_capability_pack("为本地餐饮门店制作一条新品介绍短视频")
+        ordinary_terms = review_script(
+            "新房客户准备入住，检测报告随后归档。", [], generic_pack, []
+        )
+        self.assertFalse(ordinary_terms["blocked"], ordinary_terms["warnings"])
+
+        for pack in (
+            generic_pack,
+            {**clean_air_pack, "sha256": "0" * 64},
+        ):
+            with self.subTest(pack_id=pack["id"], industry=pack["snapshot"]["industry"]):
+                blocked = review_script("甲醛与除醛科普。", [], pack, [])
+                self.assertTrue(blocked["blocked"])
+                self.assertTrue(any(
+                    item["type"] == "legacy_domain_leak" for item in blocked["warnings"]
+                ))
+
+        leaked_brand = review_script("净界服务说明。", [], clean_air_pack, [])
+        self.assertTrue(leaked_brand["blocked"])
+        self.assertTrue(any(
+            item["type"] == "legacy_domain_leak" for item in leaked_brand["warnings"]
+        ))
+
     def test_unapproved_qualitative_fact_is_blocked_and_exact_finding_can_support_it(self):
         claim = "咖啡豆来自埃塞俄比亚高海拔产区，因此风味更明亮"
         unsupported = review_script(f"{claim}。", [], GENERIC_PACK, [])
@@ -131,6 +230,124 @@ class GenericProductionTests(unittest.TestCase):
         }
         supported = review_script(f"该来源页面称，{claim}。", [finding], GENERIC_PACK, [])
         self.assertFalse(supported["blocked"])
+
+    def test_source_page_claim_requires_same_sentence_attribution_without_affecting_high_trust(self):
+        source_page_finding = {
+            "finding_id": "finding-cctv-page-1",
+            "claim": "央视网转载的上观新闻文章称：甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "allowed_use": "可以带归属地说明：该报道认为检测盒只能看出大致范围。",
+            "source_label": "央视网转载上观新闻页面",
+            "claim_scope": "source_page_statement_only",
+            "source_scope": "source_page_statement_only",
+            "independent_fact_supported": False,
+            "strict_review_status": "proven_for_limited_use",
+            "script_eligible": True,
+            "evidence": [{
+                "source_type": "source_page",
+                "source_scope": "source_page_statement_only",
+                "excerpt": "甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            }],
+        }
+
+        direct = review_script(
+            "甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            [source_page_finding],
+        )
+        self.assertTrue(direct["blocked"])
+        warning = next(
+            item for item in direct["warnings"]
+            if item["type"] == "source_page_claim_missing_attribution"
+        )
+        self.assertEqual(warning["finding_ids"], ["finding-cctv-page-1"])
+        self.assertNotIn(source_page_finding["claim"], json.dumps(warning, ensure_ascii=False))
+
+        false_only = {
+            **source_page_finding,
+            "claim_scope": None,
+            "source_scope": None,
+            "evidence": [{"source_type": "source_page", "excerpt": source_page_finding["claim"]}],
+        }
+        scope_only = {**source_page_finding, "independent_fact_supported": None}
+        for finding in (false_only, scope_only):
+            with self.subTest(trigger=finding):
+                result = review_script(
+                    "甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+                    [finding],
+                )
+                self.assertTrue(result["blocked"])
+                self.assertTrue(any(
+                    item["type"] == "source_page_claim_missing_attribution"
+                    for item in result["warnings"]
+                ))
+
+        for script in (
+            "检测盒只能看出大致范围。",
+            "据该来源。甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "家用甲醛检测盒最多只能粗略估计室内浓度区间。",
+            "检测盒测出来的只是一个粗略区间，并不精确。",
+        ):
+            with self.subTest(unattributed_script=script):
+                result = review_script(script, [source_page_finding])
+                self.assertTrue(result["blocked"])
+                self.assertTrue(any(
+                    item["type"] == "source_page_claim_missing_attribution"
+                    for item in result["warnings"]
+                ))
+
+        attributed_scripts = (
+            source_page_finding["claim"],
+            "该页面称，甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "据该来源，甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "央视网转载内容提到，甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+            "该报道认为，检测盒只能看出大致范围。",
+            "据央视网转载的报道，家用甲醛检测盒最多只能粗略估计室内浓度区间。",
+            "据央视网转载的报道，检测盒测出来的只是一个粗略区间，并不精确。",
+        )
+        for script in attributed_scripts:
+            with self.subTest(script=script):
+                result = review_script(script, [source_page_finding])
+                self.assertFalse(result["blocked"], result["warnings"])
+
+        model_anchor_finding = {
+            **source_page_finding,
+            "finding_id": "finding-model-anchor-untrusted",
+            "claim": "该页面称：本页仅介绍活动安排。",
+            "allowed_use": "可以带归属地说明：该页面称活动详情以页面为准。",
+            "attribution_anchor_groups": [["套餐"], ["优惠"]],
+        }
+        untrusted_model_anchors = review_script("套餐现在有优惠。", [model_anchor_finding])
+        self.assertFalse(any(
+            item["type"] == "source_page_claim_missing_attribution"
+            for item in untrusted_model_anchors["warnings"]
+        ))
+
+        government_finding = {
+            "finding_id": "finding-law-1",
+            "claim": "《中华人民共和国广告法》要求广告中的引证内容真实、准确并表明出处。",
+            "source_scope": "higher_trust_domain_page",
+            "independent_fact_supported": None,
+            "strict_review_status": "proven_for_limited_use",
+            "script_eligible": True,
+            "evidence": [{
+                "source_type": "government_law",
+                "source_scope": "higher_trust_domain_page",
+                "excerpt": "引证内容应当真实、准确，并表明出处。",
+            }],
+        }
+        high_trust = review_script(government_finding["claim"], [government_finding])
+        self.assertFalse(high_trust["blocked"], high_trust["warnings"])
+        standard_finding = {
+            **government_finding,
+            "finding_id": "finding-standard-1",
+            "claim": "全国标准信息公共服务平台列明GB/T 18883-2022的名称为《室内空气质量标准》。",
+            "evidence": [{
+                "source_type": "government_standard_metadata",
+                "source_scope": "higher_trust_domain_page",
+                "excerpt": "GB/T 18883-2022 室内空气质量标准",
+            }],
+        }
+        high_trust_standard = review_script(standard_finding["claim"], [standard_finding])
+        self.assertFalse(high_trust_standard["blocked"], high_trust_standard["warnings"])
 
     def test_insight_and_motion_read_generic_pack_without_legacy_semantics(self):
         config = {
@@ -180,11 +397,26 @@ class GenericProductionTests(unittest.TestCase):
             (folder / "final.mp4").write_bytes(b"test-video")
             return {"ok": True, "mode": "fake", "duration_seconds": 52}
 
+        def visual_qc_adapter(video_path: Path, *, output_dir: Path, **_kwargs) -> dict:
+            (output_dir / "contact-sheet.png").write_bytes(b"test-contact-sheet")
+            payload = {
+                "schema_version": 1,
+                "status": "passed",
+                "sample_count": 12,
+                "blocking_reasons": [],
+                "review_reasons": [],
+            }
+            (output_dir / "visual-qc.json").write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
+            return payload
+
         runner = ProductionRunner(
             provider=None,
             research_config={"enabled": False},
             voice_adapter=voice_adapter,
             render_adapter=render_adapter,
+            visual_qc_adapter=visual_qc_adapter,
         )
         with tempfile.TemporaryDirectory() as folder_name:
             folder = Path(folder_name)

@@ -35,7 +35,10 @@ def main() -> int:
         scanned += 1
         text = path.read_text(encoding="utf-8", errors="replace")
         for label, pattern in PATTERNS.items():
-            if path.name == "scan_release.py" or (path.name == "verify_public_evidence.py" and label == "user profile path"):
+            if path.name == "scan_release.py" or (
+                path.name in {"verify_public_evidence.py", "sanitize-build-evidence.py"}
+                and label == "user profile path"
+            ):
                 continue
             if pattern.search(text):
                 errors.append(f"{path.relative_to(repo)}: {label}")

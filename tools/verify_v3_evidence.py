@@ -17,6 +17,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from core.capability_pack import validate_capability_pack
+from core.review_policy import (
+    HUMAN_STAGE_REVIEW,
+    classify_approval_record,
+    evidence_status_for_policy,
+    normalize_review_policy,
+)
 
 
 CANONICAL = {
@@ -32,7 +38,6 @@ ROOT_FILES = {
     "capability-review.json", "correction-event.json", "learning-snapshots.json",
 }
 TEXT_SUFFIXES = {".json", ".md", ".srt", ".txt", ".log", ".yaml", ".yml"}
-AUTOMATION_REVIEWERS = {"agent", "automation", "automated", "system", "test", "ci", "mock", "codex"}
 SECRET_PATTERNS = {
     "API key": re.compile(r"\b(?:sk|ds)-[A-Za-z0-9_-]{12,}\b"),
     "Authorization": re.compile(r"(?i)authorization\s*[:=]\s*(?!null\b|none\b)[^\s,}\]]+"),
@@ -266,6 +271,19 @@ def _verify_semantics(folder: Path, errors: list[str], media: dict[str, Any]) ->
         job_ids.append(job_id)
         if manifest.get("schema_version") != 2 or manifest.get("status") != "complete" or manifest.get("stage") not in {"render", "report_rebuild"}:
             errors.append(f"{directory}不是成功v2发布运行")
+        raw_review_policy = manifest.get("review_policy")
+        if not isinstance(raw_review_policy, dict):
+            errors.append(f"{directory}缺少显式人工 review_policy")
+        else:
+            try:
+                review_policy = normalize_review_policy(raw_review_policy)
+            except (TypeError, ValueError):
+                errors.append(f"{directory}的 review_policy 无效")
+            else:
+                if review_policy["stage_review_mode"] != HUMAN_STAGE_REVIEW:
+                    errors.append(f"{directory}的 review_policy 不是正式人工审查")
+                if manifest.get("evidence_status") != evidence_status_for_policy(review_policy):
+                    errors.append(f"{directory}的 evidence_status 与 review_policy 不一致")
         if (manifest.get("capability_pack") or {}).get("sha256") != pack["sha256"]:
             errors.append(f"{directory}能力包哈希不同")
         if (
@@ -290,7 +308,16 @@ def _verify_semantics(folder: Path, errors: list[str], media: dict[str, Any]) ->
             gate = approvals.get(gate_name, {})
             reviewer = str(gate.get("reviewer", "")).strip()
             reviewers.add(reviewer)
-            if gate.get("status") != "approved" or not reviewer or reviewer.casefold() in AUTOMATION_REVIEWERS or not gate.get("reviewed_at"):
+            review_type, identity_errors = classify_approval_record(
+                gate, allow_legacy_human=False
+            )
+            if (
+                gate.get("status") != "approved"
+                or not reviewer
+                or not gate.get("reviewed_at")
+                or review_type != HUMAN_STAGE_REVIEW
+                or identity_errors
+            ):
                 errors.append(f"{directory}的{gate_name}不是有效人工审批")
         if approvals.get("research", {}).get("artifact_sha256") != sha256(root / "research.json"):
             errors.append(f"{directory}研究审批哈希不一致")

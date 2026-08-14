@@ -3,35 +3,34 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=1080, height=1920" />
-  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
   <style>
-    @font-face { font-family: "Microsoft YaHei UI"; src: local("Microsoft YaHei UI"); }
-    @font-face { font-family: "Microsoft YaHei"; src: local("Microsoft YaHei"); }
+    @font-face { font-family: "Noto Sans SC"; src: url("assets/NotoSansSC-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; }
+    @font-face { font-family: "Noto Sans SC"; src: url("assets/NotoSansSC-Bold.ttf") format("truetype"); font-weight: 700 900; font-style: normal; }
     * { box-sizing: border-box; }
     html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; background: #071713; }
-    body { color: #F1EFE7; font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; }
-    #root { position: relative; width: 1080px; height: 1920px; overflow: hidden; background: #071713; }
+    body { color: #F1EFE7; font-family: "Noto Sans SC", sans-serif; }
+    #root { position: relative; width: 1080px; height: 1920px; overflow: hidden; }
     .ambient { position: absolute; inset: 0; overflow: hidden; background: #071713; }
     .grid { position: absolute; inset: -180px; opacity: .2; background-image: linear-gradient(rgba(200,227,91,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(200,227,91,.06) 1px, transparent 1px); background-size: 72px 72px; transform: perspective(900px) rotateX(58deg) translateY(700px) scale(1.9); }
     .orb { position: absolute; border-radius: 50%; filter: blur(2px); }
     .orb.a { width: 650px; height: 650px; left: -270px; top: 30px; background: radial-gradient(circle, rgba(31,90,70,.9), transparent 68%); }
     .orb.b { width: 560px; height: 560px; right: -230px; bottom: 80px; background: radial-gradient(circle, rgba(200,227,91,.17), transparent 68%); }
-    .scene { position: absolute; inset: 0; visibility: hidden; opacity: 0; }
-    .content { position: absolute; inset: 0; padding: 118px 78px 270px; display: flex; flex-direction: column; }
-    .top { display: flex; justify-content: space-between; align-items: center; font-size: 24px; letter-spacing: .12em; color: #C8E35B; }
+    .scene { position: absolute; inset: 0; width: 1080px; height: 1920px; overflow: hidden; }
+    .content { position: absolute; inset: 0; z-index: 4; padding: 118px 78px 270px; display: flex; flex-direction: column; transform-origin: 50% 58%; }
+    .top { display: flex; justify-content: flex-end; align-items: center; font-size: 24px; letter-spacing: .12em; color: #C8E35B; }
     .brand { position: absolute; left: 64px; top: 48px; z-index: 30; display: flex; gap: 14px; align-items: center; color: #B8CFC5; font-size: 22px; }
     .brand i { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; background: #C8E35B; color: #071713; font-style: normal; font-weight: 900; }
     .kicker { margin-top: 105px; color: #C8E35B; font-size: 31px; font-weight: 800; }
     h1 { margin: 28px 0 0; max-width: 920px; font-size: 82px; line-height: 1.12; letter-spacing: -.045em; }
     .visual { position: relative; flex: 1; min-height: 740px; margin-top: 48px; display: grid; place-items: center; }
     .caption { position: absolute; left: 70px; right: 70px; bottom: 88px; z-index: 24; min-height: 102px; padding: 22px 34px; display: grid; place-items: center; border: 1px solid rgba(200,227,91,.42); border-radius: 26px; background: rgba(3,15,12,.93); text-align: center; font-size: 36px; line-height: 1.42; font-weight: 800; }
-    .wipe { position: absolute; inset: -60px; z-index: 50; background: #C8E35B; }
-
+    .caption span { display: block; width: 100%; }
+    .scene-wipe { position: absolute; inset: -60px; z-index: 50; background: #C8E35B; transform: translateX(-115%); }
     .ring { width: 470px; height: 470px; border: 14px solid #C8E35B; border-radius: 50%; display: grid; place-items: center; box-shadow: 0 0 90px rgba(200,227,91,.18); }
     .ring span { width: 365px; text-align: center; font-size: 58px; line-height: 1.08; font-weight: 900; }
     .evidence { width: 790px; height: 560px; padding: 76px 70px; border-radius: 28px; background: #F1EFE7; transform: rotate(-1.5deg); }
     .evidence b { color: #164B3D; font-size: 64px; }
-    .line { height: 16px; margin-top: 32px; border-radius: 8px; background: #B7B9AE; transform-origin: left; }
+    .line { display: block; width: 100%; height: 16px; margin-top: 32px; border-radius: 8px; background: #B7B9AE; transform-origin: left; }
     .line.short { width: 62%; } .line.risk { width: 86%; background: #DF744F; }
     .lens { position: absolute; width: 230px; height: 230px; right: 80px; bottom: 110px; border: 12px solid #C8E35B; border-radius: 50%; background: rgba(200,227,91,.12); box-shadow: 0 0 0 18px rgba(7,23,19,.18); }
     .lens::after { content: ""; position: absolute; width: 125px; height: 18px; right: -93px; bottom: -48px; border-radius: 9px; background: #C8E35B; transform: rotate(48deg); }
@@ -39,93 +38,426 @@
     .bottle { width: 220px; height: 430px; position: relative; overflow: hidden; border: 10px solid #F1EFE7; border-radius: 80px 80px 60px 60px; }
     .liquid { position: absolute; left: 12px; right: 12px; bottom: 12px; height: 70%; border-radius: 0 0 44px 44px; background: #C8E35B; transform: scaleY(0); transform-origin: bottom; }
     .chamber { height: 480px; border: 4px solid #C8E35B; position: relative; box-shadow: inset 0 0 0 34px rgba(31,90,70,.22); }
-    .chamber::after { content: "空间体积"; position: absolute; left: 34px; bottom: 32px; color: #C8E35B; font-size: 30px; font-weight: 800; }
+    .chamber::after { content: "使用场景"; position: absolute; left: 34px; bottom: 32px; color: #C8E35B; font-size: 30px; font-weight: 800; }
     .time-layout { width: 820px; display: grid; grid-template-columns: 300px 1fr; gap: 70px; align-items: center; }
     .clock { width: 300px; height: 300px; border: 10px solid #C8E35B; border-radius: 50%; position: relative; }
     .hand { position: absolute; width: 12px; height: 112px; left: 139px; top: 42px; border-radius: 6px; background: #DF744F; transform-origin: 50% 108px; }
     .wave { height: 260px; display: flex; gap: 13px; align-items: center; }
-    .wave i { width: 20px; height: 90px; border-radius: 10px; background: #C8E35B; transform-origin: center; }
+    .wave i { display: block; width: 20px; height: 90px; border-radius: 10px; background: #C8E35B; transform-origin: center; }
     .report { width: 780px; min-height: 700px; padding: 64px; position: relative; overflow: hidden; background: #F1EFE7; color: #09261F; box-shadow: 0 30px 90px rgba(0,0,0,.35); }
     .report h2 { margin: 0 0 40px; font-size: 58px; }
     .row { display: flex; justify-content: space-between; padding: 30px 0; border-top: 2px solid #B8B9AF; font-size: 29px; }
     .scan { position: absolute; left: 0; right: 0; top: -20px; height: 16px; background: #C8E35B; box-shadow: 0 0 35px #C8E35B; }
     .compare { width: 850px; display: grid; grid-template-columns: 1fr 90px 1fr; gap: 25px; align-items: center; }
     .panel { height: 540px; padding: 40px 30px; border: 3px solid #1F5A46; display: grid; place-items: center; text-align: center; font-size: 38px; font-weight: 900; }
-    .panel.home { border-color: #DF744F; }
+    .panel.alt { border-color: #DF744F; }
     .neq { color: #DF744F; font-size: 92px; font-weight: 900; text-align: center; }
     .orbit { width: 790px; height: 690px; position: relative; }
     .core { position: absolute; width: 310px; height: 310px; left: 240px; top: 190px; display: grid; place-items: center; padding: 35px; border: 8px solid #C8E35B; border-radius: 50%; background: #071713; color: #C8E35B; text-align: center; font-size: 46px; line-height: 1.15; font-weight: 900; }
     .chip { position: absolute; min-width: 210px; padding: 24px 26px; border: 2px solid #C8E35B; background: #194D3E; text-align: center; font-size: 28px; font-weight: 800; }
     .chip.c1 { left: 0; top: 40px; } .chip.c2 { right: 0; top: 40px; } .chip.c3 { left: -15px; top: 305px; } .chip.c4 { right: -15px; top: 305px; } .chip.c5 { left: 95px; bottom: 5px; } .chip.c6 { right: 95px; bottom: 5px; }
+    .radial-shell { width: 680px; height: 680px; position: relative; display: grid; place-items: center; }
+    .radial-tick { position: absolute; width: 12px; height: 74px; left: 334px; top: 12px; border-radius: 8px; background: #C8E35B; transform-origin: 6px 328px; }
+    .radial-tick.t2 { transform: rotate(45deg); } .radial-tick.t3 { transform: rotate(90deg); } .radial-tick.t4 { transform: rotate(135deg); }
+    .radial-tick.t5 { transform: rotate(180deg); } .radial-tick.t6 { transform: rotate(225deg); } .radial-tick.t7 { transform: rotate(270deg); } .radial-tick.t8 { transform: rotate(315deg); }
+    .signal-core { width: 330px; height: 330px; display: grid; place-items: center; padding: 34px; border: 9px solid #C8E35B; border-radius: 72px; background: #103B31; text-align: center; font-size: 42px; font-weight: 900; }
+    .radial-node { position: absolute; width: 164px; padding: 20px 14px; border: 2px solid #C8E35B; border-radius: 20px; background: #194D3E; text-align: center; font-size: 27px; font-weight: 800; }
+    .radial-node.n1 { left: 0; top: 80px; } .radial-node.n2 { right: 0; top: 80px; } .radial-node.n3 { left: 0; bottom: 80px; } .radial-node.n4 { right: 0; bottom: 80px; }
+    .target-ring { position: absolute; border: 5px solid #C8E35B; border-radius: 50%; }
+    .target-ring.outer { width: 610px; height: 610px; } .target-ring.middle { width: 430px; height: 430px; border-color: #1F5A46; } .target-ring.inner { width: 250px; height: 250px; border-width: 16px; border-color: #DF744F; }
+    .target-core { z-index: 3; width: 190px; text-align: center; color: #F1EFE7; font-size: 40px; font-weight: 900; }
+    .cross { position: absolute; z-index: 2; display: block; background: #DF744F; }
+    .cross.h { width: 680px; height: 4px; } .cross.v { width: 4px; height: 680px; }
+    .lens.square { border-radius: 28px; transform: rotate(8deg); }
+    .lens.spotlight { width: 270px; height: 270px; right: 260px; bottom: 135px; border-width: 7px; box-shadow: 0 0 0 55px rgba(7,23,19,.48), 0 0 60px rgba(200,227,91,.25); }
+    .source-badges { position: absolute; left: 80px; right: 80px; bottom: 62px; display: flex; gap: 20px; }
+    .source-badge { flex: 1; padding: 18px 12px; border-radius: 14px; background: #164B3D; color: #F1EFE7; text-align: center; font-size: 24px; font-weight: 800; }
+    .room-plan { width: 760px; height: 600px; position: relative; display: grid; grid-template-columns: 1.2fr .8fr; grid-template-rows: .9fr 1.1fr; gap: 14px; padding: 18px; border: 6px solid #C8E35B; background: rgba(31,90,70,.18); }
+    .room-cell { display: grid; place-items: center; border: 3px solid #F1EFE7; background: rgba(7,23,19,.82); font-size: 30px; font-weight: 800; }
+    .map-pin { position: absolute; width: 86px; height: 86px; right: 110px; bottom: 110px; display: grid; place-items: center; border-radius: 50% 50% 50% 12px; background: #DF744F; color: #071713; font-size: 30px; font-weight: 900; transform: rotate(-45deg); }
+    .map-pin span { transform: rotate(45deg); }
+    .scope-stage { width: 800px; height: 640px; position: relative; display: grid; place-items: center; }
+    .scope-frame { position: absolute; display: grid; place-items: end center; padding-bottom: 24px; border: 5px solid #C8E35B; font-size: 28px; font-weight: 800; }
+    .scope-frame.s1 { width: 780px; height: 610px; color: #B8CFC5; } .scope-frame.s2 { width: 590px; height: 440px; border-color: #1F5A46; color: #C8E35B; } .scope-frame.s3 { width: 380px; height: 270px; border-color: #DF744F; color: #DF744F; }
+    .flow-board { width: 820px; height: 650px; position: relative; }
+    .flow-node { position: absolute; width: 680px; height: 112px; left: 70px; padding: 22px 30px; display: flex; align-items: center; gap: 28px; border: 3px solid #1F5A46; border-radius: 22px; background: #103B31; font-size: 31px; font-weight: 800; }
+    .flow-node b { width: 58px; height: 58px; display: grid; place-items: center; border-radius: 50%; background: #C8E35B; color: #071713; }
+    .flow-node.f1 { top: 30px; } .flow-node.f2 { top: 180px; } .flow-node.f3 { top: 330px; } .flow-node.f4 { top: 480px; }
+    .flow-progress { position: absolute; width: 8px; height: 450px; left: 96px; top: 100px; z-index: 2; background: #DF744F; transform-origin: top; }
+    .flow-board[data-variant="checklist-path"] .flow-node { left: 130px; width: 620px; border-radius: 8px; }
+    .flow-board[data-variant="decision-ladder"] .flow-node { width: 350px; height: 108px; left: auto; border-color: #C8E35B; }
+    .flow-board[data-variant="decision-ladder"] .f1 { left: 20px; top: 480px; } .flow-board[data-variant="decision-ladder"] .f2 { left: 165px; top: 330px; }
+    .flow-board[data-variant="decision-ladder"] .f3 { left: 310px; top: 180px; } .flow-board[data-variant="decision-ladder"] .f4 { left: 455px; top: 30px; }
+    .timeline-board { width: 820px; height: 480px; position: relative; display: flex; align-items: center; justify-content: space-around; }
+    .time-line { position: absolute; left: 65px; right: 65px; top: 234px; height: 10px; border-radius: 6px; background: #1F5A46; transform-origin: left; }
+    .time-node { z-index: 2; width: 128px; height: 128px; display: grid; place-items: center; border: 6px solid #C8E35B; border-radius: 50%; background: #071713; font-size: 25px; font-weight: 900; }
+    .cadence-board { width: 820px; height: 560px; display: flex; flex-direction: column; justify-content: center; gap: 42px; }
+    .cadence-row { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 28px; font-size: 28px; font-weight: 800; }
+    .cadence-rail { height: 34px; display: flex; gap: 12px; align-items: center; }
+    .cadence-bar { display: block; flex: 1; height: 24px; border-radius: 12px; background: #C8E35B; transform-origin: left; }
+    .doc-stack { width: 800px; height: 680px; position: relative; }
+    .doc-page { position: absolute; width: 620px; height: 500px; left: 90px; top: 80px; padding: 48px; border: 3px solid #C8E35B; background: #F1EFE7; color: #09261F; box-shadow: 0 24px 60px rgba(0,0,0,.3); }
+    .doc-page.p1 { left: 20px; top: 15px; background: #164B3D; } .doc-page.p2 { left: 55px; top: 48px; background: #B8CFC5; } .doc-page.p3 { left: 90px; top: 81px; }
+    .doc-page h2 { margin: 0 0 36px; font-size: 52px; }
+    .doc-rule { width: 100%; height: 14px; margin-top: 24px; border-radius: 8px; background: #A7ABA1; transform-origin: left; }
+    .citation-book { width: 820px; height: 660px; position: relative; }
+    .citation-sheet { position: absolute; inset: 35px 70px 40px; padding: 60px; background: #F1EFE7; color: #09261F; box-shadow: 0 24px 70px rgba(0,0,0,.35); }
+    .citation-sheet h2 { margin: 0 0 42px; font-size: 56px; }
+    .citation-tab { position: absolute; right: 14px; width: 190px; padding: 18px; border-radius: 0 18px 18px 0; background: #1F5A46; font-size: 25px; font-weight: 800; }
+    .citation-tab.c1 { top: 130px; } .citation-tab.c2 { top: 230px; } .citation-tab.c3 { top: 330px; } .citation-tab.c4 { top: 430px; background: #DF744F; }
+    .balance { width: 820px; height: 620px; position: relative; }
+    .balance-post { position: absolute; width: 20px; height: 360px; left: 400px; top: 190px; background: #F1EFE7; }
+    .balance-beam { position: absolute; width: 700px; height: 18px; left: 60px; top: 220px; border-radius: 9px; background: #C8E35B; transform-origin: center; }
+    .weight { position: absolute; width: 260px; height: 190px; top: 275px; display: grid; place-items: center; padding: 24px; border: 4px solid #C8E35B; background: #103B31; text-align: center; font-size: 31px; font-weight: 900; }
+    .weight.left { left: 45px; } .weight.right { right: 45px; border-color: #DF744F; }
+    .orbit[data-variant="action-orbit"] .core { border-radius: 64px; background: #164B3D; }
+    .orbit[data-variant="boundary-orbit"] .core { border-color: #DF744F; color: #DF744F; border-radius: 24px; transform: rotate(45deg); }
+    .orbit[data-variant="boundary-orbit"] .core span { display: block; transform: rotate(-45deg); }
+    .orbit[data-variant="action-orbit"] .chip { border-radius: 28px; } .orbit[data-variant="boundary-orbit"] .chip { border-color: #DF744F; background: #321E19; }
+    .threshold-stage { width: 820px; height: 650px; position: relative; display: grid; place-items: center; }
+    .gauge { width: 590px; height: 590px; position: relative; display: grid; place-items: center; border: 34px solid #1F5A46; border-left-color: #C8E35B; border-top-color: #C8E35B; border-right-color: #DF744F; border-radius: 50%; }
+    .gauge-core { width: 270px; text-align: center; font-size: 44px; font-weight: 900; }
+    .gauge-needle { position: absolute; width: 18px; height: 215px; left: 286px; top: 82px; border-radius: 9px; background: #DF744F; transform-origin: 9px 210px; }
+    .gauge-tick { position: absolute; width: 12px; height: 48px; left: 289px; top: -8px; border-radius: 6px; background: #F1EFE7; transform-origin: 6px 303px; }
+    .gauge-tick.g2 { transform: rotate(60deg); } .gauge-tick.g3 { transform: rotate(120deg); } .gauge-tick.g4 { transform: rotate(180deg); } .gauge-tick.g5 { transform: rotate(240deg); } .gauge-tick.g6 { transform: rotate(300deg); }
+    .meter-stage { width: 700px; height: 600px; display: grid; grid-template-columns: 180px 1fr; gap: 80px; align-items: center; }
+    .meter { width: 150px; height: 520px; padding: 12px; display: flex; align-items: flex-end; border: 7px solid #F1EFE7; border-radius: 70px; }
+    .meter-fill { width: 100%; height: 88%; border-radius: 58px; background: #C8E35B; transform-origin: bottom; }
+    .meter-checks { display: flex; flex-direction: column; gap: 34px; }
+    .meter-check { padding: 24px 28px; border: 3px solid #1F5A46; border-radius: 18px; font-size: 29px; font-weight: 800; }
+    .pyramid { width: 800px; height: 620px; display: flex; flex-direction: column-reverse; align-items: center; justify-content: center; gap: 14px; }
+    .layer-item { height: 112px; display: grid; place-items: center; border: 3px solid #C8E35B; background: #164B3D; font-size: 31px; font-weight: 900; }
+    .pyramid .l1 { width: 760px; } .pyramid .l2 { width: 620px; } .pyramid .l3 { width: 480px; } .pyramid .l4 { width: 340px; background: #C8E35B; color: #071713; }
+    .layered-cards { width: 800px; height: 620px; position: relative; }
+    .layered-card { position: absolute; width: 650px; height: 190px; left: 75px; padding: 34px; border: 4px solid #C8E35B; border-radius: 26px; background: #103B31; font-size: 32px; font-weight: 900; }
+    .layered-card.l1 { top: 60px; } .layered-card.l2 { top: 215px; left: 115px; } .layered-card.l3 { top: 370px; left: 155px; border-color: #DF744F; }
+    .priority-board { width: 800px; height: 600px; display: flex; flex-direction: column; justify-content: center; gap: 36px; }
+    .priority-row { height: 105px; padding: 24px 30px; display: flex; justify-content: space-between; align-items: center; border-left: 16px solid #C8E35B; background: #103B31; font-size: 30px; font-weight: 900; }
+    .priority-row.p2 { width: 82%; border-color: #1F5A46; } .priority-row.p3 { width: 64%; border-color: #DF744F; }
+    .network-stage { width: 820px; height: 660px; position: relative; }
+    .network-core { position: absolute; width: 250px; height: 250px; left: 285px; top: 205px; z-index: 3; display: grid; place-items: center; padding: 28px; border: 8px solid #C8E35B; border-radius: 50%; background: #071713; text-align: center; font-size: 38px; font-weight: 900; }
+    .network-node { position: absolute; z-index: 3; width: 180px; padding: 24px 12px; border: 3px solid #1F5A46; border-radius: 22px; background: #103B31; text-align: center; font-size: 27px; font-weight: 800; }
+    .network-node.n1 { left: 20px; top: 60px; } .network-node.n2 { right: 20px; top: 60px; } .network-node.n3 { left: 20px; bottom: 60px; } .network-node.n4 { right: 20px; bottom: 60px; }
+    .connector { position: absolute; z-index: 1; width: 250px; height: 5px; left: 165px; top: 205px; background: #C8E35B; transform-origin: left; }
+    .connector.c2 { left: 410px; transform: rotate(-28deg); } .connector.c3 { top: 450px; transform: rotate(28deg); } .connector.c4 { left: 410px; top: 450px; transform: rotate(-28deg); }
+    .network-stage[data-variant="audience-network"] .network-core { border-radius: 60px; }
+    .network-stage[data-variant="action-network"] .network-node { border-color: #DF744F; }
+    .shield-stage { width: 820px; height: 650px; position: relative; display: grid; place-items: center; }
+    .shield { width: 420px; height: 520px; padding: 95px 55px; display: grid; place-items: center; border: 12px solid #C8E35B; border-radius: 190px 190px 230px 230px; background: #103B31; text-align: center; font-size: 43px; font-weight: 900; }
+    .guard-list { position: absolute; left: 50px; top: 115px; display: flex; flex-direction: column; gap: 34px; }
+    .guard-row { width: 220px; padding: 20px; border: 3px solid #1F5A46; background: #071713; font-size: 27px; font-weight: 800; }
+    .claim-gate { width: 800px; height: 600px; position: relative; overflow: hidden; }
+    .gate-post { position: absolute; width: 34px; height: 480px; left: 383px; top: 60px; background: #DF744F; }
+    .gate-arm { position: absolute; width: 360px; height: 28px; left: 400px; top: 150px; background: #DF744F; transform-origin: left; }
+    .claim-card { position: absolute; width: 290px; padding: 28px; left: 35px; border: 3px solid #C8E35B; background: #103B31; font-size: 28px; font-weight: 800; }
+    .claim-card.c1 { top: 95px; } .claim-card.c2 { top: 245px; } .claim-card.c3 { top: 395px; }
+    .fence-stage { width: 700px; height: 560px; position: relative; display: grid; place-items: center; }
+    .fence-piece { position: absolute; background: #DF744F; }
+    .fence-piece.top, .fence-piece.bottom { width: 700px; height: 15px; left: 0; transform-origin: left; } .fence-piece.top { top: 0; } .fence-piece.bottom { bottom: 0; }
+    .fence-piece.left, .fence-piece.right { width: 15px; height: 560px; top: 0; transform-origin: top; } .fence-piece.left { left: 0; } .fence-piece.right { right: 0; }
+    .fence-core { width: 390px; padding: 70px 40px; border: 5px solid #C8E35B; text-align: center; font-size: 40px; font-weight: 900; }
+    .scene-atmosphere { position: absolute; inset: 0; z-index: 1; overflow: hidden; }
+    .atmo-glow { position: absolute; width: 760px; height: 760px; left: 160px; top: 620px; border-radius: 50%; background: radial-gradient(circle, rgba(61,178,255,.23) 0, rgba(56,111,255,.11) 38%, transparent 70%); filter: blur(8px); }
+    .airflow { position: absolute; inset: 0; width: 1080px; height: 1920px; overflow: visible; opacity: .74; }
+    .flow-line { fill: none; stroke-width: 10; stroke-linecap: round; stroke-dasharray: 34 46; filter: drop-shadow(0 0 16px rgba(78,184,255,.68)); }
+    .flow-line.f1 { stroke: #54C7FF; }
+    .flow-line.f2 { stroke: #77E6D1; stroke-width: 7; }
+    .flow-line.f3 { stroke: #C693FF; stroke-width: 8; }
+    .flow-particle { position: absolute; width: 13px; height: 13px; border-radius: 50%; background: #BDEEFF; box-shadow: 0 0 12px #54C7FF, 0 0 28px rgba(84,199,255,.72); }
+    .pulse-ring { position: absolute; width: 520px; height: 520px; left: 280px; top: 720px; border: 7px solid rgba(84,199,255,.68); border-radius: 50%; box-shadow: 0 0 34px rgba(84,199,255,.28), inset 0 0 32px rgba(119,230,209,.18); }
+    .pulse-ring.r2 { border-color: rgba(119,230,209,.58); }
+    .pulse-ring.r3 { border-color: rgba(198,147,255,.52); }
+    .kinetic-rail { position: absolute; right: 34px; top: 190px; width: 7px; height: 1350px; border-radius: 8px; background: linear-gradient(180deg, transparent, #54C7FF 18%, #77E6D1 56%, #C693FF 86%, transparent); transform-origin: top; box-shadow: 0 0 18px rgba(84,199,255,.65); }
+    .kinetic-rail::after { content: ""; position: absolute; width: 22px; height: 22px; left: -7px; bottom: -3px; border: 4px solid #BDEEFF; border-radius: 50%; background: #071713; }
   </style>
 </head>
 <body>
-  <div id="root" data-composition-id="clean-air-motion-output" data-start="0" data-duration="__DURATION__" data-width="1080" data-height="1920" data-fps="30">
+  <div id="root" data-composition-id="clean-air-motion-output" data-no-timeline data-start="0" data-duration="__DURATION__" data-width="1080" data-height="1920" data-fps="30">
     <div class="ambient" data-layout-ignore><div class="grid"></div><div class="orb a"></div><div class="orb b"></div></div>
     <div class="brand" data-layout-allow-occlusion><i>时</i><span>净界AI内容工厂</span></div>
     <div id="scenes"></div>
-    <div id="wipe" class="wipe" data-layout-allow-occlusion></div>
     __AUDIO_ELEMENT__
   </div>
   <script>
     const plan = __MOTION_PLAN_JSON__;
     const scenesRoot = document.querySelector("#scenes");
     const esc = (value) => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-    function visualMarkup(type, title) {
-      if (type === "stat-ring") return `<div class="ring"><span>${esc(title)}</span></div>`;
-      if (type === "magnifier") return `<div class="evidence"><b>证据条件</b><div class="line"></div><div class="line short"></div><div class="line risk"></div><div class="line"></div></div><div class="lens"></div>`;
-      if (type === "liquid-chamber") return `<div class="dose-layout"><div class="bottle"><div class="liquid"></div></div><div class="chamber"></div></div>`;
-      if (type === "clock-wave") return `<div class="time-layout"><div class="clock"><div class="hand"></div></div><div class="wave">${Array.from({length:16},(_,i)=>`<i style="height:${55+(i%5)*34}px"></i>`).join("")}</div></div>`;
-      if (type === "report-scan") return `<div class="report"><h2>检测报告</h2><div class="row"><span>检测方法</span><b>METHOD</b></div><div class="row"><span>测试条件</span><b>CONDITION</b></div><div class="row"><span>报告来源</span><b>SOURCE</b></div><div class="row"><span>适用边界</span><b>SCOPE</b></div><div class="scan" data-layout-allow-overflow data-layout-allow-occlusion></div></div>`;
-      if (type === "compare") return `<div class="compare"><div class="panel">实验条件</div><div class="neq">≠</div><div class="panel home">真实家庭</div></div>`;
-      return `<div class="orbit"><div class="core">${esc(title)}</div>${["条件一","条件二","条件三","条件四","条件五","条件六"].map((x,i)=>`<div class="chip c${i+1}">${x}</div>`).join("")}</div>`;
-    }
-    plan.scenes.forEach((scene, idx) => {
-      const node = document.createElement("section");
-      node.className = `scene ${scene.visual_type}`;
-      node.id = scene.id;
-      node.setAttribute("data-layout-allow-overlap", "");
-      node.setAttribute("data-layout-allow-occlusion", "");
-      node.innerHTML = `<div class="content"><div class="top"><span>EVIDENCE IN MOTION</span><span>${String(idx+1).padStart(2,"0")} / ${String(plan.scenes.length).padStart(2,"0")}</span></div><div class="kicker">${esc(scene.kicker)}</div><h1>${esc(scene.title)}</h1><div class="visual">${visualMarkup(scene.visual_type, scene.title)}</div></div><div class="caption">${esc(scene.caption)}</div>`;
-      scenesRoot.appendChild(node);
-    });
+    const waveBars = () => Array.from({length: 16}, (_, index) => `<i style="height:${55 + (index % 5) * 34}px"></i>`).join("");
+    const FAMILY_VARIANTS = {
+      "radial-focus": ["stat-ring", "signal-grid", "target-burst"],
+      "evidence-lens": ["magnifier", "focus-lens", "source-spotlight"],
+      "space-scale": ["liquid-chamber", "room-map", "scope-box"],
+      "sequential-flow": ["process-flow", "checklist-path", "decision-ladder"],
+      "temporal-wave": ["clock-wave", "timeline-pulse", "cadence-track"],
+      "document-stack": ["report-scan", "source-stack", "citation-pages"],
+      "binary-compare": ["compare", "option-compare", "tradeoff-balance"],
+      "orbit-conclusion": ["orbit-summary", "action-orbit", "boundary-orbit"],
+      "threshold-gauge": ["risk-gauge", "compliance-meter", "confidence-dial"],
+      "layered-pyramid": ["evidence-pyramid", "decision-stack", "priority-layers"],
+      "network-map": ["source-network", "audience-network", "action-network"],
+      "shield-boundary": ["safety-shield", "claim-guard", "scope-fence"]
+    };
+    const labeledItems = (values, className, prefix) => values.map((value, index) => `<div class="${className} ${prefix}${index + 1}">${esc(value)}</div>`).join("");
+    const orbitChips = (values) => values.map((value, index) => `<div class="chip c${index + 1}">${esc(value)}</div>`).join("");
+    const atmosphereMarkup = (index) => {
+      const particles = Array.from({length: 12}, (_, particleIndex) => {
+        const left = 70 + ((particleIndex * 83 + index * 41) % 920);
+        const top = 420 + ((particleIndex * 137 + index * 89) % 1120);
+        return `<i class="flow-particle p${particleIndex + 1}" style="left:${left}px;top:${top}px"></i>`;
+      }).join("");
+      return `<div class="scene-atmosphere" data-layout-ignore><div class="atmo-glow"></div><svg class="airflow" viewBox="0 0 1080 1920" aria-hidden="true"><path class="flow-line f1" d="M-80 1540 C260 1370 120 970 510 830 S840 420 1160 250"/><path class="flow-line f2" d="M-120 1260 C180 1130 360 1330 530 1010 S760 560 1160 600"/><path class="flow-line f3" d="M40 1830 C370 1520 730 1570 600 1160 S450 590 900 110"/></svg>${particles}<i class="pulse-ring r1"></i><i class="pulse-ring r2"></i><i class="pulse-ring r3"></i><i class="kinetic-rail"></i></div>`;
+    };
 
-    gsap.defaults({ ease: "power3.out" });
-    const tl = gsap.timeline({ paused: true });
-    window.__timelines = window.__timelines || {};
-    window.__timelines["clean-air-motion-output"] = tl;
-    const allScenes = plan.scenes.map(s => `#${s.id}`);
-    tl.set(allScenes, { opacity: 0, visibility: "hidden" }, 0);
-    tl.set("#wipe", { xPercent: -115 }, 0);
+    const FAMILY_BUILDERS = {
+      "radial-focus": (scene, type) => {
+        if (type === "stat-ring") return `<div class="radial-shell" data-variant="${type}"><div class="ring"><span>${esc(scene.title)}</span></div>${Array.from({length:8},(_, index)=>`<i class="radial-tick t${index+1}"></i>`).join("")}</div>`;
+        if (type === "signal-grid") return `<div class="radial-shell" data-variant="${type}"><div class="signal-core">${esc(scene.title)}</div>${labeledItems(["需求","对象","依据","行动"],"radial-node","n")}</div>`;
+        return `<div class="radial-shell" data-variant="${type}"><div class="target-ring outer"></div><div class="target-ring middle"></div><div class="target-ring inner"></div><i class="cross h"></i><i class="cross v"></i><div class="target-core">锁定关键问题</div></div>`;
+      },
+      "evidence-lens": (_scene, type) => {
+        const heading = type === "magnifier" ? "资料依据" : type === "focus-lens" ? "边界字段" : "来源核验";
+        const lensClass = type === "focus-lens" ? "lens square" : type === "source-spotlight" ? "lens spotlight" : "lens";
+        const badges = type === "source-spotlight" ? `<div class="source-badges">${["来源一","来源二","来源三"].map(value=>`<div class="source-badge">${value}</div>`).join("")}</div>` : "";
+        return `<div class="evidence" data-variant="${type}"><b>${heading}</b><div class="line"></div><div class="line short"></div><div class="line risk"></div><div class="line"></div>${badges}</div><div class="${lensClass}"></div>`;
+      },
+      "space-scale": (_scene, type) => {
+        if (type === "liquid-chamber") return `<div class="dose-layout" data-variant="${type}"><div class="bottle"><div class="liquid"></div></div><div class="chamber"></div></div>`;
+        if (type === "room-map") return `<div class="room-plan" data-variant="${type}">${["入口","主要区域","相邻空间","通风路径"].map(value=>`<div class="room-cell">${value}</div>`).join("")}<div class="map-pin"><span>点</span></div></div>`;
+        return `<div class="scope-stage" data-variant="${type}"><div class="scope-frame s1">全部场景</div><div class="scope-frame s2">适用条件</div><div class="scope-frame s3">当前结论</div></div>`;
+      },
+      "sequential-flow": (_scene, type) => {
+        const labels = type === "process-flow" ? ["明确问题","核对依据","标注边界","执行行动"] : type === "checklist-path" ? ["资料齐全","来源可查","条件明确","结论可用"] : ["收集信息","比较方案","排除风险","形成决策"];
+        return `<div class="flow-board" data-variant="${type}"><div class="flow-progress"></div>${labels.map((value,index)=>`<div class="flow-node f${index+1}"><b>${type === "checklist-path" ? "✓" : index+1}</b><span>${value}</span></div>`).join("")}</div>`;
+      },
+      "temporal-wave": (_scene, type) => {
+        if (type === "clock-wave") return `<div class="time-layout" data-variant="${type}"><div class="clock"><div class="hand"></div></div><div class="wave">${waveBars()}</div></div>`;
+        if (type === "timeline-pulse") return `<div class="timeline-board" data-variant="${type}"><div class="time-line"></div>${["开始","核验","判断","行动"].map(value=>`<div class="time-node">${value}</div>`).join("")}</div>`;
+        return `<div class="cadence-board" data-variant="${type}">${["准备","核验","记录","复核"].map((value,row)=>`<div class="cadence-row"><span>${value}</span><div class="cadence-rail">${Array.from({length:5},(_,index)=>`<i class="cadence-bar" style="opacity:${.48+(row+index)%3*.2}"></i>`).join("")}</div></div>`).join("")}</div>`;
+      },
+      "document-stack": (_scene, type) => {
+        if (type === "report-scan") return `<div class="report" data-variant="${type}"><h2>资料来源</h2><div class="row"><span>第一项</span><b>问题</b></div><div class="row"><span>第二项</span><b>依据</b></div><div class="row"><span>第三项</span><b>边界</b></div><div class="row"><span>第四项</span><b>行动</b></div><div class="scan" data-layout-allow-overflow data-layout-allow-occlusion></div></div>`;
+        if (type === "source-stack") return `<div class="doc-stack" data-variant="${type}"><div class="doc-page p1"></div><div class="doc-page p2"></div><div class="doc-page p3"><h2>来源卡片</h2>${Array.from({length:5},()=>`<div class="doc-rule"></div>`).join("")}</div></div>`;
+        return `<div class="citation-book" data-variant="${type}"><div class="citation-sheet"><h2>引用页签</h2>${Array.from({length:6},()=>`<div class="doc-rule"></div>`).join("")}</div>${labeledItems(["来源","日期","范围","限制"],"citation-tab","c")}</div>`;
+      },
+      "binary-compare": (_scene, type) => {
+        if (type === "tradeoff-balance") return `<div class="balance" data-variant="${type}"><div class="balance-post"></div><div class="balance-beam"></div><div class="weight left">可获得的价值</div><div class="weight right">需要承担的限制</div></div>`;
+        const labels = type === "compare" ? ["已有依据","实际场景"] : ["方案 A","方案 B"];
+        return `<div class="compare" data-variant="${type}"><div class="panel">${labels[0]}</div><div class="neq">${type === "compare" ? "≠" : "↔"}</div><div class="panel alt">${labels[1]}</div></div>`;
+      },
+      "orbit-conclusion": (scene, type) => {
+        const values = type === "orbit-summary" ? ["依据","对象","范围","时间","场景","限制"] : type === "action-orbit" ? ["准备","核验","记录","判断","咨询","复核"] : ["可确认","需核验","不外推","有条件","留记录","再咨询"];
+        const core = type === "action-orbit" ? "下一步行动" : type === "boundary-orbit" ? "结论边界" : scene.title;
+        return `<div class="orbit" data-variant="${type}"><div class="core"><span>${esc(core)}</span></div>${orbitChips(values)}</div>`;
+      },
+      "threshold-gauge": (_scene, type) => {
+        if (type === "compliance-meter") return `<div class="meter-stage" data-variant="${type}"><div class="meter"><div class="meter-fill"></div></div><div class="meter-checks">${["输入已核对","来源可追溯","边界已标注","行动可复核"].map(value=>`<div class="meter-check">✓ ${value}</div>`).join("")}</div></div>`;
+        const core = type === "risk-gauge" ? "风险阈值" : "可信程度";
+        return `<div class="threshold-stage" data-variant="${type}"><div class="gauge"><div class="gauge-core">${core}</div><div class="gauge-needle"></div>${Array.from({length:6},(_,index)=>`<i class="gauge-tick g${index+1}"></i>`).join("")}</div></div>`;
+      },
+      "layered-pyramid": (_scene, type) => {
+        if (type === "evidence-pyramid") return `<div class="pyramid" data-variant="${type}"><div class="layer-item l1">原始资料</div><div class="layer-item l2">可核验依据</div><div class="layer-item l3">适用边界</div><div class="layer-item l4">行动结论</div></div>`;
+        if (type === "decision-stack") return `<div class="layered-cards" data-variant="${type}"><div class="layered-card l1">01 收集条件</div><div class="layered-card l2">02 比较选项</div><div class="layered-card l3">03 作出决策</div></div>`;
+        return `<div class="priority-board" data-variant="${type}"><div class="priority-row"><span>优先处理</span><b>立即</b></div><div class="priority-row p2"><span>持续核验</span><b>随后</b></div><div class="priority-row p3"><span>保留观察</span><b>记录</b></div></div>`;
+      },
+      "network-map": (_scene, type) => {
+        const values = type === "source-network" ? ["报告","标准","记录","材料"] : type === "audience-network" ? ["家庭","员工","客户","伙伴"] : ["准备","核验","执行","复核"];
+        const core = type === "source-network" ? "证据中心" : type === "audience-network" ? "目标受众" : "行动路径";
+        return `<div class="network-stage" data-variant="${type}"><div class="network-core">${core}</div>${labeledItems(values,"network-node","n")}${Array.from({length:4},(_,index)=>`<i class="connector c${index+1}"></i>`).join("")}</div>`;
+      },
+      "shield-boundary": (_scene, type) => {
+        if (type === "safety-shield") return `<div class="shield-stage" data-variant="${type}"><div class="shield">安全边界</div><div class="guard-list">${["不虚构","不外推","可追溯"].map(value=>`<div class="guard-row">✓ ${value}</div>`).join("")}</div></div>`;
+        if (type === "claim-guard") return `<div class="claim-gate" data-variant="${type}"><div class="gate-post"></div><div class="gate-arm"></div><div class="claim-card c1">事实主张</div><div class="claim-card c2">证据来源</div><div class="claim-card c3">适用条件</div></div>`;
+        return `<div class="fence-stage" data-variant="${type}"><i class="fence-piece top"></i><i class="fence-piece right"></i><i class="fence-piece bottom"></i><i class="fence-piece left"></i><div class="fence-core">只在已确认范围内使用</div></div>`;
+      }
+    };
+
+    function visualMarkup(scene) {
+      const family = scene.renderer_family;
+      const variants = FAMILY_VARIANTS[family];
+      if (!variants || !variants.includes(scene.visual_type) || !FAMILY_BUILDERS[family]) throw new Error(`未实现的可信动画积木：${scene.visual_type}`);
+      return FAMILY_BUILDERS[family](scene, scene.visual_type);
+    }
+
+    function finiteAnimation(element, keyframes, timing) {
+      if (!element) return null;
+      const animation = element.animate(keyframes, Object.assign({fill: "both", iterations: 1}, timing));
+      animation.pause();
+      return animation;
+    }
+
+    function animateAll(root, selector, keyframes, timing, staggerMs) {
+      root.querySelectorAll(selector).forEach((element, index) => {
+        finiteAnimation(element, keyframes, Object.assign({}, timing, {delay: timing.delay + index * staggerMs}));
+      });
+    }
+
+    function animateAtmosphere(root, index, startMs, durationMs) {
+      const direction = index % 2 === 0 ? 1 : -1;
+      finiteAnimation(root.querySelector(".scene-atmosphere"), [{opacity:0},{opacity:1,offset:.08},{opacity:1,offset:.9},{opacity:0}], {duration:durationMs,delay:startMs,easing:"linear"});
+      root.querySelectorAll(".flow-line").forEach((line, lineIndex) => {
+        finiteAnimation(line, [
+          {strokeDashoffset:"1500",opacity:.08,transform:`translateX(${-26 * direction}px)`},
+          {strokeDashoffset:"420",opacity:.88,transform:`translateX(${18 * direction}px)`,offset:.38},
+          {strokeDashoffset:"-620",opacity:.64,transform:`translateX(${-10 * direction}px)`,offset:.72},
+          {strokeDashoffset:"-1580",opacity:.16,transform:`translateX(${24 * direction}px)`}
+        ], {duration:Math.max(1400,durationMs),delay:startMs+lineIndex*120,easing:"linear"});
+      });
+      root.querySelectorAll(".flow-particle").forEach((particle, particleIndex) => {
+        const lateral = ((particleIndex % 5) - 2) * 38 * direction;
+        finiteAnimation(particle, [
+          {transform:"translate3d(0,220px,0) scale(.35)",opacity:0},
+          {transform:`translate3d(${lateral*.25}px,30px,0) scale(1)`,opacity:.92,offset:.2},
+          {transform:`translate3d(${lateral}px,-430px,0) scale(.72)`,opacity:.7,offset:.68},
+          {transform:`translate3d(${-lateral*.55}px,-850px,0) scale(.18)`,opacity:0}
+        ], {duration:Math.max(1200,durationMs-240),delay:startMs+(particleIndex%4)*115,easing:"cubic-bezier(.34,0,.2,1)"});
+      });
+      root.querySelectorAll(".pulse-ring").forEach((ring, ringIndex) => {
+        const offset = ringIndex * .13;
+        finiteAnimation(ring, [
+          {transform:"scale(.25)",opacity:0},
+          {transform:"scale(.62)",opacity:.72,offset:.12+offset},
+          {transform:"scale(1.45)",opacity:0,offset:.36+offset},
+          {transform:"scale(.38)",opacity:0,offset:.48+offset},
+          {transform:"scale(.78)",opacity:.55,offset:.66+offset/2},
+          {transform:"scale(1.72)",opacity:0}
+        ], {duration:Math.max(1600,durationMs),delay:startMs,easing:"cubic-bezier(.2,0,.28,1)"});
+      });
+      finiteAnimation(root.querySelector(".kinetic-rail"), [{transform:"scaleY(0)",opacity:0},{transform:"scaleY(.48)",opacity:.92,offset:.24},{transform:"scaleY(1)",opacity:.76,offset:.78},{transform:"scaleY(.18)",opacity:0}], {duration:durationMs,delay:startMs,easing:"cubic-bezier(.2,0,.2,1)"});
+      finiteAnimation(root.querySelector(".atmo-glow"), [
+        {transform:`translate3d(${-90*direction}px,80px,0) scale(.72)`,opacity:.2},
+        {transform:`translate3d(${70*direction}px,-70px,0) scale(1.18)`,opacity:.72,offset:.48},
+        {transform:`translate3d(${-35*direction}px,15px,0) scale(.9)`,opacity:.34}
+      ], {duration:durationMs,delay:startMs,easing:"ease-in-out"});
+    }
+
+    const FAMILY_ANIMATORS = {
+      "radial-focus": (root, scene, startMs, durationMs) => {
+        animateAll(root, ".ring,.signal-core,.target-ring", [{transform:"scale(.28) rotate(-20deg)",opacity:0},{transform:"scale(1)",opacity:1,offset:.42},{transform:"scale(1.06)",opacity:1,offset:.72},{transform:"scale(1)",opacity:1}], {duration:Math.min(2800,durationMs-300),delay:startMs+280,easing:"cubic-bezier(.2,0,0,1)"}, 90);
+        animateAll(root, ".radial-node", [{transform:"translateY(46px) scale(.7)",opacity:0},{transform:"translateY(0) scale(1)",opacity:1}], {duration:520,delay:startMs+620,easing:"ease-out"}, 120);
+        animateAll(root, ".radial-tick,.cross", [{opacity:0},{opacity:1}], {duration:430,delay:startMs+520,easing:"linear"}, 65);
+      },
+      "evidence-lens": (root, _scene, startMs, durationMs) => {
+        finiteAnimation(root.querySelector(".evidence"), [{transform:"translateY(140px) rotate(4deg)",opacity:0},{transform:"translateY(0) rotate(-1.5deg)",opacity:1}], {duration:750,delay:startMs+300,easing:"cubic-bezier(.2,0,0,1)"});
+        animateAll(root, ".line,.doc-rule", [{transform:"scaleX(0)",opacity:0},{transform:"scaleX(1)",opacity:1}], {duration:380,delay:startMs+650,easing:"ease-out"}, 110);
+        finiteAnimation(root.querySelector(".lens"), [{transform:"translate(0,0) scale(.2)",opacity:0},{transform:"translate(0,0) scale(1)",opacity:1,offset:.25},{transform:"translate(-320px,-190px) scale(1)",opacity:1,offset:.68},{transform:"translate(0,0) scale(1)",opacity:1}], {duration:Math.min(3400,durationMs-300),delay:startMs+850,easing:"ease-in-out"});
+        animateAll(root, ".source-badge", [{transform:"translateY(30px)",opacity:0},{transform:"translateY(0)",opacity:1}], {duration:420,delay:startMs+900,easing:"ease-out"}, 120);
+      },
+      "space-scale": (root, _scene, startMs, _durationMs) => {
+        finiteAnimation(root.querySelector(".bottle"), [{transform:"translateY(120px)",opacity:0},{transform:"translateY(0)",opacity:1}], {duration:700,delay:startMs+350,easing:"ease-out"});
+        finiteAnimation(root.querySelector(".liquid"), [{transform:"scaleY(0)"},{transform:"scaleY(1)"}], {duration:1350,delay:startMs+800,easing:"ease-in-out"});
+        finiteAnimation(root.querySelector(".chamber"), [{transform:"scaleX(.2)",opacity:0},{transform:"scaleX(1)",opacity:1}], {duration:800,delay:startMs+550,easing:"ease-out"});
+        animateAll(root, ".room-cell,.scope-frame", [{transform:"scale(.65)",opacity:0},{transform:"scale(1)",opacity:1}], {duration:560,delay:startMs+420,easing:"cubic-bezier(.2,0,0,1)"}, 130);
+        finiteAnimation(root.querySelector(".map-pin"), [{transform:"rotate(-45deg) scale(.2)",opacity:0},{transform:"rotate(-45deg) scale(1.18)",opacity:1,offset:.65},{transform:"rotate(-45deg) scale(1)",opacity:1}], {duration:900,delay:startMs+1050,easing:"ease-out"});
+      },
+      "sequential-flow": (root, _scene, startMs, durationMs) => {
+        finiteAnimation(root.querySelector(".flow-progress"), [{transform:"scaleY(0)",opacity:0},{transform:"scaleY(1)",opacity:1}], {duration:Math.min(2300,durationMs-700),delay:startMs+480,easing:"ease-in-out"});
+        animateAll(root, ".flow-node", [{transform:"translateX(-70px) scale(.9)",opacity:0},{transform:"translateX(0) scale(1)",opacity:1}], {duration:520,delay:startMs+500,easing:"cubic-bezier(.2,0,0,1)"}, 230);
+      },
+      "temporal-wave": (root, _scene, startMs, durationMs) => {
+        finiteAnimation(root.querySelector(".clock"), [{transform:"scale(.3) rotate(-50deg)",opacity:0},{transform:"scale(1)",opacity:1}], {duration:780,delay:startMs+350,easing:"cubic-bezier(.2,0,0,1)"});
+        finiteAnimation(root.querySelector(".hand"), [{transform:"rotate(0deg)"},{transform:"rotate(310deg)"}], {duration:Math.max(2000,durationMs-1000),delay:startMs+700,easing:"ease-in-out"});
+        animateAll(root, ".wave i", [{transform:"scaleY(.1)",opacity:0},{transform:"scaleY(1.8)",opacity:1,offset:.55},{transform:"scaleY(1)",opacity:1}], {duration:1200,delay:startMs+600,easing:"ease-in-out"}, 50);
+        finiteAnimation(root.querySelector(".time-line"), [{transform:"scaleX(0)"},{transform:"scaleX(1)"}], {duration:Math.min(2200,durationMs-600),delay:startMs+450,easing:"ease-in-out"});
+        animateAll(root, ".time-node,.cadence-row", [{transform:"translateY(45px) scale(.7)",opacity:0},{transform:"translateY(0) scale(1)",opacity:1}], {duration:520,delay:startMs+620,easing:"ease-out"}, 160);
+        animateAll(root, ".cadence-bar", [{transform:"scaleX(.08)"},{transform:"scaleX(1)"}], {duration:600,delay:startMs+900,easing:"ease-in-out"}, 35);
+      },
+      "document-stack": (root, _scene, startMs, durationMs) => {
+        finiteAnimation(root.querySelector(".report"), [{transform:"translateY(150px)"},{transform:"translateY(0)"}], {duration:780,delay:startMs+350,easing:"ease-out"});
+        animateAll(root, ".row,.citation-tab", [{transform:"translateX(-38px)",opacity:0},{transform:"translateX(0)",opacity:1}], {duration:380,delay:startMs+720,easing:"ease-out"}, 110);
+        finiteAnimation(root.querySelector(".scan"), [{transform:"translateY(0)"},{transform:"translateY(760px)"}], {duration:Math.min(2200,durationMs-500),delay:startMs+1200,easing:"ease-in-out"});
+        animateAll(root, ".doc-page", [{transform:"translate(-70px,85px) scale(.82)",opacity:0},{transform:"translate(0,0) scale(1)",opacity:1}], {duration:680,delay:startMs+380,easing:"cubic-bezier(.2,0,0,1)"}, 160);
+        finiteAnimation(root.querySelector(".citation-sheet"), [{transform:"translateY(120px) rotate(-3deg)",opacity:0},{transform:"translateY(0) rotate(0deg)",opacity:1}], {duration:760,delay:startMs+360,easing:"ease-out"});
+      },
+      "binary-compare": (root, _scene, startMs, _durationMs) => {
+        finiteAnimation(root.querySelector(".panel:first-child"), [{transform:"translateX(-170px)",opacity:0},{transform:"translateX(0)",opacity:1}], {duration:750,delay:startMs+350,easing:"ease-out"});
+        finiteAnimation(root.querySelector(".panel.alt"), [{transform:"translateX(170px)",opacity:0},{transform:"translateX(0)",opacity:1}], {duration:750,delay:startMs+480,easing:"ease-out"});
+        finiteAnimation(root.querySelector(".neq"), [{transform:"scale(4) rotate(-20deg)",opacity:0},{transform:"scale(1)",opacity:1,offset:.55},{transform:"scale(1.22)",opacity:1},{transform:"scale(1)",opacity:1}], {duration:1600,delay:startMs+1000,easing:"ease-in-out"});
+        finiteAnimation(root.querySelector(".balance-beam"), [{transform:"rotate(-14deg)",opacity:0},{transform:"rotate(8deg)",opacity:1,offset:.6},{transform:"rotate(0deg)",opacity:1}], {duration:1900,delay:startMs+480,easing:"ease-in-out"});
+        animateAll(root, ".weight", [{transform:"translateY(-130px)",opacity:0},{transform:"translateY(0)",opacity:1}], {duration:680,delay:startMs+700,easing:"ease-out"}, 280);
+      },
+      "orbit-conclusion": (root, scene, startMs, _durationMs) => {
+        const endRotation = scene.visual_type === "boundary-orbit" ? "rotate(45deg)" : "rotate(0deg)";
+        finiteAnimation(root.querySelector(".core"), [{transform:"scale(.2) rotate(-24deg)",opacity:0},{transform:`scale(1) ${endRotation}`,opacity:1,offset:.55},{transform:`scale(1.05) ${endRotation}`,opacity:1},{transform:`scale(1) ${endRotation}`,opacity:1}], {duration:2400,delay:startMs+350,easing:"ease-in-out"});
+        animateAll(root, ".chip", [{transform:"scale(.25)",opacity:0},{transform:"scale(1)",opacity:1}], {duration:450,delay:startMs+650,easing:"ease-out"}, 120);
+      },
+      "threshold-gauge": (root, scene, startMs, durationMs) => {
+        finiteAnimation(root.querySelector(".gauge"), [{transform:"scale(.45) rotate(-35deg)",opacity:0},{transform:"scale(1) rotate(0deg)",opacity:1}], {duration:820,delay:startMs+350,easing:"cubic-bezier(.2,0,0,1)"});
+        const needleEnd = scene.visual_type === "risk-gauge" ? "rotate(132deg)" : "rotate(218deg)";
+        finiteAnimation(root.querySelector(".gauge-needle"), [{transform:"rotate(-112deg)"},{transform:needleEnd}], {duration:Math.min(2500,durationMs-700),delay:startMs+720,easing:"ease-in-out"});
+        animateAll(root, ".gauge-tick,.meter-check", [{opacity:0},{opacity:1}], {duration:360,delay:startMs+650,easing:"linear"}, 110);
+        finiteAnimation(root.querySelector(".meter-fill"), [{transform:"scaleY(0)"},{transform:"scaleY(1)"}], {duration:Math.min(2400,durationMs-600),delay:startMs+500,easing:"ease-in-out"});
+      },
+      "layered-pyramid": (root, _scene, startMs, _durationMs) => {
+        animateAll(root, ".layer-item", [{transform:"translateY(90px) scale(.7)",opacity:0},{transform:"translateY(0) scale(1)",opacity:1}], {duration:560,delay:startMs+420,easing:"cubic-bezier(.2,0,0,1)"}, 180);
+        animateAll(root, ".layered-card", [{transform:"translate(120px,-70px) scale(.8)",opacity:0},{transform:"translate(0,0) scale(1)",opacity:1}], {duration:650,delay:startMs+420,easing:"ease-out"}, 220);
+        animateAll(root, ".priority-row", [{transform:"scaleX(.15)",opacity:0},{transform:"scaleX(1)",opacity:1}], {duration:620,delay:startMs+420,easing:"ease-in-out"}, 210);
+      },
+      "network-map": (root, _scene, startMs, _durationMs) => {
+        const angles = [0,-28,28,-28];
+        root.querySelectorAll(".connector").forEach((element,index)=>finiteAnimation(element,[{transform:`rotate(${angles[index]}deg) scaleX(0)`,opacity:0},{transform:`rotate(${angles[index]}deg) scaleX(1)`,opacity:1}],{duration:650,delay:startMs+480+index*120,easing:"ease-in-out"}));
+        finiteAnimation(root.querySelector(".network-core"), [{transform:"scale(.25) rotate(-25deg)",opacity:0},{transform:"scale(1)",opacity:1}], {duration:760,delay:startMs+350,easing:"cubic-bezier(.2,0,0,1)"});
+        animateAll(root, ".network-node", [{transform:"scale(.35)",opacity:0},{transform:"scale(1)",opacity:1}], {duration:520,delay:startMs+650,easing:"ease-out"}, 150);
+      },
+      "shield-boundary": (root, _scene, startMs, durationMs) => {
+        finiteAnimation(root.querySelector(".shield"), [{transform:"translateY(120px) scale(.55)",opacity:0},{transform:"translateY(0) scale(1)",opacity:1}], {duration:850,delay:startMs+350,easing:"cubic-bezier(.2,0,0,1)"});
+        animateAll(root, ".guard-row,.claim-card", [{transform:"translateX(-95px)",opacity:0},{transform:"translateX(0)",opacity:1}], {duration:520,delay:startMs+650,easing:"ease-out"}, 180);
+        finiteAnimation(root.querySelector(".gate-arm"), [{transform:"rotate(-72deg)"},{transform:"rotate(0deg)"}], {duration:Math.min(1800,durationMs-800),delay:startMs+850,easing:"ease-in-out"});
+        animateAll(root, ".fence-piece.top,.fence-piece.bottom", [{transform:"scaleX(0)"},{transform:"scaleX(1)"}], {duration:740,delay:startMs+450,easing:"ease-in-out"}, 180);
+        animateAll(root, ".fence-piece.left,.fence-piece.right", [{transform:"scaleY(0)"},{transform:"scaleY(1)"}], {duration:740,delay:startMs+620,easing:"ease-in-out"}, 180);
+        finiteAnimation(root.querySelector(".fence-core"), [{transform:"scale(.6)",opacity:0},{transform:"scale(1)",opacity:1}], {duration:680,delay:startMs+950,easing:"ease-out"});
+      }
+    };
 
     function animateScene(scene, index) {
-      const root = `#${scene.id}`;
-      const start = Number(scene.start);
-      const entrance = Math.max(0, start - Number(scene.entrance_lead_seconds || 0));
-      tl.set(root, { opacity: 1, visibility: "visible" }, entrance);
-      tl.from(`${root} .top`, { y: -36, opacity: 0, duration: .42 }, entrance);
-      tl.from(`${root} .kicker`, { x: -65, opacity: 0, duration: .48 }, entrance + .05);
-      tl.from(`${root} h1`, { y: 70, opacity: 0, duration: .62 }, entrance + .1);
-      tl.from(`${root} .caption`, { y: 35, opacity: 0, duration: .45 }, start + .16);
-      tl.to(`${root} .visual`, { y: -14, duration: Math.max(.5, Number(scene.end) - start), ease: "none" }, start);
-      const type = scene.visual_type;
-      if (type === "stat-ring") { tl.from(`${root} .ring`, { scale: .35, rotation: -18, opacity: 0, duration: .82, ease: "back.out(1.45)" }, start + .28); tl.to(`${root} .ring`, { scale: 1.06, duration: 1.1, repeat: 3, yoyo: true, ease: "sine.inOut" }, start + 1.2); }
-      if (type === "magnifier") { tl.from(`${root} .evidence`, { y: 140, rotation: 4, opacity: 0, duration: .75 }, start + .3); tl.from(`${root} .line`, { scaleX: 0, stagger: .11, duration: .38 }, start + .65); tl.from(`${root} .lens`, { scale: .2, opacity: 0, duration: .55, ease: "back.out(1.5)" }, start + .85); tl.to(`${root} .lens`, { x: -420, y: -210, duration: 2.3, repeat: 1, yoyo: true, ease: "sine.inOut" }, start + 1.35); }
-      if (type === "liquid-chamber") { tl.from(`${root} .bottle`, { y: 120, opacity: 0, duration: .7 }, start + .35); tl.to(`${root} .liquid`, { scaleY: 1, duration: 1.35, ease: "power2.inOut" }, start + .8); tl.from(`${root} .chamber`, { scaleX: .2, transformOrigin: "right", opacity: 0, duration: .8 }, start + .55); tl.to(`${root} .chamber`, { scale: 1.06, duration: 1.2, repeat: 2, yoyo: true, ease: "sine.inOut" }, start + 1.7); }
-      if (type === "clock-wave") { tl.from(`${root} .clock`, { scale: .3, rotation: -50, opacity: 0, duration: .78, ease: "back.out(1.5)" }, start + .35); tl.to(`${root} .hand`, { rotation: 310, duration: Math.max(2, scene.end-scene.start-1), ease: "power1.inOut" }, start + .7); tl.from(`${root} .wave i`, { scaleY: .1, opacity: 0, stagger: .05, duration: .35 }, start + .6); tl.to(`${root} .wave i:nth-child(3n+1)`, { scaleY: 2.2, repeat: 5, yoyo: true, duration: .55, ease: "sine.inOut" }, start + 1.3); }
-      if (type === "report-scan") { tl.from(`${root} .report`, { y: 150, rotationX: 15, opacity: 0, duration: .78 }, start + .35); tl.from(`${root} .row`, { x: -28, opacity: 0, stagger: .1, duration: .35 }, start + .75); tl.to(`${root} .scan`, { y: 760, duration: 1.8, repeat: 2, ease: "power1.inOut" }, start + 1.2); }
-      if (type === "compare") { tl.from(`${root} .panel:first-child`, { x: -170, opacity: 0, duration: .75 }, start + .35); tl.from(`${root} .panel.home`, { x: 170, opacity: 0, duration: .75 }, start + .48); tl.from(`${root} .neq`, { scale: 4, rotation: -20, opacity: 0, duration: .4 }, start + 1.0); tl.to(`${root} .neq`, { scale: 1.22, duration: .48, repeat: 6, yoyo: true, ease: "sine.inOut" }, start + 1.55); }
-      if (type === "orbit-summary") { tl.from(`${root} .core`, { scale: .2, rotation: -24, opacity: 0, duration: .8, ease: "back.out(1.5)" }, start + .35); tl.from(`${root} .chip`, { scale: .25, opacity: 0, stagger: .12, duration: .45 }, start + .65); tl.to(`${root} .core`, { boxShadow: "0 0 130px rgba(200,227,91,.5)", scale: 1.05, repeat: 4, yoyo: true, duration: 1.1, ease: "sine.inOut" }, start + 1.8); }
+      const root = document.getElementById(scene.id);
+      const startMs = Number(scene.start) * 1000;
+      const durationMs = (Number(scene.end) - Number(scene.start)) * 1000;
+      finiteAnimation(root.querySelector(".top"), [{transform:"translateY(-36px)",opacity:0},{transform:"translateY(0)",opacity:1}], {duration:420,delay:startMs,easing:"cubic-bezier(.2,0,0,1)"});
+      finiteAnimation(root.querySelector(".kicker"), [{transform:"translateX(-65px)",opacity:0},{transform:"translateX(0)",opacity:1}], {duration:480,delay:startMs+50,easing:"cubic-bezier(.2,0,0,1)"});
+      finiteAnimation(root.querySelector("h1"), [{transform:"translateY(70px)",opacity:0},{transform:"translateY(0)",opacity:1}], {duration:620,delay:startMs+100,easing:"cubic-bezier(.2,0,0,1)"});
+      finiteAnimation(root.querySelector(".caption span"), [{transform:"translateY(35px)",opacity:0},{transform:"translateY(0)",opacity:1}], {duration:450,delay:startMs+160,easing:"cubic-bezier(.2,0,0,1)"});
+      const cameraDirection = index % 2 === 0 ? 1 : -1;
+      finiteAnimation(root.querySelector(".content"), [
+        {transform:`translate3d(${-16*cameraDirection}px,24px,0) scale(1.015)`},
+        {transform:`translate3d(${10*cameraDirection}px,-8px,0) scale(1.048)`,offset:.52},
+        {transform:`translate3d(${-5*cameraDirection}px,-28px,0) scale(1.075)`}
+      ], {duration:Math.max(800,durationMs),delay:startMs,easing:"cubic-bezier(.3,0,.2,1)"});
+      finiteAnimation(root.querySelector(".visual"), [
+        {transform:`translate3d(${-22*cameraDirection}px,30px,0) rotate(${-0.7*cameraDirection}deg) scale(.97)`},
+        {transform:`translate3d(${18*cameraDirection}px,-12px,0) rotate(${0.45*cameraDirection}deg) scale(1.035)`,offset:.46},
+        {transform:`translate3d(${-8*cameraDirection}px,-34px,0) rotate(${-0.25*cameraDirection}deg) scale(1.015)`}
+      ], {duration:Math.max(800,durationMs),delay:startMs,easing:"ease-in-out"});
+      animateAtmosphere(root, index, startMs, durationMs);
+
+      const family = scene.renderer_family;
+      const animator = FAMILY_ANIMATORS[family];
+      if (!animator) throw new Error(`未实现的renderer family运动：${family}`);
+      animator(root, scene, startMs, durationMs);
       if (index < plan.scenes.length - 1) {
-        const transitionAt = Number(scene.end) - .34;
-        tl.set("#wipe", { xPercent: -115, backgroundColor: scene.transition === "orange-wipe" ? "#DF744F" : scene.transition === "green-wipe" ? "#1F5A46" : "#C8E35B" }, transitionAt - .01);
-        tl.to("#wipe", { xPercent: 0, duration: .28, ease: "power4.in" }, transitionAt);
-        tl.set(root, { opacity: 0, visibility: "hidden" }, transitionAt + .29);
-        tl.to("#wipe", { xPercent: 115, duration: .34, ease: "expo.out" }, transitionAt + .29);
+        const wipe = root.querySelector(".scene-wipe");
+        wipe.style.backgroundColor = scene.transition === "orange-wipe" ? "#512A20" : scene.transition === "green-wipe" ? "#164B3D" : "#34420E";
+        finiteAnimation(root.querySelector(".content"), [{opacity:1},{opacity:0}], {duration:140,delay:Number(scene.end)*1000-700,easing:"linear"});
+        finiteAnimation(root.querySelector(".caption"), [{opacity:1},{opacity:0}], {duration:140,delay:Number(scene.end)*1000-700,easing:"linear"});
+        finiteAnimation(wipe, [{transform:"translateX(-115%)"},{transform:"translateX(0)",offset:.45},{transform:"translateX(115%)"}], {duration:620,delay:Number(scene.end)*1000-620,easing:"cubic-bezier(.7,0,.3,1)"});
       }
     }
+
+    plan.scenes.forEach((scene, index) => {
+      const node = document.createElement("section");
+      node.className = `scene clip ${scene.visual_type}`;
+      node.id = scene.id;
+      node.setAttribute("data-start", String(scene.start));
+      node.setAttribute("data-duration", String(Number(scene.end) - Number(scene.start)));
+      node.setAttribute("data-track-index", String(index + 1));
+      node.setAttribute("data-layout-allow-overlap", "");
+      node.setAttribute("data-layout-allow-occlusion", "");
+      node.innerHTML = `${atmosphereMarkup(index)}<div class="content" data-layout-allow-overflow><div class="top"><span>${String(index+1).padStart(2,"0")} / ${String(plan.scenes.length).padStart(2,"0")}</span></div><div class="kicker">${esc(scene.kicker)}</div><h1>${esc(scene.title)}</h1><div class="visual">${visualMarkup(scene)}</div></div><div class="caption"><span>${esc(scene.caption)}</span></div><div class="scene-wipe" data-layout-allow-overflow data-layout-allow-occlusion></div>`;
+      scenesRoot.appendChild(node);
+    });
     plan.scenes.forEach(animateScene);
-    tl.to("#wipe", { xPercent: 115, duration: .01 }, Number(plan.duration_seconds) - .01);
+    const totalDurationMs = Math.max(1000, Number(plan.duration_seconds || __DURATION__) * 1000);
+    finiteAnimation(document.querySelector(".orb.a"), [{transform:"translate3d(-90px,-40px,0) scale(.8)"},{transform:"translate3d(170px,210px,0) scale(1.28)",offset:.5},{transform:"translate3d(-20px,90px,0) scale(.94)"}], {duration:totalDurationMs,delay:0,easing:"ease-in-out"});
+    finiteAnimation(document.querySelector(".orb.b"), [{transform:"translate3d(110px,100px,0) scale(.75)"},{transform:"translate3d(-190px,-230px,0) scale(1.35)",offset:.56},{transform:"translate3d(20px,-80px,0) scale(1)"}], {duration:totalDurationMs,delay:0,easing:"ease-in-out"});
   </script>
 </body>
 </html>

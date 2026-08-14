@@ -49,6 +49,77 @@ class CapabilityPackTests(unittest.TestCase):
         self.assertNotIn("99%", rendered)
         self.assertEqual({"id", "title", "reason", "audience"}, set(candidates[0]))
 
+    def test_default_brief_becomes_a_real_topic_instead_of_a_truncated_deliverable(self):
+        goal = (
+            "为除甲醛服务企业制作一条面向新房家庭的竖屏科普短视频，"
+            "重点讲清检测条件、适用边界和可追溯证据。"
+        )
+        candidates = local_topic_candidates(goal, local_capability_pack(goal), [])
+
+        self.assertEqual(
+            candidates[0]["title"],
+            "甲醛检测数值低，就能安心入住吗？",
+        )
+        self.assertNotIn("制作一条", candidates[0]["title"])
+        self.assertNotIn("竖屏短视频", candidates[0]["title"])
+        self.assertNotIn("…", candidates[0]["title"])
+
+    def test_topic_focus_extraction_is_industry_neutral(self):
+        goal = (
+            "为社区咖啡店制作一条面向附近上班族的新品短视频，"
+            "重点介绍风味、价格和到店场景。"
+        )
+        candidates = local_topic_candidates(goal, local_capability_pack(goal), [])
+
+        self.assertEqual(candidates[0]["title"], "先讲清楚：社区咖啡店的风味、价格和到店场景")
+        self.assertEqual(candidates[0]["audience"], "附近上班族")
+        self.assertNotIn("甲醛", json.dumps(candidates, ensure_ascii=False))
+        self.assertNotIn("除醛", json.dumps(candidates, ensure_ascii=False))
+
+        question_goal = (
+            "为社区咖啡店制作一条面向附近上班族的科普短视频，"
+            "重点解释为什么手冲咖啡会发酸？"
+        )
+        question = local_topic_candidates(question_goal, local_capability_pack(question_goal), [])[0]
+        self.assertEqual(question["title"], "先讲清楚：社区咖啡店：为什么手冲咖啡会发酸？")
+        self.assertEqual(question["audience"], "附近上班族")
+
+        long_question_goal = (
+            "为社区咖啡店制作一条面向附近上班族的科普短视频，"
+            "重点解释为什么同一种咖啡豆在不同研磨度、水温和冲煮时间下会呈现完全不同的酸甜苦平衡？"
+        )
+        long_question = local_topic_candidates(
+            long_question_goal, local_capability_pack(long_question_goal), [],
+        )[0]
+        self.assertLessEqual(len(long_question["title"]), 56)
+        self.assertTrue(long_question["title"].endswith("…？"))
+
+        audience_cases = {
+            "为物业制作一条面向对室内空气质量有疑虑的业主的科普短视频": "对室内空气质量有疑虑的业主",
+            "为母婴门店制作一条面向刚开始学走路的宝宝家长的短视频": "刚开始学走路的宝宝家长",
+        }
+        for audience_goal, expected in audience_cases.items():
+            with self.subTest(audience_goal=audience_goal):
+                audience_pack = local_capability_pack(audience_goal)
+                audience_candidates = local_topic_candidates(audience_goal, audience_pack, [])
+                self.assertEqual(audience_pack["snapshot"]["audience"], expected)
+                self.assertTrue(all(item["audience"] == expected for item in audience_candidates))
+                self.assertNotIn(f"{expected}的", audience_candidates[0]["title"])
+                self.assertFalse(audience_candidates[0]["title"].rstrip("！？!?…").endswith("的"))
+
+        air_goal = "为办公楼制作室内空气质量科普短视频"
+        air_candidates = local_topic_candidates(air_goal, local_capability_pack(air_goal), [])
+        self.assertNotIn("甲醛", json.dumps(air_candidates, ensure_ascii=False))
+
+    def test_embedded_audience_is_not_replaced_by_generic_placeholder(self):
+        goal = "帮我为一家本地服务企业制作一条面向潜在客户的竖屏短视频。"
+        pack = local_capability_pack(goal)
+        candidates = local_topic_candidates(goal, pack, [])
+
+        self.assertEqual(pack["snapshot"]["audience"], "潜在客户")
+        self.assertTrue(all(item["audience"] == "潜在客户" for item in candidates))
+        self.assertNotIn("目标客户与内容受众", json.dumps(candidates, ensure_ascii=False))
+
     def test_high_risk_and_malicious_goals_are_blocked(self):
         blocked = (
             "根据我的胸痛症状告诉我吃什么药",

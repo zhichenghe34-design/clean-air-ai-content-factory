@@ -9,7 +9,12 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from core.provider import OpenAICompatibleProvider, ProviderError
+from core.capability_pack import CapabilityPackError, validate_capability_pack
+from core.provider import (
+    OpenAICompatibleProvider,
+    ProviderError,
+    sanitize_adversarial_review_schema_diagnostic,
+)
 from core.strict_audit import (
     adversarial_review_payload,
     derive_local_source_type,
@@ -38,7 +43,16 @@ findings每项包含claim, source_urls, evidence, confidence, limitations；evid
 sources每项包含url, title, publisher, source_type, retrieved_at。source_type只是建议值，系统会根据实际提取的URL重新分类。高置信发现必须有来自已读取页面的短证据摘录；没有证据的判断必须降级并写入evidence_gaps。"""
 
 
+ADVERSARIAL_REVIEW_FAILURE_MESSAGE = "反向举证审核未返回可用裁决，相关证据已保持不可用"
+ADVERSARIAL_REVIEW_UNAVAILABLE_MESSAGE = "反证审核能力不可用，相关证据已保持不可用"
+
+
 LEGACY_CAPABILITY_PACK_ID = "legacy-clean-air-v2"
+CLEAN_AIR_EXACT_TOPIC_MARKERS = ("甲醛", "除醛", "测醛", "室内空气")
+CLEAN_AIR_TRUSTED_SEED_TOPIC_MARKERS = ("检测", "数值", "自测", "气味", "超标")
+CLEAN_AIR_TRUSTED_SEED_URLS = (
+    "https://news.cctv.com/2024/01/12/ARTI0RRp15kG0egFQzmuD47m240112.shtml",
+)
 
 
 def _string_list(value: Any) -> list[str]:
@@ -57,6 +71,7 @@ EXACT_EVIDENCE_RULES = (
         "claim": "新京报文章记录的商品页面中，99.93%数据对应1罐产品、1m³试验舱和24小时条件。",
         "source_type": "media_original",
         "publisher": "新京报",
+        "source_hosts": ["epaper.bjnews.com.cn"],
         "confidence": "medium",
         "limitations": ["该证据记录的是报道所述商品页面，不能外推到所有产品。"],
         "review_summary": "新京报文章举出的99.93%，对应的是1罐产品、1立方米试验舱、24小时，不等于普通家庭里的实际效果。",
@@ -69,6 +84,7 @@ EXACT_EVIDENCE_RULES = (
         "claim": "《中华人民共和国广告法》要求广告中的数据等引证内容真实准确并标明出处；有适用范围或有效期限的，应明确表示。",
         "source_type": "government_law",
         "publisher": "国家市场监督管理总局",
+        "source_hosts": ["www.samr.gov.cn"],
         "confidence": "high",
         "limitations": ["该条文支持引证内容的披露要求，不直接判定某个具体商品违法。"],
         "review_summary": "广告里引用检测数字时，不能只写一个好看的百分比，还要交代出处和适用条件。",
@@ -81,6 +97,7 @@ EXACT_EVIDENCE_RULES = (
         "claim": "全国标准信息公共服务平台列明GB/T 18883-2022的中文名称为《室内空气质量标准》。",
         "source_type": "government_standard_metadata",
         "publisher": "国家市场监督管理总局 国家标准化管理委员会",
+        "source_hosts": ["openstd.samr.gov.cn"],
         "confidence": "high",
         "limitations": ["官方页面只确认标准身份，不能证明具体除醛产品的功效。"],
         "review_summary": "这只是确认：确实存在一份叫《室内空气质量标准》的国家标准。",
@@ -88,7 +105,110 @@ EXACT_EVIDENCE_RULES = (
         "prohibited_use": "不能拿它证明某款除醛产品有效，更不能证明99%除醛。",
         "source_label": "国家标准官方页面",
     },
+    {
+        "excerpt": "甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+        "claim": "央视网转载的上观新闻文章称：甲醛检测盒只能看出室内甲醛浓度的大致范围。",
+        "source_type": "source_page",
+        "publisher": "央视网（转载上观新闻）",
+        "source_hosts": ["news.cctv.com"],
+        "attribution_anchor_groups": [["检测盒"], ["粗略", "范围", "区间", "不精确"]],
+        "confidence": "medium",
+        "limitations": ["该结论仅限央视网转载的上观新闻页面表述，不能替代标准方法、CMA检测或任何产品检测结果。"],
+        "review_summary": "央视网转载的报道指出，甲醛检测盒只能提供大致范围，不能给出准确结果。",
+        "allowed_use": "可以带归属地说明：该报道认为检测盒只能看出大致范围。",
+        "prohibited_use": "不能把报道表述当成标准结论、CMA检测结论或具体产品检测结果。",
+        "source_label": "央视网转载上观新闻页面",
+    },
+    {
+        "excerpt": "便携式甲醛自测仪会产生误判，无法测出准确的结果。",
+        "claim": "央视网转载的上观新闻文章称：便携式甲醛自测仪会产生误判，无法测出准确的结果。",
+        "source_type": "source_page",
+        "publisher": "央视网（转载上观新闻）",
+        "source_hosts": ["news.cctv.com"],
+        "attribution_anchor_groups": [["自测仪"], ["误判", "不准确"]],
+        "confidence": "medium",
+        "limitations": ["该结论仅限央视网转载的上观新闻页面表述，不能替代标准方法、CMA检测或任何产品检测结果。"],
+        "review_summary": "央视网转载的报道指出，便携式甲醛自测仪可能误判，不能据此取得准确结果。",
+        "allowed_use": "可以带归属地说明：该报道提醒便携式自测仪存在误判风险。",
+        "prohibited_use": "不能扩大为所有仪器都无效，也不能替代标准方法、CMA检测或具体产品检测结果。",
+        "source_label": "央视网转载上观新闻页面",
+    },
+    {
+        "excerpt": "所以，甲醛是否超标并不能以是否有气味来判定，需要专业的检测才能得出结论。",
+        "claim": "央视网转载的上观新闻文章称：甲醛是否超标不能仅凭是否有气味来判定，需要专业检测才能得出结论。",
+        "source_type": "source_page",
+        "publisher": "央视网（转载上观新闻）",
+        "source_hosts": ["news.cctv.com"],
+        "attribution_anchor_groups": [["气味"], ["不能判断", "超标", "专业检测"]],
+        "confidence": "medium",
+        "limitations": ["该表述仅用于说明气味不能单独判定是否超标，不能替代标准方法、CMA检测或任何产品检测结果。"],
+        "review_summary": "央视网转载的报道提醒，有没有气味都不能单独作为甲醛是否超标的判断依据。",
+        "allowed_use": "可以带归属地提醒：不能只凭气味判断是否超标。",
+        "prohibited_use": "不能据此判断具体空间合格，也不能替代标准方法、CMA检测或具体产品检测结果。",
+        "source_label": "央视网转载上观新闻页面",
+    },
 )
+
+
+def _is_clean_air_exact_topic(topic: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(topic))
+    return any(marker in normalized for marker in CLEAN_AIR_EXACT_TOPIC_MARKERS)
+
+
+def _capability_pack_has_clean_air_scope(capability_pack: dict[str, Any] | None) -> bool:
+    if not isinstance(capability_pack, dict):
+        return False
+    try:
+        trusted_pack = validate_capability_pack(capability_pack)
+    except CapabilityPackError:
+        return False
+    audit = trusted_pack.get("audit")
+    if (
+        trusted_pack.get("source") != "local"
+        or not isinstance(audit, dict)
+        or audit.get("generated_by") != "deterministic_local_generator"
+    ):
+        return False
+    snapshot = trusted_pack.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return False
+    industry = snapshot.get("industry")
+    return isinstance(industry, str) and (
+        industry == "家居与本地服务"
+        or _is_clean_air_exact_topic(industry)
+    )
+
+
+def _trusted_exact_seed_urls(
+    topic: str,
+    capability_pack: dict[str, Any] | None,
+) -> list[str]:
+    normalized = re.sub(r"\s+", "", str(topic))
+    if not (
+        _is_clean_air_exact_topic(normalized)
+        and _capability_pack_has_clean_air_scope(capability_pack)
+        and any(marker in normalized for marker in CLEAN_AIR_TRUSTED_SEED_TOPIC_MARKERS)
+    ):
+        return []
+    return list(CLEAN_AIR_TRUSTED_SEED_URLS)
+
+
+def _rule_source_host_matches(url: str, rule: dict[str, Any]) -> bool:
+    allowed_hosts = [
+        value.lower().rstrip(".")
+        for value in _string_list(rule.get("source_hosts"))
+        if value.strip(".")
+    ]
+    if not allowed_hosts:
+        return True
+    try:
+        hostname = (urllib.parse.urlsplit(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return bool(hostname) and any(
+        hostname == allowed or hostname.endswith(f".{allowed}")
+        for allowed in allowed_hosts
+    )
 
 
 def bind_exact_evidence_candidates(
@@ -119,7 +239,11 @@ def bind_exact_evidence_candidates(
         for rule in EXACT_EVIDENCE_RULES:
             excerpt = str(rule["excerpt"])
             claim = str(rule["claim"])
-            if excerpt not in text or claim in known_claims:
+            if (
+                excerpt not in text
+                or claim in known_claims
+                or not _rule_source_host_matches(url, rule)
+            ):
                 continue
             source = known_sources.get(url)
             if source is None:
@@ -193,7 +317,12 @@ def normalize_research_result(
                 excerpt = str(entry.get("excerpt", "")).strip()
                 for rule in EXACT_EVIDENCE_RULES:
                     captured_match = not captured_pages or excerpt in captured_pages.get(url, "")
-                    if claim == rule["claim"] and excerpt == rule["excerpt"] and captured_match:
+                    if (
+                        claim == rule["claim"]
+                        and excerpt == rule["excerpt"]
+                        and captured_match
+                        and _rule_source_host_matches(url, rule)
+                    ):
                         legacy_url_types[url] = str(rule["source_type"])
                         break
     sources = []
@@ -334,11 +463,17 @@ class WebResearchAgent:
         capability_pack: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self.registry.set_topic(topic)
-        seed_urls = source_urls or []
-        legacy_rules_enabled = (
+        user_seed_urls = [str(value).strip() for value in source_urls or [] if str(value).strip()]
+        legacy_exact_rules = (
             isinstance(capability_pack, dict)
             and str(capability_pack.get("id", "")) == LEGACY_CAPABILITY_PACK_ID
         )
+        exact_rules_enabled = legacy_exact_rules or (
+            _is_clean_air_exact_topic(topic)
+            and _capability_pack_has_clean_air_scope(capability_pack)
+        )
+        trusted_seed_urls = [] if user_seed_urls else _trusted_exact_seed_urls(topic, capability_pack)
+        seed_urls = self.registry.authorize_seed_urls([*trusted_seed_urls, *user_seed_urls])
         for url in seed_urls[: self.registry.max_pages]:
             self.registry.execute("extract_url", {"url": url})
         request = {
@@ -348,7 +483,8 @@ class WebResearchAgent:
             ),
             "topic": topic,
             "audience": audience,
-            "user_source_urls": seed_urls,
+            "user_source_urls": user_seed_urls,
+            "server_trusted_source_urls": trusted_seed_urls,
             "capability_pack": capability_pack or {},
         }
         initial: ResearchState = {
@@ -362,7 +498,7 @@ class WebResearchAgent:
         final = self.graph.invoke(initial, {"recursion_limit": self.max_model_turns * 2 + 3})
         result = final.get("result") or self._partial("模型未返回最终调研结果")
         turns = int(final.get("turns", 0))
-        if legacy_rules_enabled:
+        if exact_rules_enabled:
             result = bind_exact_evidence_candidates(result, self.registry.trace)
         if self.registry.trace and not result.get("findings") and hasattr(self.provider, "summarize_research"):
             try:
@@ -378,33 +514,46 @@ class WebResearchAgent:
                 turns += 1
             except ProviderError as exc:
                 result.setdefault("evidence_gaps", []).append(f"结构化收束失败: {exc}")
-            if legacy_rules_enabled:
+            if exact_rules_enabled:
                 result = bind_exact_evidence_candidates(result, self.registry.trace)
         result = normalize_research_result(
             result,
             self.registry.trace,
-            allow_legacy_exact=legacy_rules_enabled,
+            allow_legacy_exact=exact_rules_enabled,
         )
         local_audit = strict_audit_research(result, self.registry.trace)
-        if local_audit.get("script_eligible_findings") and hasattr(self.provider, "adversarial_review_research"):
-            try:
-                payload = adversarial_review_payload(local_audit)
-                if capability_pack is None:
-                    model_review = self.provider.adversarial_review_research(payload)
-                else:
-                    model_review = self.provider.adversarial_review_research(
-                        payload,
-                        capability_pack=capability_pack,
-                    )
-            except ProviderError as exc:
-                model_review = {"status": "failed", "error": str(exc), "findings": []}
+        if local_audit.get("script_eligible_findings"):
+            model_review_diagnostic: dict[str, Any] | None = None
+            review_method = getattr(self.provider, "adversarial_review_research", None)
+            if callable(review_method):
+                try:
+                    payload = adversarial_review_payload(local_audit)
+                    if capability_pack is None:
+                        model_review = review_method(payload)
+                    else:
+                        model_review = review_method(payload, capability_pack=capability_pack)
+                except ProviderError as exc:
+                    model_review = {"status": "failed", "findings": []}
+                    model_review_diagnostic = sanitize_adversarial_review_schema_diagnostic(exc.details)
+            else:
+                model_review = {
+                    "status": "missing",
+                    "findings": [],
+                }
             result = strict_audit_research(
                 result,
                 self.registry.trace,
                 model_review=model_review,
                 require_model_review=True,
             )
-            result["strict_audit"]["model_review_error"] = str(model_review.get("error", ""))
+            model_review_status = str(model_review.get("status", ""))
+            if model_review_status == "missing":
+                result["strict_audit"]["model_review_error"] = ADVERSARIAL_REVIEW_UNAVAILABLE_MESSAGE
+            elif model_review_status == "failed":
+                result["strict_audit"]["model_review_error"] = ADVERSARIAL_REVIEW_FAILURE_MESSAGE
+            artifact_diagnostic = sanitize_adversarial_review_schema_diagnostic(model_review_diagnostic)
+            if artifact_diagnostic is not None:
+                result["strict_audit"]["model_review_schema_diagnostic"] = artifact_diagnostic
         else:
             result = local_audit
         result["tool_trace"] = self.registry.trace

@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "evidence_id": "hyperframes-h264-mf-offline-runtime-20260810",
+  "evaluated_at": "2026-08-10",
+  "patched_runtime": {
+    "hyperframes_version": "0.7.86",
+    "patch_id": "shiyi-hyperframes-windows-mf",
+    "patch_version": "1.2.0",
+    "patched_cli_sha256": "86DA751BA397FF551355BA0C90370D732A297C3DC4652C981E9A8146D8EAC108",
+    "node_version": "22.13.1",
+    "browser": "system Microsoft Edge 151.0.4129.72",
+    "browser_injection": "HYPERFRAMES_BROWSER_PATH",
+    "browser_payload_coupling": false
+  },
+  "ffmpeg_runtime": {
+    "ffmpeg_version": "8.0.git",
+    "ffmpeg_commit": "d3ad8a7fee6a647c6362e4a105d949282d50a98f",
+    "ffmpeg_sha256": "53CC924AFEFFBE48BD94E569D0081B2EEF64EBAEA18B7966F7686947B0EBC1DC",
+    "ffprobe_sha256": "12324DCCEE8985B2D7F83F59C6BE0617046DF44DD8F25723BB1EECC20ABE7A4A",
+    "license_configuration": "LGPL shared MSVC build; no GPL encoder is present",
+    "codec_strategy": "h264_mf"
+  },
+  "offline_guard": {
+    "fixture": "tests/fixtures/reject_external_network.cjs",
+    "policy": "global fetch and Node http/https throw on every non-loopback host and append an evidence record",
+    "external_request_count": 0
+  },
+  "strict_check": {
+    "target": "generated 45-second 1080x1920 motion-mainline composition",
+    "target_index_sha256": "929580C449B7B1D0A10AA3D64D1F9107ECB26B90DF21F8BFACE581096B47AACE",
+    "command_contract": "hyperframes check <project> --strict --json",
+    "exit_code": 0,
+    "elapsed_seconds": 53.149,
+    "ok": true,
+    "checks": {
+      "lint": true,
+      "runtime": true,
+      "layout": true,
+      "motion": true,
+      "contrast": true
+    },
+    "meta": {
+      "version": "0.7.86",
+      "updateAvailable": false,
+      "offline": true
+    },
+    "external_request_count": 0
+  },
+  "render_fixture": {
+    "path": "tests/fixtures/hyperframes-mf-canary/index.html",
+    "sha256": "0022A186DDAFD66B585B69F573652722D3BE6CA6374F1E71DD612C48C6A6E9A8",
+    "width": 320,
+    "height": 568,
+    "fps": 30,
+    "duration_seconds": 2.0,
+    "quality_tier": "standard",
+    "quality": 72
+  },
+  "renders": [
+    {
+      "capture_path": "streaming",
+      "streaming_encode": true,
+      "exit_code": 0,
+      "elapsed_seconds": 4.891,
+      "external_request_count": 0,
+      "bytes": 90430,
+      "sha256": "C46E1239B43A5EF6BA32F9AEB1EAAA78C22C730F9E6E59EF77CB648C88B9EFDE",
+      "probe": {
+        "codec": "h264",
+        "profile": "Constrained Baseline",
+        "pixel_format": "yuv420p",
+        "frames": 60,
+        "duration_seconds": 2.0
+      }
+    },
+    {
+      "capture_path": "disk",
+      "streaming_encode": false,
+      "exit_code": 0,
+      "elapsed_seconds": 4.033,
+      "external_request_count": 0,
+      "bytes": 89991,
+      "sha256": "8D012F0C3973386CD3C45FFE92FE8659FF361AFCB062DCD02353C7A6BF5D846A",
+      "probe": {
+        "codec": "h264",
+        "profile": "Constrained Baseline",
+        "pixel_format": "yuv420p",
+        "frames": 60,
+        "duration_seconds": 2.0
+      }
+    }
+  ],
+  "profile_decision": "No -profile:v override is used for H.264. Both real paths produced Constrained Baseline and satisfy the required h264/yuv420p contract."
+}

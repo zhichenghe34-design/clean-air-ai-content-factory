@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1080, height=1920" />
+  <style>
+    @font-face { font-family: "Noto Sans SC"; src: url("assets/NotoSansSC-Regular.ttf") format("truetype"); font-weight: 400; }
+    @font-face { font-family: "Noto Sans SC"; src: url("assets/NotoSansSC-Bold.ttf") format("truetype"); font-weight: 700 900; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; background: #e7eadf; }
+    body { color: #f7fff9; font-family: "Noto Sans SC", sans-serif; }
+    #root { position: relative; width: 1080px; height: 1920px; overflow: hidden; isolation: isolate; }
+    #hero-photo { position: absolute; inset: -90px; width: 1260px; height: 2100px; object-fit: cover; object-position: 50% 52%; filter: saturate(1.02) contrast(1.02); transform-origin: 52% 64%; will-change: transform, filter; }
+    .cinema-grade { position: absolute; inset: 0; z-index: 2; background: linear-gradient(180deg, rgba(7,22,18,.16), rgba(7,22,18,0) 38%, rgba(7,22,18,.08) 68%, rgba(7,22,18,.68)); pointer-events: none; }
+    .vignette { position: absolute; inset: -90px; z-index: 3; box-shadow: inset 0 0 200px 76px rgba(6,20,16,.42); pointer-events: none; }
+    #motion-stage { position: absolute; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; }
+    .scan-light { position: absolute; left: -25%; top: 27%; width: 155%; height: 32%; background: linear-gradient(100deg, transparent 20%, rgba(204,255,245,.06) 43%, rgba(126,242,255,.4) 50%, rgba(204,255,245,.05) 57%, transparent 80%); transform: rotate(-8deg); mix-blend-mode: screen; filter: blur(10px); will-change: transform, opacity; }
+    .focus-frame { position: absolute; left: 50%; top: 63%; width: 750px; height: 670px; margin: -335px 0 0 -375px; border: 2px solid rgba(222,255,245,.22); border-radius: 34%; box-shadow: 0 0 120px rgba(31,255,199,.12), inset 0 0 90px rgba(31,255,199,.06); will-change: transform, opacity; }
+    .corner { position: absolute; width: 90px; height: 90px; border-color: rgba(235,255,248,.82); }
+    .c1 { left: -2px; top: -2px; border-left: 8px solid; border-top: 8px solid; border-radius: 24px 0 0; }
+    .c2 { right: -2px; top: -2px; border-right: 8px solid; border-top: 8px solid; border-radius: 0 24px 0 0; }
+    .c3 { left: -2px; bottom: -2px; border-left: 8px solid; border-bottom: 8px solid; border-radius: 0 0 0 24px; }
+    .c4 { right: -2px; bottom: -2px; border-right: 8px solid; border-bottom: 8px solid; border-radius: 0 0 24px; }
+    .base-ring { position: absolute; left: 50%; top: 77%; width: 760px; height: 250px; margin: -125px 0 0 -380px; border: 9px solid rgba(98,220,255,.68); border-radius: 50%; filter: drop-shadow(0 0 32px rgba(83,207,255,.78)); mix-blend-mode: screen; will-change: transform, opacity; }
+    .base-ring.r2 { width: 620px; height: 200px; margin: -100px 0 0 -310px; border-width: 5px; border-color: rgba(155,248,255,.56); }
+    .base-ring.r3 { width: 900px; height: 300px; margin: -150px 0 0 -450px; border-width: 3px; border-color: rgba(98,220,255,.34); }
+    .airflow { position: absolute; inset: 0; width: 1080px; height: 1920px; overflow: visible; mix-blend-mode: screen; }
+    .airflow path { fill: none; stroke-linecap: round; stroke-dasharray: 280 72; filter: blur(1px) drop-shadow(0 0 18px currentColor); will-change: stroke-dashoffset, opacity; }
+    .air-a { color: #76f1ff; stroke: currentColor; stroke-width: 10; opacity: .42; }
+    .air-b { color: #8cf6b1; stroke: currentColor; stroke-width: 8; opacity: .38; }
+    .air-c { color: #ffa2bc; stroke: currentColor; stroke-width: 9; opacity: .34; }
+    .air-d { color: #c9a7ff; stroke: currentColor; stroke-width: 4; opacity: .2; }
+    .particle { position: absolute; width: 10px; height: 10px; border-radius: 50%; background: #d8ffff; box-shadow: 0 0 22px 8px rgba(126,242,255,.78); opacity: 0; will-change: transform, opacity; }
+    .p1 { left: 20%; top: 79%; } .p2 { left: 33%; top: 66%; } .p3 { left: 64%; top: 76%; } .p4 { left: 76%; top: 62%; }
+    .p5 { left: 47%; top: 54%; } .p6 { left: 58%; top: 42%; } .p7 { left: 39%; top: 34%; } .p8 { left: 70%; top: 25%; }
+    .progress { position: absolute; left: 58px; right: 58px; top: 66px; z-index: 10; height: 5px; background: rgba(18,44,36,.22); overflow: hidden; }
+    .progress span { display: block; width: 100%; height: 100%; background: linear-gradient(90deg, #8cf6b1, #76f1ff, #c8e35b); transform-origin: left; will-change: transform; }
+    .brand { position: absolute; top: 88px; left: 58px; z-index: 10; display: flex; align-items: center; gap: 12px; padding: 12px 18px; border: 1px solid rgba(255,255,255,.34); background: rgba(8,31,25,.62); font-size: 22px; font-weight: 700; letter-spacing: .1em; backdrop-filter: blur(12px); }
+    .brand i { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: #c8e35b; color: #18331f; font-style: normal; font-weight: 900; }
+    #beats { position: absolute; inset: 0; z-index: 8; pointer-events: none; }
+    .beat { position: absolute; inset: 0; width: 1080px; height: 1920px; }
+    .beat-panel { position: absolute; left: 78px; right: 78px; bottom: 86px; min-height: 300px; padding: 46px 50px 42px; display: flex; flex-direction: column; justify-content: flex-end; background: linear-gradient(180deg, rgba(4,22,17,0), rgba(4,22,17,.88) 31%, rgba(4,22,17,.97)); border-bottom: 6px solid #c8e35b; transform-origin: 12% 100%; will-change: transform, opacity; }
+    .beat:nth-child(even) .beat-panel { left: 110px; right: 70px; border-bottom-color: #76f1ff; transform-origin: 88% 100%; }
+    .beat small { color: #d4f36d; font-size: 28px; font-weight: 900; letter-spacing: .1em; }
+    .beat:nth-child(even) small { color: #9cf3ff; }
+    .beat strong { margin-top: 12px; max-width: 930px; color: #fff; font-size: 72px; line-height: 1.1; letter-spacing: -.045em; text-wrap: balance; }
+    .beat em { margin-top: 18px; max-width: 930px; color: rgba(244,255,251,.87); font-size: 31px; font-style: normal; line-height: 1.42; }
+    #scene-visuals { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
+    .scene-visual { position: absolute; inset: 0; width: 1080px; height: 1920px; overflow: hidden; }
+    .visual-module { position: absolute; left: 86px; right: 86px; top: 260px; height: 940px; display: grid; place-items: center; transform-origin: 50% 62%; will-change: transform, opacity; }
+    .glass-panel { border: 1px solid rgba(228,255,247,.48); background: linear-gradient(145deg, rgba(7,35,28,.72), rgba(13,60,49,.4)); box-shadow: 0 28px 90px rgba(2,23,18,.22), inset 0 0 80px rgba(118,241,255,.05); backdrop-filter: blur(14px); }
+    .ring-module { position: relative; width: 720px; height: 720px; border-radius: 50%; }
+    .ring-orbit { position: absolute; inset: 25px; border: 6px solid rgba(118,241,255,.76); border-left-color: #d4f36d; border-radius: 50%; box-shadow: 0 0 70px rgba(118,241,255,.3); will-change: transform, opacity; }
+    .ring-orbit.ring-two { inset: 105px; border-width: 3px; border-color: rgba(255,162,188,.78); border-right-color: transparent; }
+    .ring-core { position: absolute; inset: 188px; display: grid; place-items: center; padding: 45px; border-radius: 50%; background: rgba(5,34,27,.86); color: #fff; text-align: center; font-size: 58px; line-height: 1.12; font-weight: 900; }
+    .flow-module { width: 850px; display: grid; gap: 30px; padding: 58px; border-radius: 40px; }
+    .flow-step { min-height: 150px; display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 30px; padding: 28px 36px; border: 2px solid rgba(228,255,247,.38); background: rgba(4,28,22,.7); font-size: 42px; font-weight: 900; will-change: transform, opacity; }
+    .flow-step b { display: grid; place-items: center; width: 74px; height: 74px; border-radius: 50%; background: #d4f36d; color: #123025; font-size: 34px; }
+    .scale-module { width: 830px; height: 760px; position: relative; padding: 44px; border-radius: 44px; }
+    .room-box { position: absolute; inset: 82px; display: grid; grid-template-columns: 1fr 1fr; gap: 26px; padding: 34px; border: 7px solid rgba(118,241,255,.8); }
+    .room-box span { display: grid; place-items: center; border: 2px solid rgba(255,255,255,.56); background: rgba(5,39,31,.62); color: #fff; font-size: 42px; font-weight: 900; will-change: transform, opacity; }
+    .room-box span:last-child { grid-column: 1 / span 2; color: #d4f36d; }
+    .document-module { width: 790px; height: 800px; position: relative; }
+    .doc-sheet { position: absolute; inset: 70px 45px 30px; padding: 54px; background: rgba(245,251,247,.94); color: #12372b; box-shadow: 0 35px 100px rgba(0,0,0,.32); }
+    .doc-sheet h2 { margin: 0 0 38px; font-size: 58px; }
+    .doc-row { display: flex; justify-content: space-between; padding: 28px 0; border-top: 3px solid rgba(18,55,43,.22); font-size: 31px; font-weight: 800; }
+    .doc-row b { color: #137a65; }
+    .doc-scan { position: absolute; left: 45px; right: 45px; top: 90px; height: 14px; background: #76f1ff; box-shadow: 0 0 32px #76f1ff; will-change: transform, opacity; }
+    .time-module { width: 850px; height: 760px; display: grid; grid-template-columns: 340px 1fr; gap: 54px; align-items: center; padding: 58px; border-radius: 48px; }
+    .clock-face { width: 320px; height: 320px; position: relative; border: 9px solid #d4f36d; border-radius: 50%; }
+    .clock-face::after { content: ""; position: absolute; left: 145px; top: 145px; width: 30px; height: 30px; border-radius: 50%; background: #d4f36d; }
+    .clock-hand { position: absolute; left: 152px; top: 54px; width: 16px; height: 112px; border-radius: 9px; background: #ff9db7; transform-origin: 50% 106px; will-change: transform; }
+    .wave-bars { height: 440px; display: flex; align-items: center; gap: 18px; }
+    .wave-bar { display: block; flex: 1; height: 78%; border-radius: 16px; background: linear-gradient(180deg, #76f1ff, #8cf6b1); transform-origin: center; will-change: transform, opacity; }
+    .compare-module { width: 880px; height: 720px; display: grid; grid-template-columns: 1fr 100px 1fr; align-items: center; gap: 20px; }
+    .compare-card { height: 560px; display: grid; place-items: center; padding: 45px; border: 3px solid rgba(118,241,255,.78); background: rgba(5,36,29,.76); text-align: center; font-size: 52px; font-weight: 900; will-change: transform, opacity; }
+    .compare-card:last-child { border-color: rgba(255,157,183,.82); }
+    .not-equal { color: #ff9db7; font-size: 86px; font-weight: 900; }
+    .lens-module { width: 800px; height: 780px; position: relative; display: grid; place-items: center; border-radius: 54px; }
+    .lens-aperture { width: 500px; height: 500px; display: grid; place-items: center; border: 12px solid #76f1ff; border-radius: 50%; background: #06271f; box-shadow: 0 0 0 45px rgba(118,241,255,.1), 0 0 90px rgba(118,241,255,.35); color: #fff; font-size: 54px; line-height: 1.15; font-weight: 900; text-align: center; will-change: transform, opacity; }
+    .lens-chip { position: absolute; min-width: 210px; padding: 24px 30px; border: 2px solid #d4f36d; background: #08392e; color: #fff; text-align: center; font-size: 30px; font-weight: 900; will-change: transform, opacity; }
+    .lens-chip.l1 { left: 8px; top: 80px; } .lens-chip.l2 { right: 8px; top: 80px; } .lens-chip.l3 { left: 295px; bottom: 36px; }
+    .summary-module { width: 800px; height: 800px; position: relative; }
+    .summary-core { position: absolute; left: 250px; top: 250px; width: 300px; height: 300px; display: grid; place-items: center; border: 8px solid #d4f36d; border-radius: 50%; background: #06271f; color: #fff; font-size: 52px; font-weight: 900; text-align: center; }
+    .summary-node { position: absolute; width: 210px; min-height: 94px; display: grid; place-items: center; border: 2px solid rgba(118,241,255,.72); background: #08392e; color: #fff; font-size: 32px; font-weight: 900; will-change: transform, opacity; }
+    .summary-node.n1 { left: 0; top: 95px; } .summary-node.n2 { right: 0; top: 95px; } .summary-node.n3 { left: 0; bottom: 95px; } .summary-node.n4 { right: 0; bottom: 95px; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="clean-air-motion-output" data-no-timeline data-start="0" data-duration="__DURATION__" data-width="1080" data-height="1920" data-fps="30">
+    <img id="hero-photo" class="clip" data-start="0" data-duration="__DURATION__" data-track-index="0" src="assets/clean-air-device-neutral-v1.png" alt="" />
+    __AUDIO_ELEMENT__
+    <div class="cinema-grade" data-layout-ignore></div><div class="vignette" data-layout-ignore></div>
+    <div id="motion-stage" data-motion-subject="primary" data-layout-ignore>
+      <div class="scan-light"></div>
+      <div class="focus-frame"><i class="corner c1"></i><i class="corner c2"></i><i class="corner c3"></i><i class="corner c4"></i></div>
+      <div class="base-ring r1"></div><div class="base-ring r2"></div><div class="base-ring r3"></div>
+      <svg class="airflow" viewBox="0 0 1080 1920" aria-hidden="true">
+        <path class="air-a" d="M160 1550 C110 1260 370 1210 330 930 C290 660 540 610 500 250" />
+        <path class="air-b" d="M385 1570 C580 1310 390 1120 560 890 C710 680 520 520 690 190" />
+        <path class="air-c" d="M770 1540 C930 1280 670 1120 760 860 C850 610 650 480 560 120" />
+        <path class="air-d" d="M90 1380 C340 1310 730 1380 990 1180 C730 1040 390 1090 150 870" />
+      </svg>
+      <b class="particle p1"></b><b class="particle p2"></b><b class="particle p3"></b><b class="particle p4"></b>
+      <b class="particle p5"></b><b class="particle p6"></b><b class="particle p7"></b><b class="particle p8"></b>
+    </div>
+    <div id="scene-visuals"></div>
+    <div class="progress"><span></span></div><div class="brand"><i>时</i><span>净界AI内容工厂</span></div>
+    <div id="beats"></div>
+  </div>
+  <script>
+    const plan = __MOTION_PLAN_JSON__;
+    const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[character]);
+    const finite = (element, keyframes, timing) => {
+      if (!element) throw new Error("motion target missing");
+      const animation = element.animate(keyframes, {...timing, fill: "both", iterations: 1});
+      animation.pause();
+      return animation;
+    };
+    const totalMs = Math.max(1000, Number(plan.duration_seconds || __DURATION__) * 1000);
+    const beats = document.getElementById("beats");
+    const sceneVisuals = document.getElementById("scene-visuals");
+    const visualMarkup = (scene) => {
+      const family = String(scene.renderer_family || "");
+      if (family === "radial-focus") return `<div class="visual-module"><div class="ring-module"><div class="ring-orbit"></div><div class="ring-orbit ring-two"></div><div class="ring-core">证据<br>边界</div></div></div>`;
+      if (family === "sequential-flow") return `<div class="visual-module"><div class="flow-module glass-panel"><div class="flow-step"><b>1</b><span>感受只是线索</span></div><div class="flow-step"><b>2</b><span>核对使用条件</span></div><div class="flow-step"><b>3</b><span>再看规范检测</span></div></div></div>`;
+      if (family === "space-scale") return `<div class="visual-module"><div class="scale-module glass-panel"><div class="room-box"><span>剂量</span><span>空间</span><span>作用时间</span></div></div></div>`;
+      if (family === "document-stack") return `<div class="visual-module"><div class="document-module"><div class="doc-sheet"><h2>检测报告</h2><div class="doc-row"><span>检测方法</span><b>核对</b></div><div class="doc-row"><span>采样条件</span><b>核对</b></div><div class="doc-row"><span>报告来源</span><b>追溯</b></div></div><div class="doc-scan"></div></div></div>`;
+      if (family === "temporal-wave") return `<div class="visual-module"><div class="time-module glass-panel"><div class="clock-face"><i class="clock-hand"></i></div><div class="wave-bars">${Array.from({length:7},(_,i)=>`<i class="wave-bar" data-index="${i}"></i>`).join("")}</div></div></div>`;
+      if (family === "evidence-lens") return `<div class="visual-module"><div class="lens-module glass-panel"><div class="lens-aperture">来源<br>可追溯</div><div class="lens-chip l1">方法</div><div class="lens-chip l2">条件</div><div class="lens-chip l3">报告</div></div></div>`;
+      if (family === "binary-compare") return `<div class="visual-module"><div class="compare-module"><div class="compare-card">实验舱<br>条件</div><div class="not-equal">≠</div><div class="compare-card">真实<br>房间</div></div></div>`;
+      return `<div class="visual-module"><div class="summary-module"><div class="summary-core">结论<br>可追溯</div><div class="summary-node n1">报告</div><div class="summary-node n2">方法</div><div class="summary-node n3">空间</div><div class="summary-node n4">时间</div></div></div>`;
+    };
+    plan.scenes.forEach((scene, index) => {
+      const localMs = Math.max(1800, (Number(scene.end) - Number(scene.start)) * 1000);
+      const visualSection = document.createElement("section");
+      visualSection.className = "scene-visual clip";
+      visualSection.id = `visual-${scene.id}`;
+      visualSection.setAttribute("data-start", String(scene.start));
+      visualSection.setAttribute("data-duration", String(Number(scene.end) - Number(scene.start)));
+      visualSection.setAttribute("data-track-index", String(index + 20));
+      visualSection.setAttribute("data-layout-allow-overlap", "");
+      visualSection.innerHTML = visualMarkup(scene);
+      sceneVisuals.appendChild(visualSection);
+      finite(visualSection.querySelector(".visual-module"), [
+        {transform:`translate3d(${index % 2 === 0 ? -46 : 46}px,70px,0) scale(.86)`,opacity:.96},
+        {transform:"translate3d(0,0,0) scale(1)",opacity:1,offset:.17},
+        {transform:`translate3d(${index % 2 === 0 ? 18 : -18}px,-16px,0) scale(1.025)`,opacity:1,offset:.76},
+        {transform:`translate3d(${index % 2 === 0 ? 36 : -36}px,-54px,0) scale(1.04)`,opacity:.96}
+      ], {duration:localMs,delay:Number(scene.start) * 1000,easing:"cubic-bezier(.2,0,.2,1)"});
+      visualSection.querySelectorAll(".flow-step,.room-box span,.doc-row,.compare-card,.summary-node,.lens-chip").forEach((element, itemIndex) => finite(element, [
+        {transform:`translate3d(${itemIndex % 2 === 0 ? -42 : 42}px,24px,0)`,opacity:1},
+        {transform:"translate3d(0,0,0)",opacity:1,offset:Math.min(.46,.16 + itemIndex * .075)},
+        {transform:"translate3d(0,-8px,0)",opacity:1,offset:.76},
+        {transform:`translate3d(${itemIndex % 2 === 0 ? 18 : -18}px,-18px,0)`,opacity:1}
+      ], {duration:localMs,delay:Number(scene.start) * 1000,easing:"cubic-bezier(.2,0,.2,1)"}));
+      visualSection.querySelectorAll(".ring-orbit").forEach((element, itemIndex) => finite(element, [
+        {transform:`rotate(${itemIndex ? 28 : -18}deg) scale(.86)`,opacity:.22},
+        {transform:`rotate(${itemIndex ? 190 : 150}deg) scale(1.04)`,opacity:.9,offset:.52},
+        {transform:`rotate(${itemIndex ? 370 : 330}deg) scale(1.14)`,opacity:.08}
+      ], {duration:localMs,delay:Number(scene.start) * 1000,easing:"ease-in-out"}));
+      const scan = visualSection.querySelector(".doc-scan");
+      if (scan) finite(scan, [{transform:"translateY(0)",opacity:0},{transform:"translateY(40px)",opacity:1,offset:.12},{transform:"translateY(610px)",opacity:.75,offset:.8},{transform:"translateY(650px)",opacity:0}], {duration:localMs,delay:Number(scene.start) * 1000,easing:"linear"});
+      const hand = visualSection.querySelector(".clock-hand");
+      if (hand) finite(hand, [{transform:"rotate(-35deg)"},{transform:"rotate(260deg)"}], {duration:localMs,delay:Number(scene.start) * 1000,easing:"ease-in-out"});
+      const aperture = visualSection.querySelector(".lens-aperture");
+      if (aperture) finite(aperture, [{transform:"scale(.72) rotate(-6deg)",opacity:1},{transform:"scale(1.08) rotate(2deg)",opacity:1,offset:.52},{transform:"scale(.9) rotate(7deg)",opacity:1}], {duration:localMs,delay:Number(scene.start) * 1000,easing:"ease-in-out"});
+      visualSection.querySelectorAll(".wave-bar").forEach((element, itemIndex) => finite(element, [
+        {transform:"scaleY(.18)",opacity:.45},
+        {transform:`scaleY(${.5 + (itemIndex % 3) * .22})`,opacity:1,offset:.32},
+        {transform:`scaleY(${.95 - (itemIndex % 2) * .3})`,opacity:.86,offset:.68},
+        {transform:"scaleY(.22)",opacity:.35}
+      ], {duration:localMs,delay:Number(scene.start) * 1000,easing:"ease-in-out"}));
+      const section = document.createElement("section");
+      section.className = "beat clip";
+      section.id = scene.id;
+      section.setAttribute("data-start", String(scene.start));
+      section.setAttribute("data-duration", String(Number(scene.end) - Number(scene.start)));
+      section.setAttribute("data-track-index", String(index + 1));
+      section.setAttribute("data-layout-allow-overlap", "");
+      section.innerHTML = `<div class="beat-panel"><small>${String(index + 1).padStart(2, "0")} / ${esc(scene.kicker)}</small><strong>${esc(scene.title)}</strong><em>${esc(scene.caption)}</em></div>`;
+      beats.appendChild(section);
+      const direction = index % 2 === 0 ? 1 : -1;
+      finite(section.querySelector(".beat-panel"), [
+        {transform:`translate3d(${24 * direction}px,55px,0) scale(.985)`,opacity:0},
+        {transform:"translate3d(0,0,0) scale(1)",opacity:1,offset:.18},
+        {transform:`translate3d(${-6 * direction}px,-5px,0) scale(1.006)`,opacity:1,offset:.72},
+        {transform:`translate3d(${-28 * direction}px,-55px,0) scale(1.01)`,opacity:0}
+      ], {duration:localMs,delay:Number(scene.start) * 1000,easing:"cubic-bezier(.2,0,.2,1)"});
+    });
+
+    const cameraFrames = [{transform:"translate3d(-22px,24px,0) scale(1.03)",filter:"saturate(1.02) contrast(1.02)",offset:0}];
+    plan.scenes.forEach((scene, index) => {
+      const direction = index % 2 === 0 ? 1 : -1;
+      cameraFrames.push({
+        transform:`translate3d(${direction * (12 + index * 2)}px,${-16 - index * 7}px,0) scale(${(1.07 + index * .018).toFixed(3)})`,
+        filter:`saturate(${(1.04 + index * .008).toFixed(3)}) contrast(1.04)`,
+        offset:Math.min(.985, Math.max(.02, Number(scene.end) / Number(plan.duration_seconds)))
+      });
+    });
+    cameraFrames.push({transform:"translate3d(-10px,-78px,0) scale(1.22)",filter:"saturate(1.11) contrast(1.07)",offset:1});
+    finite(document.getElementById("hero-photo"), cameraFrames, {duration:totalMs,delay:0,easing:"cubic-bezier(.25,0,.2,1)"});
+    finite(document.querySelector(".scan-light"), [
+      {transform:"translate3d(-560px,210px,0) rotate(-8deg)",opacity:0},
+      {transform:"translate3d(120px,-30px,0) rotate(-8deg)",opacity:.86,offset:.28},
+      {transform:"translate3d(560px,-220px,0) rotate(-8deg)",opacity:.18,offset:.55},
+      {transform:"translate3d(-330px,100px,0) rotate(-8deg)",opacity:.68,offset:.76},
+      {transform:"translate3d(430px,-150px,0) rotate(-8deg)",opacity:.18}
+    ], {duration:totalMs,delay:0,easing:"ease-in-out"});
+    finite(document.querySelector(".focus-frame"), [
+      {transform:"translate3d(-70px,95px,0) rotate(-3deg) scale(.72)",opacity:0},
+      {transform:"translate3d(0,0,0) rotate(0deg) scale(1)",opacity:.86,offset:.15},
+      {transform:"translate3d(65px,-75px,0) rotate(2deg) scale(1.13)",opacity:.58,offset:.48},
+      {transform:"translate3d(-20px,-130px,0) rotate(-1deg) scale(1.3)",opacity:.16,offset:.76},
+      {transform:"translate3d(34px,-90px,0) rotate(1deg) scale(1.14)",opacity:.54}
+    ], {duration:totalMs,delay:0,easing:"cubic-bezier(.2,0,.2,1)"});
+
+    const pulseFrames = [];
+    const pulseCount = Math.max(4, plan.scenes.length * 2);
+    for (let index = 0; index <= pulseCount; index += 1) {
+      const expanded = index % 2 === 1;
+      pulseFrames.push({transform:`scale(${expanded ? 1.42 : .82})`,opacity:expanded ? .14 : .72,offset:index / pulseCount});
+    }
+    document.querySelectorAll(".base-ring").forEach((ring, index) => finite(ring, pulseFrames, {duration:totalMs,delay:index * 120,easing:"ease-in-out"}));
+
+    const airflowFrames = [];
+    const airflowStops = Math.max(5, plan.scenes.length + 2);
+    for (let index = 0; index <= airflowStops; index += 1) {
+      airflowFrames.push({strokeDashoffset:1200 - index * 520,opacity:index % 2 === 0 ? .28 : .78,offset:index / airflowStops});
+    }
+    document.querySelectorAll(".airflow path").forEach((path, index) => finite(path, airflowFrames, {duration:totalMs,delay:index * 90,easing:"linear"}));
+
+    document.querySelectorAll(".particle").forEach((particle, particleIndex) => {
+      const frames = [];
+      const direction = particleIndex % 2 === 0 ? 1 : -1;
+      plan.scenes.forEach((scene, sceneIndex) => {
+        const start = Number(scene.start) / Number(plan.duration_seconds);
+        const end = Number(scene.end) / Number(plan.duration_seconds);
+        const span = Math.max(.001, end - start);
+        frames.push({transform:"translate3d(0,180px,0) scale(.25)",opacity:0,offset:start});
+        frames.push({transform:`translate3d(${45 * direction}px,-140px,0) scale(1.1)`,opacity:.85,offset:Math.min(1,start + span * .35)});
+        frames.push({transform:`translate3d(${-75 * direction}px,-560px,0) scale(.2)`,opacity:0,offset:Math.min(1,end)});
+      });
+      finite(particle, frames, {duration:totalMs,delay:particleIndex * 70,easing:"cubic-bezier(.25,0,.35,1)"});
+    });
+    finite(document.querySelector(".progress span"), [{transform:"scaleX(0)"},{transform:"scaleX(1)"}], {duration:totalMs,delay:0,easing:"linear"});
+  </script>
+</body>
+</html>
